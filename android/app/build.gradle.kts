@@ -9,7 +9,7 @@ plugins {
 }
 
 android {
-    namespace = "com.example.hestimate"
+    namespace = "ch.hes.hestimate"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
