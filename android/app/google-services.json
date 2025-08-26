@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "177413164789",
+    "project_id": "hestimate-438df",
+    "storage_bucket": "hestimate-438df.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:177413164789:android:ed1640235ea0c02c74bfbc",
+        "android_client_info": {
+          "package_name": "ch.hes.hestimate"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDi9Zx18cEwSZpHL4OdRqGy2zDVUvUOaTM"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
