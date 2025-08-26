@@ -1,21 +1,26 @@
-// lib/main.dart
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:moon_design/moon_design.dart';
 
 import 'firebase_options.dart';
 import 'register.dart';
 import 'login.dart';
+import 'profile.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
-  runApp(const MyApp());
+
+  final currentUser = FirebaseAuth.instance.currentUser;
+
+  runApp(MyApp(initialUser: currentUser));
 }
 
 class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+  final User? initialUser;
+  const MyApp({super.key, this.initialUser});
 
   @override
   Widget build(BuildContext context) {
@@ -38,16 +43,17 @@ class MyApp extends StatelessWidget {
       title: 'Flutter Demo',
       theme: baseLight.copyWith(extensions: [MoonTheme(tokens: lightTokens)]),
       darkTheme: baseDark.copyWith(extensions: [MoonTheme(tokens: darkTokens)]),
-      initialRoute: '/',
+      initialRoute: initialUser != null ? '/home' : '/',
       routes: {
         '/': (context) => const RegisterPage(),
         '/login': (context) => const LoginPage(),
-        '/home': (context) =>
-            const MyHomePage(title: 'Firebase Test Home Page'),
+        '/home': (context) => const MyHomePage(title: 'Firebase Test Home Page'),
+        '/profile': (context) => const ProfilePage(),
       },
     );
   }
 }
+
 
 class MyHomePage extends StatefulWidget {
   const MyHomePage({super.key, required this.title});
@@ -104,6 +110,14 @@ class _MyHomePageState extends State<MyHomePage> {
       appBar: AppBar(
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
         title: Text(widget.title),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.person),
+            onPressed: () {
+              Navigator.of(context).pushNamed('/profile');
+            },
+          ),
+        ],
       ),
       body: Center(
         child: Column(
