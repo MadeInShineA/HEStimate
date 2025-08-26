@@ -52,7 +52,7 @@ class DefaultFirebaseOptions {
 
   static const FirebaseOptions android = FirebaseOptions(
     apiKey: 'AIzaSyDi9Zx18cEwSZpHL4OdRqGy2zDVUvUOaTM',
-    appId: '1:177413164789:android:ed1640235ea0c02c74bfbc',
+    appId: '1:177413164789:android:56f882ad68ef15dd74bfbc',
     messagingSenderId: '177413164789',
     projectId: 'hestimate-438df',
     storageBucket: 'hestimate-438df.firebasestorage.app',
