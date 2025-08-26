@@ -1,13 +1,15 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:moon_design/moon_design.dart';
-
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:path_provider/path_provider.dart';
 import 'firebase_options.dart';
 import 'register.dart';
 import 'login.dart';
 import 'profile.dart';
+import 'faceIdLogin.dart';
+import 'package:moon_design/moon_design.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -15,12 +17,39 @@ Future<void> main() async {
 
   final currentUser = FirebaseAuth.instance.currentUser;
 
-  runApp(MyApp(initialUser: currentUser));
+  // Vérification si Face ID est activé
+  bool faceIdEnabled = false;
+  File? faceImage;
+
+  if (currentUser != null) {
+    final doc = await FirebaseFirestore.instance.collection('users').doc(currentUser.uid).get();
+    if (doc.exists) {
+      faceIdEnabled = doc.data()?['faceIdEnabled'] ?? false;
+      if (faceIdEnabled) {
+        final dir = await getApplicationDocumentsDirectory();
+        final file = File('${dir.path}/face_id.png');
+        if (await file.exists()) {
+          faceImage = file;
+        } else {
+          faceIdEnabled = false;
+        }
+      }
+    }
+  }
+
+  runApp(MyApp(
+    initialUser: currentUser,
+    faceIdEnabled: faceIdEnabled,
+    faceImage: faceImage,
+  ));
 }
 
 class MyApp extends StatelessWidget {
   final User? initialUser;
-  const MyApp({super.key, this.initialUser});
+  final bool faceIdEnabled;
+  final File? faceImage;
+
+  const MyApp({super.key, this.initialUser, required this.faceIdEnabled, this.faceImage});
 
   @override
   Widget build(BuildContext context) {
@@ -40,20 +69,22 @@ class MyApp extends StatelessWidget {
     );
 
     return MaterialApp(
-      title: 'Flutter Demo',
+      title: 'HEStimate App',
       theme: baseLight.copyWith(extensions: [MoonTheme(tokens: lightTokens)]),
       darkTheme: baseDark.copyWith(extensions: [MoonTheme(tokens: darkTokens)]),
-      initialRoute: initialUser != null ? '/home' : '/',
+      initialRoute: initialUser == null
+          ? '/login'
+          : (faceIdEnabled ? '/faceLogin' : '/home'),
       routes: {
-        '/': (context) => const RegisterPage(),
-        '/login': (context) => const LoginPage(),
+        '/login': (context) => LoginPage(faceImage: faceImage),
+        '/register': (context) => const RegisterPage(),
         '/home': (context) => const MyHomePage(title: 'Firebase Test Home Page'),
         '/profile': (context) => const ProfilePage(),
+        '/faceLogin': (context) => FaceIdLoginPage(faceImage: faceImage, user: initialUser),
       },
     );
   }
 }
-
 
 class MyHomePage extends StatefulWidget {
   const MyHomePage({super.key, required this.title});
@@ -76,25 +107,18 @@ class _MyHomePageState extends State<MyHomePage> {
         const SnackBar(content: Text('Valeur ajoutée à Firebase !')),
       );
     } catch (e) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Erreur: $e')));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Erreur: $e')));
     }
   }
 
   Future<void> _removeValue() async {
     try {
-      await _firestore
-          .collection('test_collection')
-          .doc('counter_doc')
-          .delete();
+      await _firestore.collection('test_collection').doc('counter_doc').delete();
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Valeur supprimée de Firebase !')),
       );
     } catch (e) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Erreur: $e')));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Erreur: $e')));
     }
   }
 
