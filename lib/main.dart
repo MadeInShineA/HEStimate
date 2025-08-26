@@ -3,10 +3,10 @@ import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:moon_design/moon_design.dart';
-import 'package:moon_icons/moon_icons.dart';
 
 import 'firebase_options.dart';
 import 'register.dart';
+import 'login.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -41,6 +41,7 @@ class MyApp extends StatelessWidget {
       initialRoute: '/',
       routes: {
         '/': (context) => const RegisterPage(),
+        '/login': (context) => const LoginPage(),
         '/home': (context) =>
             const MyHomePage(title: 'Firebase Test Home Page'),
       },
@@ -131,23 +132,6 @@ class _MyHomePageState extends State<MyHomePage> {
         tooltip: 'Increment',
         child: const Icon(Icons.add),
       ),
-    );
-  }
-}
-
-class Moon extends StatelessWidget {
-  const Moon({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: 100,
-      height: 100,
-      decoration: const BoxDecoration(
-        shape: BoxShape.circle,
-        color: Colors.yellow,
-      ),
-      child: const Center(child: Text('🌙', style: TextStyle(fontSize: 40))),
     );
   }
 }

@@ -1,3 +1,4 @@
+// lib/register_page.dart
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:moon_design/moon_design.dart';
@@ -57,12 +58,11 @@ class _RegisterPageState extends State<RegisterPage> {
   }
 
   void _showError(String message) {
-    final theme = context.moonTheme;
     showDialog(
       context: context,
       builder: (context) => Dialog(
-        shape: MoonSquircleBorder(
-          borderRadius: const MoonSquircleBorderRadius.all(
+        shape: const MoonSquircleBorder(
+          borderRadius: MoonSquircleBorderRadius.all(
             MoonSquircleRadius(cornerRadius: 16),
           ),
         ),
@@ -101,6 +101,7 @@ class _RegisterPageState extends State<RegisterPage> {
     final theme = context.moonTheme;
 
     return Scaffold(
+      appBar: AppBar(title: const Text('Register')),
       body: SafeArea(
         child: Center(
           child: ConstrainedBox(
@@ -113,7 +114,6 @@ class _RegisterPageState extends State<RegisterPage> {
                   mainAxisAlignment: MainAxisAlignment.center,
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    const SizedBox(height: 16),
                     Icon(
                       Icons.nightlight_round,
                       size: 48,
@@ -133,7 +133,6 @@ class _RegisterPageState extends State<RegisterPage> {
                       keyboardType: TextInputType.emailAddress,
                       textInputAction: TextInputAction.next,
                       leading: const Icon(Icons.mail_outline),
-                      controller: _emailCtrl,
                       validator: (value) {
                         final v = value?.trim() ?? '';
                         if (v.isEmpty) return 'Email is required';
@@ -141,6 +140,7 @@ class _RegisterPageState extends State<RegisterPage> {
                         if (!emailRx.hasMatch(v)) return 'Enter a valid email';
                         return null;
                       },
+                      onChanged: (v) => _emailCtrl.text = v,
                     ),
                     const SizedBox(height: 12),
 
@@ -157,13 +157,13 @@ class _RegisterPageState extends State<RegisterPage> {
                           _obscurePw ? Icons.visibility : Icons.visibility_off,
                         ),
                       ),
-                      controller: _passwordCtrl,
                       validator: (value) {
                         final v = value ?? '';
                         if (v.isEmpty) return 'Password is required';
                         if (v.length < 6) return 'Use at least 6 characters';
                         return null;
                       },
+                      onChanged: (v) => _passwordCtrl.text = v,
                     ),
                     const SizedBox(height: 12),
 
@@ -173,14 +173,16 @@ class _RegisterPageState extends State<RegisterPage> {
                       obscureText: true,
                       textInputAction: TextInputAction.done,
                       leading: const Icon(Icons.check_circle_outline),
-                      controller: _confirmCtrl,
                       validator: (value) {
-                        if (value == null || value.isEmpty)
+                        if (value == null || value.isEmpty) {
                           return 'Please confirm your password';
-                        if (value != _passwordCtrl.text)
+                        }
+                        if (value != _passwordCtrl.text) {
                           return "Passwords don't match";
+                        }
                         return null;
                       },
+                      onChanged: (v) => _confirmCtrl.text = v,
                     ),
                     const SizedBox(height: 20),
 
@@ -205,7 +207,9 @@ class _RegisterPageState extends State<RegisterPage> {
                     Align(
                       alignment: Alignment.center,
                       child: TextButton(
-                        onPressed: () {},
+                        onPressed: () => Navigator.of(
+                          context,
+                        ).pushReplacementNamed('/login'),
                         child: const Text('Already have an account? Sign in'),
                       ),
                     ),
@@ -214,7 +218,6 @@ class _RegisterPageState extends State<RegisterPage> {
                     const Divider(),
                     const SizedBox(height: 12),
 
-                    // Terms
                     Text(
                       'By creating an account you agree to our Terms and Privacy Policy.',
                       textAlign: TextAlign.center,
