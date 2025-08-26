@@ -8,6 +8,8 @@ import 'firebase_options.dart';
 import 'register.dart';
 import 'login.dart';
 import 'profile.dart';
+import 'ui/about_page.dart';
+
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -129,6 +131,11 @@ class _MyHomePageState extends State<MyHomePage> {
               style: Theme.of(context).textTheme.headlineMedium,
             ),
             const SizedBox(height: 20),
+            MoonButton(
+              onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const AboutPage())),
+              leading: const Icon(MoonIcons.arrows_forward_24_regular),
+              label: const Text('About'),
+            ),
             ElevatedButton(
               onPressed: _addValue,
               child: const Text('Ajouter à Firebase'),
