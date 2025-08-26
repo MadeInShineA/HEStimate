@@ -8,6 +8,9 @@ import 'firebase_options.dart';
 import 'register.dart';
 import 'login.dart';
 import 'profile.dart';
+import 'ui/new_listing_page.dart'; // <-- ajoute ton chemin réel
+
+// import 'login.dart'; 
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -123,6 +126,17 @@ class _MyHomePageState extends State<MyHomePage> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: <Widget>[
+            ElevatedButton.icon(
+              icon: const Icon(Icons.add_business),
+              label: const Text("Go to New Listing"),
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const NewListingPage()),
+                );
+              },
+            ),
+
             const Text('Counter:'),
             Text(
               '$_counter',
