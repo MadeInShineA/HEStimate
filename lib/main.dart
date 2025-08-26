@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:hestimate/property_list.dart';
 import 'package:path_provider/path_provider.dart';
 import 'firebase_options.dart';
 import 'ui/register.dart';
@@ -23,7 +24,10 @@ Future<void> main() async {
   File? faceImage;
 
   if (currentUser != null) {
-    final doc = await FirebaseFirestore.instance.collection('users').doc(currentUser.uid).get();
+    final doc = await FirebaseFirestore.instance
+        .collection('users')
+        .doc(currentUser.uid)
+        .get();
     if (doc.exists) {
       faceIdEnabled = doc.data()?['faceIdEnabled'] ?? false;
       if (faceIdEnabled) {
@@ -38,11 +42,13 @@ Future<void> main() async {
     }
   }
 
-  runApp(MyApp(
-    initialUser: currentUser,
-    faceIdEnabled: faceIdEnabled,
-    faceImage: faceImage,
-  ));
+  runApp(
+    MyApp(
+      initialUser: currentUser,
+      faceIdEnabled: faceIdEnabled,
+      faceImage: faceImage,
+    ),
+  );
 }
 
 class MyApp extends StatelessWidget {
@@ -50,7 +56,12 @@ class MyApp extends StatelessWidget {
   final bool faceIdEnabled;
   final File? faceImage;
 
-  const MyApp({super.key, this.initialUser, required this.faceIdEnabled, this.faceImage});
+  const MyApp({
+    super.key,
+    this.initialUser,
+    required this.faceIdEnabled,
+    this.faceImage,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -79,10 +90,12 @@ class MyApp extends StatelessWidget {
       routes: {
         '/login': (context) => LoginPage(faceImage: faceImage),
         '/register': (context) => const RegisterPage(),
-        '/faceIdSetup': (context) => const FaceIdSetupPage(), // Nouvelle route
-        '/home': (context) => const MyHomePage(title: 'Firebase Test Home Page'),
+        '/faceIdSetup': (context) => const FaceIdSetupPage(),
+        '/home': (context) =>
+            const MyHomePage(title: 'Firebase Test Home Page'),
         '/profile': (context) => const ProfilePage(),
-        '/faceLogin': (context) => FaceIdLoginPage(faceImage: faceImage, user: initialUser),
+        '/faceLogin': (context) =>
+            FaceIdLoginPage(faceImage: faceImage, user: initialUser),
       },
     );
   }
@@ -109,18 +122,25 @@ class _MyHomePageState extends State<MyHomePage> {
         const SnackBar(content: Text('Valeur ajoutée à Firebase !')),
       );
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Erreur: $e')));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Erreur: $e')));
     }
   }
 
   Future<void> _removeValue() async {
     try {
-      await _firestore.collection('test_collection').doc('counter_doc').delete();
+      await _firestore
+          .collection('test_collection')
+          .doc('counter_doc')
+          .delete();
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Valeur supprimée de Firebase !')),
       );
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Erreur: $e')));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Erreur: $e')));
     }
   }
 
@@ -149,6 +169,16 @@ class _MyHomePageState extends State<MyHomePage> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: <Widget>[
+            ElevatedButton.icon(
+              icon: const Icon(Icons.add_business),
+              label: const Text("Go to Property List"),
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const ListingsPage()),
+                );
+              },
+            ),
             const Text('Counter:'),
             Text(
               '$_counter',
