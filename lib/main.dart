@@ -114,3 +114,25 @@ class _MyHomePageState extends State<MyHomePage> {
     );
   }
 }
+
+class Moon extends StatelessWidget {
+  const Moon({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 100,
+      height: 100,
+      decoration: const BoxDecoration(
+        shape: BoxShape.circle,
+        color: Colors.yellow,
+      ),
+      child: const Center(
+        child: Text(
+          '🌙',
+          style: TextStyle(fontSize: 40),
+        ),
+      ),
+    );
+  }
+}
