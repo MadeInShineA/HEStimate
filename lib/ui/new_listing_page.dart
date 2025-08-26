@@ -81,13 +81,15 @@ class _NewListingPageState extends State<NewListingPage> {
 
     try {
       final user = FirebaseAuth.instance.currentUser;
-      final ownerUid = user?.uid ?? "2";
+      if (user == null) {
+        throw Exception('User not authenticated');
+      }
 
       double parseD(String s) => double.parse(s.replaceAll(',', '.'));
       int parseI(String s) => int.parse(s);
 
       final data = <String, dynamic>{
-        'ownerUid': ownerUid,
+        'ownerUid': user.uid,
         'price': parseD(_priceCtrl.text),
         'city': _cityCtrl.text.trim(),
         'npa': _npaCtrl.text.trim(),
@@ -112,7 +114,7 @@ class _NewListingPageState extends State<NewListingPage> {
 
       if (_images.isNotEmpty) {
         final urls = await _repo.uploadListingImages(
-          ownerUid: ownerUid,
+          ownerUid: user.uid,
           listingId: listingId,
           files: _images,
         );
