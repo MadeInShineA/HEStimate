@@ -23,7 +23,6 @@ class _RegisterPageState extends State<RegisterPage> {
   String? _selectedSchool;
   List<String> _schools = [];
 
-  /// "student" ou "homeowner"
   String _role = "student";
 
   @override
@@ -71,7 +70,7 @@ class _RegisterPageState extends State<RegisterPage> {
         await FirebaseFirestore.instance.collection('users').doc(uid).set({
           'name': _nameCtrl.text.trim(),
           'email': _emailCtrl.text.trim(),
-          'role': _role, // <-- remplace isHes par role
+          'role': _role,
           'school': _role == "student" ? _selectedSchool : null,
           'createdAt': FieldValue.serverTimestamp(),
         });
@@ -139,14 +138,12 @@ class _RegisterPageState extends State<RegisterPage> {
     final theme = context.moonTheme;
     final primary = Theme.of(context).colorScheme.primary;
 
-    // Segments avec style (couleur sélection = couleur primaire, texte blanc)
     final segments = [
       Segment(
         label: const Text('Student'),
         segmentStyle: SegmentStyle(
           selectedSegmentColor: primary,
           selectedTextColor: Colors.white,
-          // textColor: Theme.of(context).colorScheme.onSurface, // optionnel
           segmentBorderRadius: BorderRadius.circular(12),
           segmentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         ),
@@ -262,7 +259,6 @@ class _RegisterPageState extends State<RegisterPage> {
                       ),
                       const SizedBox(height: 16),
 
-                      // Segmented control : pleine largeur, hauteur ~ bouton
                       SizedBox(
                         width: double.infinity,
                         height: 48,
@@ -317,7 +313,7 @@ class _RegisterPageState extends State<RegisterPage> {
                               )
                             : const SizedBox(
                                 key: ValueKey("empty"),
-                                height: 60, // même hauteur que le champ dropdown
+                                height: 60,
                               ),
                       ),
                       const SizedBox(height: 20),

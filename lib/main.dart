@@ -17,7 +17,6 @@ Future<void> main() async {
 
   final currentUser = FirebaseAuth.instance.currentUser;
 
-  // Vérification si Face ID est activé
   bool faceIdEnabled = false;
   File? faceImage;
 

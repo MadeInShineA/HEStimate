@@ -36,11 +36,9 @@ class _FaceIdLoginPageState extends State<FaceIdLoginPage> {
     setState(() => _isLoading = true);
 
     try {
-      // Image stockée depuis Profile
       final storedBytes = await widget.faceImage!.readAsBytes();
       final storedBase64 = base64Encode(storedBytes);
 
-      // Image prise à l’instant
       final takenBytes = await _selectedImage!.readAsBytes();
       final takenBase64 = base64Encode(takenBytes);
 
