@@ -195,7 +195,6 @@ class _FaceIdSetupPageState extends State<FaceIdSetupPage> {
                   ),
                   const SizedBox(height: 40),
                   
-                  // Zone d'affichage de l'image
                   Container(
                     height: 300,
                     decoration: BoxDecoration(
@@ -235,7 +234,6 @@ class _FaceIdSetupPageState extends State<FaceIdSetupPage> {
                   
                   const SizedBox(height: 24),
                   
-                  // Bouton pour ajouter/changer la photo
                   MoonFilledButton(
                     onTap: _isLoading ? null : _pickFaceImage,
                     label: Text(_faceImage != null ? 'Change Photo' : 'Add Face ID Photo'),
@@ -243,7 +241,6 @@ class _FaceIdSetupPageState extends State<FaceIdSetupPage> {
                   
                   const Spacer(),
                   
-                  // Boutons de navigation
                   if (_faceImage != null) ...[
                     MoonFilledButton(
                       onTap: _isLoading ? null : _enableFaceIdAndContinue,

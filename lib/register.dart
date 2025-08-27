@@ -79,7 +79,6 @@ class _RegisterPageState extends State<RegisterPage> {
 
       if (!mounted) return;
       _showToast(context, 'Welcome! Account created.');
-      // Rediriger vers la page de configuration Face ID au lieu de /home
       Navigator.of(context).pushReplacementNamed('/faceIdSetup');
     } on FirebaseAuthException catch (e) {
       final msg = switch (e.code) {
