@@ -1,10 +1,13 @@
 import 'dart:io';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:moon_design/moon_design.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:http/http.dart' as http;
+import 'loader.dart';
 
 class ProfilePage extends StatefulWidget {
   const ProfilePage({super.key});
@@ -89,95 +92,6 @@ class _ProfilePageState extends State<ProfilePage> {
     }
   }
 
-  Future<void> _pickFaceImage() async {
-    // Afficher un dialog pour choisir entre caméra et galerie
-    final ImageSource? source = await showModalBottomSheet<ImageSource>(
-      context: context,
-      builder: (BuildContext context) {
-        return SafeArea(
-          child: Wrap(
-            children: [
-              ListTile(
-                leading: const Icon(Icons.camera_alt),
-                title: const Text('Take Photo'),
-                onTap: () => Navigator.of(context).pop(ImageSource.camera),
-              ),
-              ListTile(
-                leading: const Icon(Icons.photo_library),
-                title: const Text('Select from Gallery'),
-                onTap: () => Navigator.of(context).pop(ImageSource.gallery),
-              ),
-            ],
-          ),
-        );
-      },
-    );
-
-    if (source != null) {
-      final picker = ImagePicker();
-      final XFile? image = await picker.pickImage(
-        source: source,
-        maxWidth: 600,
-        maxHeight: 600,
-      );
-      
-      if (image != null) {
-        try {
-          setState(() => _isLoading = true);
-          
-          final dir = await getApplicationDocumentsDirectory();
-          final savedImage = await File(image.path).copy('${dir.path}/face_id.png');
-          setState(() => _faceIdImage = savedImage);
-          
-          // CORRECTION: Mettre à jour faceIdEnabled dans Firestore
-          if (_user != null) {
-            await _firestore.collection('users').doc(_user!.uid).update({
-              'faceIdEnabled': true,
-            });
-            _userData?['faceIdEnabled'] = true;
-          }
-          
-          ScaffoldMessenger.of(context)
-              .showSnackBar(const SnackBar(content: Text('Face ID image saved')));
-        } catch (e) {
-          debugPrint('Error saving face image: $e');
-          ScaffoldMessenger.of(context)
-              .showSnackBar(const SnackBar(content: Text('Failed to save Face ID image')));
-        } finally {
-          setState(() => _isLoading = false);
-        }
-      }
-    }
-  }
-
-  Future<void> _removeFaceImage() async {
-    try {
-      setState(() => _isLoading = true);
-      
-      if (_faceIdImage != null && await _faceIdImage!.exists()) {
-        await _faceIdImage!.delete();
-      }
-      setState(() => _faceIdImage = null);
-      
-      // CORRECTION: Mettre à jour faceIdEnabled dans Firestore
-      if (_user != null) {
-        await _firestore.collection('users').doc(_user!.uid).update({
-          'faceIdEnabled': false,
-        });
-        _userData?['faceIdEnabled'] = false;
-      }
-      
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('Face ID disabled')));
-    } catch (e) {
-      debugPrint('Error removing face image: $e');
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('Failed to disable Face ID')));
-    } finally {
-      setState(() => _isLoading = false);
-    }
-  }
-
   Future<void> _saveUserData() async {
     if (_user == null) return;
     if (!_formKey.currentState!.validate()) return;
@@ -208,6 +122,21 @@ class _ProfilePageState extends State<ProfilePage> {
   Future<void> _signOut() async {
     await FirebaseAuth.instance.signOut();
     Navigator.of(context).pushReplacementNamed('/login');
+  }
+
+  void _openFaceIdConfig() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => FaceIdConfigPage(
+          faceImage: _faceIdImage,
+          userData: _userData,
+          onImageChanged: (file) {
+            setState(() => _faceIdImage = file);
+          },
+        ),
+      ),
+    );
+    await _loadFaceIdImage();
   }
 
   @override
@@ -258,23 +187,17 @@ class _ProfilePageState extends State<ProfilePage> {
                       ],
                     ),
                   const SizedBox(height: 16),
-
-                  MoonFilledButton(
-                    onTap: () async {
-                      if (_faceIdImage == null) {
-                        await _pickFaceImage();
-                      } else {
-                        await _removeFaceImage();
-                      }
-                    },
-                    label: Text(
-                        _faceIdImage == null ? 'Enable Face ID' : 'Disable Face ID'),
-                  ),
-                  const SizedBox(height: 16),
-                  MoonFilledButton(
-                    onTap: _signOut,
-                    label: const Text('Sign out'),
-                  ),
+                  if (!_isEditing) ...[
+                    MoonFilledButton(
+                      onTap: _openFaceIdConfig,
+                      label: const Text('Configure Face ID'),
+                    ),
+                    const SizedBox(height: 16),
+                    MoonFilledButton(
+                      onTap: _signOut,
+                      label: const Text('Sign out'),
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -300,7 +223,6 @@ class _ProfilePageState extends State<ProfilePage> {
           Text('School: ${_userData?['school'] ?? ''}',
               style: Theme.of(context).textTheme.titleMedium),
         const SizedBox(height: 8),
-        // AJOUT: Affichage du statut Face ID
         Text('Face ID: ${_userData?['faceIdEnabled'] == true ? 'Enabled' : 'Disabled'}',
             style: Theme.of(context).textTheme.titleMedium),
       ],
@@ -349,6 +271,181 @@ class _ProfilePageState extends State<ProfilePage> {
                 return null;
               },
             ),
+        ],
+      ),
+    );
+  }
+}
+
+/// ----------------- FaceIdConfigPage -----------------
+class FaceIdConfigPage extends StatefulWidget {
+  final File? faceImage;
+  final Function(File?) onImageChanged;
+  final Map<String, dynamic>? userData;
+
+  const FaceIdConfigPage({
+    super.key,
+    required this.faceImage,
+    required this.onImageChanged,
+    required this.userData,
+  });
+
+  @override
+  State<FaceIdConfigPage> createState() => _FaceIdConfigPageState();
+}
+
+class _FaceIdConfigPageState extends State<FaceIdConfigPage> {
+  bool _faceIdEnabled = false;
+  File? _faceImage;
+  bool _isLoading = false;
+  String _imageKey = DateTime.now().millisecondsSinceEpoch.toString();
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  final User? _user = FirebaseAuth.instance.currentUser;
+
+  @override
+  void initState() {
+    super.initState();
+    _faceImage = widget.faceImage;
+    _faceIdEnabled = widget.userData?['faceIdEnabled'] ?? false;
+  }
+
+  Future<String> _verifyFaceImage(File image) async {
+    try {
+      final bytes = await image.readAsBytes();
+      final base64Image = base64Encode(bytes);
+      final response = await http.post(
+        Uri.parse('https://hestimate-api-production.up.railway.app/verify'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'image': base64Image}),
+      );
+
+      debugPrint('Response body: ${response.body}');
+      final data = jsonDecode(response.body);
+      if (response.statusCode == 200) {
+        return data['success'] ==  true ? "success" : '';
+      }
+      return data['detail'];
+    } catch (e) {
+      debugPrint('Error verifying image: $e');
+      return "Server error during verification";
+    }
+  }
+
+  Future<void> _pickFaceImage() async {
+    final ImageSource? source = await showModalBottomSheet<ImageSource>(
+      context: context,
+      builder: (context) {
+        return SafeArea(
+          child: Wrap(
+            children: [
+              ListTile(
+                leading: const Icon(Icons.camera_alt),
+                title: const Text('Take Photo'),
+                onTap: () => Navigator.of(context).pop(ImageSource.camera),
+              ),
+              ListTile(
+                leading: const Icon(Icons.photo_library),
+                title: const Text('Select from Gallery'),
+                onTap: () => Navigator.of(context).pop(ImageSource.gallery),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+
+    if (source == null) return;
+
+    final picker = ImagePicker();
+    final XFile? image = await picker.pickImage(source: source, maxWidth: 600, maxHeight: 600);
+    if (image == null) return;
+
+    setState(() => _isLoading = true);
+
+    final result = await _verifyFaceImage(File(image.path));
+    if (result != 'success') {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Invalid face image. $result')));
+        setState(() => _isLoading = false);
+      }
+      return;
+    }
+
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final target = File('${dir.path}/face_id.png');
+      if (await target.exists()) await target.delete();
+      final savedImage = await File(image.path).copy('${dir.path}/face_id.png');
+
+      PaintingBinding.instance.imageCache.clear();
+      PaintingBinding.instance.imageCache.clearLiveImages();
+
+      setState(() {
+        _faceImage = savedImage;
+        _imageKey = DateTime.now().millisecondsSinceEpoch.toString();
+        _faceIdEnabled = true;
+      });
+
+      if (_user != null) {
+        await _firestore.collection('users').doc(_user!.uid).update({'faceIdEnabled': true});
+        widget.userData?['faceIdEnabled'] = true;
+      }
+
+      widget.onImageChanged(savedImage);
+
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('Face ID image updated successfully')));
+      }
+    } catch (e) {
+      debugPrint('Error saving face image: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('Failed to save Face ID image')));
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _toggleFaceId(bool value) async {
+    setState(() => _faceIdEnabled = value);
+    if (_user != null) {
+      await _firestore.collection('users').doc(_user!.uid).update({'faceIdEnabled': value});
+      widget.userData?['faceIdEnabled'] = value;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Configure Face ID')),
+      body: Stack(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                SwitchListTile(
+                  title: const Text('Enable Face ID'),
+                  value: _faceIdEnabled,
+                  onChanged: _toggleFaceId,
+                ),
+                const SizedBox(height: 16),
+                _faceImage != null
+                    ? Image.file(_faceImage!, key: ValueKey(_imageKey), height: 200)
+                    : const SizedBox(height: 200, child: Center(child: Text('No Face ID image'))),
+                const SizedBox(height: 16),
+                MoonFilledButton(
+                  onTap: _isLoading ? null : _pickFaceImage,
+                  label: Text(_faceImage != null ? 'Change Face ID Photo' : 'Add Face ID Photo'),
+                ),
+              ],
+            ),
+          ),
+          if (_isLoading) const FullScreenLoader(message: 'Saving Face ID image...'),
         ],
       ),
     );
