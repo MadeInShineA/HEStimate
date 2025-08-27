@@ -34,6 +34,7 @@ dependencies:
   firebase_auth: ^5.3.3
   cloud_firestore: ^5.5.0
   image_picker: ^1.1.2
+  path_provider: ^2.1.5
   moon_design:
     git:
       url: https://github.com/coingaming/moon_flutter.git
