@@ -23,7 +23,7 @@ class _ProfilePageState extends State<ProfilePage> {
   bool _isLoading = true;
 
   final _nameCtrl = TextEditingController();
-  bool _isHes = false;
+  String? _role;
   String? _school;
 
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -55,30 +55,41 @@ class _ProfilePageState extends State<ProfilePage> {
     if (_user == null) return;
 
     try {
-      final doc = await _firestore.collection('users').doc(_user!.uid).get();
+      final docRef = _firestore.collection('users').doc(_user!.uid);
+      final doc = await docRef.get();
       if (!doc.exists) {
         _userData = {
           'name': '',
-          'isHes': false,
+          'role': 'student',
           'school': null,
           'faceIdEnabled': false,
         };
-        await _firestore.collection('users').doc(_user!.uid).set(_userData!);
+        await docRef.set(_userData!);
       } else {
-        _userData = doc.data();
+        final data = doc.data()!;
+        // Migration: if there's no 'role' but there is 'isHes', infer role
+        if (!data.containsKey('role')) {
+          final bool isHes = data['isHes'] ?? false;
+          _role = isHes ? 'student' : 'homeowner';
+          await docRef.update({'role': _role});
+          data['role'] = _role;
+        }
+        _userData = data;
       }
 
       _nameCtrl.text = _userData?['name'] ?? '';
-      _isHes = _userData?['isHes'] ?? false;
+      _role = _userData?['role'] ?? 'homeowner';
       _school = _userData?['school'];
     } catch (e) {
       debugPrint('Error loading user data: $e');
       _userData = {
         'name': '',
-        'isHes': false,
+        'role': 'homeowner',
         'school': null,
         'faceIdEnabled': false,
       };
+      _role = 'homeowner';
+      _school = null;
     } finally {
       setState(() => _isLoading = false);
     }
@@ -98,15 +109,14 @@ class _ProfilePageState extends State<ProfilePage> {
 
     setState(() => _isLoading = true);
     try {
+      // Only update mutable fields: name and school (school only if role == 'student')
       await _firestore.collection('users').doc(_user!.uid).update({
         'name': _nameCtrl.text.trim(),
-        'isHes': _isHes,
-        'school': _isHes ? _school : null,
+        'school': _role == 'student' ? _school : null,
       });
       setState(() {
         _userData?['name'] = _nameCtrl.text.trim();
-        _userData?['isHes'] = _isHes;
-        _userData?['school'] = _isHes ? _school : null;
+        _userData?['school'] = _role == 'student' ? _school : null;
         _isEditing = false;
       });
     } catch (e) {
@@ -121,7 +131,7 @@ class _ProfilePageState extends State<ProfilePage> {
 
   Future<void> _signOut() async {
     await FirebaseAuth.instance.signOut();
-    Navigator.of(context).pushReplacementNamed('/login');
+    Navigator.of(context).pushNamedAndRemoveUntil('/login', (route) => false);
   }
 
   void _openFaceIdConfig() async {
@@ -217,9 +227,9 @@ class _ProfilePageState extends State<ProfilePage> {
         Text('Email: ${_user?.email ?? ''}',
             style: Theme.of(context).textTheme.titleMedium),
         const SizedBox(height: 8),
-        Text('Student at HES: ${_userData?['isHes'] == true ? 'Yes' : 'No'}',
+        Text('Role: ${_userData?['role'] ?? 'homeowner'}',
             style: Theme.of(context).textTheme.titleMedium),
-        if (_userData?['isHes'] == true)
+        if (_userData?['role'] == 'student')
           Text('School: ${_userData?['school'] ?? ''}',
               style: Theme.of(context).textTheme.titleMedium),
         const SizedBox(height: 8),
@@ -244,16 +254,16 @@ class _ProfilePageState extends State<ProfilePage> {
             },
           ),
           const SizedBox(height: 12),
+          // Role is NOT editable here; display as readonly text
           Row(
             children: [
-              Checkbox(
-                value: _isHes,
-                onChanged: (v) => setState(() => _isHes = v ?? false),
-              ),
-              const Text('I am a student at HES'),
+              const Text('Role: ', style: TextStyle(fontWeight: FontWeight.w600)),
+              Text(_role ?? 'homeowner'),
             ],
           ),
-          if (_isHes)
+          const SizedBox(height: 12),
+          // If the role is student, allow selecting the school
+          if (_role == 'student')
             DropdownButtonFormField<String>(
               value: _school,
               hint: const Text('Select your school'),
@@ -265,7 +275,7 @@ class _ProfilePageState extends State<ProfilePage> {
                   .toList(),
               onChanged: (v) => setState(() => _school = v),
               validator: (v) {
-                if (_isHes && (v == null || v.isEmpty)) {
+                if (_role == 'student' && (v == null || v.isEmpty)) {
                   return 'Please select your school';
                 }
                 return null;
@@ -417,6 +427,40 @@ class _FaceIdConfigPageState extends State<FaceIdConfigPage> {
     }
   }
 
+  Future<void> _removeFaceImage() async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final file = File('${dir.path}/face_id.png');
+      if (await file.exists()) {
+        await file.delete();
+      }
+
+      setState(() {
+        _faceImage = null;
+        _faceIdEnabled = false;
+        _imageKey = DateTime.now().millisecondsSinceEpoch.toString();
+      });
+
+      if (_user != null) {
+        await _firestore.collection('users').doc(_user!.uid).update({'faceIdEnabled': false});
+        widget.userData?['faceIdEnabled'] = false;
+      }
+
+      widget.onImageChanged(null);
+
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('Face ID photo removed successfully')));
+      }
+    } catch (e) {
+      debugPrint('Error removing face image: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('Failed to remove Face ID photo')));
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -434,18 +478,64 @@ class _FaceIdConfigPageState extends State<FaceIdConfigPage> {
                   onChanged: _toggleFaceId,
                 ),
                 const SizedBox(height: 16),
+                // Image avec effet grisé/flou si Face ID désactivé
                 _faceImage != null
-                    ? Image.file(_faceImage!, key: ValueKey(_imageKey), height: 200)
-                    : const SizedBox(height: 200, child: Center(child: Text('No Face ID image'))),
+                    ? ClipRRect(
+                        borderRadius: BorderRadius.circular(8),
+                        child: ColorFiltered(
+                          colorFilter: _faceIdEnabled
+                              ? const ColorFilter.mode(Colors.transparent, BlendMode.multiply)
+                              : const ColorFilter.mode(Colors.grey, BlendMode.saturation),
+                          child: Opacity(
+                            opacity: _faceIdEnabled ? 1.0 : 0.5,
+                            child: Image.file(
+                              _faceImage!,
+                              key: ValueKey(_imageKey),
+                              fit: BoxFit.contain,
+                            ),
+                          ),
+                        ),
+                      )
+                    : Container(
+                        height: 200,
+                        decoration: BoxDecoration(
+                          color: Colors.grey.shade200,
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: const Center(
+                          child: Text(
+                            'No Face ID image',
+                            style: TextStyle(color: Colors.grey),
+                          ),
+                        ),
+                      ),
                 const SizedBox(height: 16),
+                // Bouton Add/Change Photo (désactivé si Face ID désactivé)
                 MoonFilledButton(
-                  onTap: _isLoading ? null : _pickFaceImage,
-                  label: Text(_faceImage != null ? 'Change Face ID Photo' : 'Add Face ID Photo'),
+                  onTap: (_isLoading || !_faceIdEnabled) ? null : _pickFaceImage,
+                  backgroundColor: (_faceIdEnabled) ? null : Colors.grey.shade300,
+                  label: Text(
+                    _faceImage != null ? 'Change Face ID Photo' : 'Add Face ID Photo',
+                    style: TextStyle(
+                      color: _faceIdEnabled ? null : Colors.grey.shade600,
+                    ),
+                  ),
                 ),
+                const SizedBox(height: 12),
+                // Bouton Remove Photo (rouge, toujours activé s'il y a une photo)
+                if (_faceImage != null)
+                  MoonFilledButton(
+                    onTap: _isLoading ? null : _removeFaceImage,
+                    backgroundColor: Colors.red,
+                    label: const Text(
+                      'Remove Photo',
+                      style: TextStyle(color: Colors.white),
+                    ),
+                  ),
               ],
             ),
           ),
-          if (_isLoading) const FullScreenLoader(message: 'Saving Face ID image...'),
+          if (_isLoading) const FullScreenLoader(message: 'Processing Face ID...'),
         ],
       ),
     );

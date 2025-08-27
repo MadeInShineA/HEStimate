@@ -9,6 +9,7 @@ import 'register.dart';
 import 'login.dart';
 import 'profile.dart';
 import 'faceIdLogin.dart';
+import 'faceIdSetup.dart'; // Import de la nouvelle page
 import 'package:moon_design/moon_design.dart';
 
 Future<void> main() async {
@@ -77,6 +78,7 @@ class MyApp extends StatelessWidget {
       routes: {
         '/login': (context) => LoginPage(faceImage: faceImage),
         '/register': (context) => const RegisterPage(),
+        '/faceIdSetup': (context) => const FaceIdSetupPage(), // Nouvelle route
         '/home': (context) => const MyHomePage(title: 'Firebase Test Home Page'),
         '/profile': (context) => const ProfilePage(),
         '/faceLogin': (context) => FaceIdLoginPage(faceImage: faceImage, user: initialUser),

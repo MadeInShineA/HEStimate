@@ -72,13 +72,15 @@ class _RegisterPageState extends State<RegisterPage> {
           'email': _emailCtrl.text.trim(),
           'role': _role,
           'school': _role == "student" ? _selectedSchool : null,
+          'faceIdEnabled': false, // Par défaut désactivé
           'createdAt': FieldValue.serverTimestamp(),
         });
       }
 
       if (!mounted) return;
       _showToast(context, 'Welcome! Account created.');
-      Navigator.of(context).pushReplacementNamed('/home');
+      // Rediriger vers la page de configuration Face ID au lieu de /home
+      Navigator.of(context).pushReplacementNamed('/faceIdSetup');
     } on FirebaseAuthException catch (e) {
       final msg = switch (e.code) {
         'email-already-in-use' => 'That email is already in use.',
