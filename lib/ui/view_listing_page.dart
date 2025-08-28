@@ -3,9 +3,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-
 import 'package:moon_design/moon_design.dart';
-import 'package:moon_icons/moon_icons.dart';
 
 import 'edit_listing_page.dart';
 
@@ -21,7 +19,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
   bool _loading = true;
   String? _error;
 
-  // Données de l’annonce
+  // Données
   String _ownerUid = '';
   String _address = '';
   String _city = '';
@@ -43,14 +41,16 @@ class _ViewListingPageState extends State<ViewListingPage> {
   String? _nearestHesId;
 
   DateTime? _availStart;
-  DateTime? _availEnd; // si null => pas de fin
+  DateTime? _availEnd;
   List<String> _photos = [];
 
   // Calendrier
   DateTime _shownMonth = _monthDate(DateTime.now());
-
   static DateTime _monthDate(DateTime d) => DateTime(d.year, d.month);
   DateTime _dateOnly(DateTime d) => DateTime(d.year, d.month, d.day);
+
+  // Carrousel
+  late final PageController _photoCtrl;
 
   bool get _isOwner =>
       FirebaseAuth.instance.currentUser?.uid != null &&
@@ -59,7 +59,14 @@ class _ViewListingPageState extends State<ViewListingPage> {
   @override
   void initState() {
     super.initState();
+    _photoCtrl = PageController(viewportFraction: 0.92);
     _load();
+  }
+
+  @override
+  void dispose() {
+    _photoCtrl.dispose();
+    super.dispose();
   }
 
   Future<void> _load() async {
@@ -94,7 +101,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
       _chargesIncl = (m['charges_incl'] ?? false) as bool;
       _carPark = (m['car_park'] ?? false) as bool;
 
-      _type = (m['type'] ?? 'room').toString();
+      _type = (m['type'] ?? 'room').toString().trim();
       _distTransportKm = (m['dist_public_transport_km'] as num?)?.toDouble();
 
       _latitude = (m['latitude'] as num?)?.toDouble();
@@ -105,17 +112,14 @@ class _ViewListingPageState extends State<ViewListingPage> {
       final tsStart = m['availability_start'] as Timestamp?;
       final tsEnd = m['availability_end'] as Timestamp?;
       _availStart = tsStart?.toDate();
-      _availEnd = tsEnd?.toDate(); // si null => dispo après start indéfiniment
+      _availEnd = tsEnd?.toDate();
 
       final List photos = (m['photos'] as List?) ?? const [];
       _photos = photos.map((e) => e.toString()).toList();
 
       setState(() {
         _loading = false;
-        // Si la période affichée n'inclut pas start, on se place sur le mois de start
-        if (_availStart != null) {
-          _shownMonth = _monthDate(_availStart!);
-        }
+        if (_availStart != null) _shownMonth = _monthDate(_availStart!);
       });
     } catch (e) {
       setState(() {
@@ -125,14 +129,12 @@ class _ViewListingPageState extends State<ViewListingPage> {
     }
   }
 
-  // ───────────── CALENDRIER ─────────────
+  // Calendrier
   bool _isAvailableOn(DateTime day) {
     if (_availStart == null) return false;
     final d = _dateOnly(day);
     final start = _dateOnly(_availStart!);
-    if (_availEnd == null) {
-      return !d.isBefore(start);
-    }
+    if (_availEnd == null) return !d.isBefore(start);
     final end = _dateOnly(_availEnd!);
     return !d.isBefore(start) && !d.isAfter(end);
   }
@@ -152,13 +154,10 @@ class _ViewListingPageState extends State<ViewListingPage> {
     final firstOfMonth = DateTime(_shownMonth.year, _shownMonth.month, 1);
     final int daysInMonth = DateTime(_shownMonth.year, _shownMonth.month + 1, 0).day;
 
-    // En Flutter, Monday=1..Sunday=7, on veut une grille L->D
-    final int weekdayStart = firstOfMonth.weekday; // 1..7 (1 = Monday)
-    final int leadingEmpty = weekdayStart - 1; // nb de cases avant le 1er
-
+    final int weekdayStart = firstOfMonth.weekday; // 1..7 (Mon..Sun)
+    final int leadingEmpty = weekdayStart - 1;
     final items = <Widget>[];
 
-    // En-têtes jours
     const names = ['L', 'M', 'M', 'J', 'V', 'S', 'D'];
     items.addAll(names.map((n) {
       return Center(
@@ -170,14 +169,12 @@ class _ViewListingPageState extends State<ViewListingPage> {
           ),
         ),
       );
-    }).toList());
+    }));
 
-    // Cases vides avant le 1
     for (var i = 0; i < leadingEmpty; i++) {
       items.add(const SizedBox.shrink());
     }
 
-    // Jours du mois
     for (var day = 1; day <= daysInMonth; day++) {
       final date = DateTime(_shownMonth.year, _shownMonth.month, day);
       final available = _isAvailableOn(date);
@@ -207,7 +204,6 @@ class _ViewListingPageState extends State<ViewListingPage> {
     return items;
   }
 
-  // ───────────── UI ─────────────
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
@@ -235,11 +231,11 @@ class _ViewListingPageState extends State<ViewListingPage> {
             IconButton(
               tooltip: 'Edit',
               onPressed: () {
-                Navigator.of(context).push(
-                  MaterialPageRoute(
-                    builder: (_) => EditListingPage(listingId: widget.listingId),
-                  ),
-                ).then((_) => _load()); // rechargement au retour
+                Navigator.of(context)
+                    .push(MaterialPageRoute(
+                      builder: (_) => EditListingPage(listingId: widget.listingId),
+                    ))
+                    .then((_) => _load());
               },
               icon: const Icon(Icons.edit_outlined),
             ),
@@ -258,18 +254,24 @@ class _ViewListingPageState extends State<ViewListingPage> {
               : LayoutBuilder(
                   builder: (context, constraints) {
                     final isWide = constraints.maxWidth >= 900;
-                    final contentMax = 1000.0;
+                    const contentMax = 1000.0;
+
+                    // ❗ Fix: ne jamais produire un padding négatif
+                    final horizontalPad = math.max(
+                      16.0,
+                      (constraints.maxWidth - contentMax) / 2 + 16.0,
+                    );
 
                     return Container(
                       decoration: bg,
                       child: SingleChildScrollView(
                         padding: EdgeInsets.symmetric(
-                          horizontal: isWide ? (constraints.maxWidth - contentMax) / 2 + 16 : 16,
-                          vertical: 16,
+                          horizontal: isWide ? horizontalPad : 16.0,
+                          vertical: 16.0,
                         ),
                         child: Center(
                           child: ConstrainedBox(
-                            constraints: BoxConstraints(maxWidth: contentMax),
+                            constraints: const BoxConstraints(maxWidth: contentMax),
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.stretch,
                               children: [
@@ -285,9 +287,9 @@ class _ViewListingPageState extends State<ViewListingPage> {
                                       : SizedBox(
                                           height: 220,
                                           child: PageView.builder(
-                                            itemCount: _photos.length,
-                                            controller: PageController(viewportFraction: .92),
+                                            controller: _photoCtrl,
                                             padEnds: false,
+                                            itemCount: _photos.length,
                                             itemBuilder: (_, i) {
                                               return Padding(
                                                 padding: const EdgeInsets.symmetric(horizontal: 6),
@@ -296,10 +298,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
                                                   child: Stack(
                                                     fit: StackFit.expand,
                                                     children: [
-                                                      Image.network(
-                                                        _photos[i],
-                                                        fit: BoxFit.cover,
-                                                      ),
+                                                      Image.network(_photos[i], fit: BoxFit.cover),
                                                       Positioned(
                                                         right: 8,
                                                         bottom: 8,
@@ -401,7 +400,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
                                       Row(
                                         mainAxisSize: MainAxisSize.min,
                                         children: [
-                                          Icon(MoonIcons.arrows_cross_lines_24_regular, size: 20, color: cs.primary),
+                                          const Icon(Icons.tune, size: 20),
                                           const SizedBox(width: 8),
                                           Text('Amenities', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: cs.onSurface)),
                                         ],
@@ -435,12 +434,9 @@ class _ViewListingPageState extends State<ViewListingPage> {
                                           Row(
                                             mainAxisSize: MainAxisSize.min,
                                             children: [
-                                              Icon(MoonIcons.time_calendar_24_regular, size: 20, color: cs.primary),
+                                              const Icon(Icons.calendar_today_outlined, size: 20),
                                               const SizedBox(width: 8),
-                                              Text(
-                                                'Availability',
-                                                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: cs.onSurface),
-                                              ),
+                                              Text('Availability', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: cs.onSurface)),
                                             ],
                                           ),
                                           Row(
@@ -468,10 +464,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
                                       ),
                                       const SizedBox(height: 6),
                                       if (_availStart == null)
-                                        Text(
-                                          'No availability information.',
-                                          style: TextStyle(color: cs.onSurface.withOpacity(.7)),
-                                        )
+                                        Text('No availability information.', style: TextStyle(color: cs.onSurface.withOpacity(.7)))
                                       else ...[
                                         GridView.count(
                                           shrinkWrap: true,
@@ -509,7 +502,6 @@ class _ViewListingPageState extends State<ViewListingPage> {
 
                                 const SizedBox(height: 24),
 
-                                // Bouton Edit en pied de page (optionnel si owner)
                                 if (_isOwner)
                                   MoonFilledButton(
                                     isFullWidth: true,
@@ -545,7 +537,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
       decoration: BoxDecoration(
         color: Theme.of(context).cardColor.withOpacity(.9),
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: cs.primary.withOpacity(.12)),
+        border: Border.all(color: cs.primary.withOpacity(0.12)),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -580,7 +572,6 @@ class _ViewListingPageState extends State<ViewListingPage> {
   }
 }
 
-// Petit conteneur homogène (reprend le style Moon de tes autres pages)
 class _MoonCard extends StatelessWidget {
   final Widget child;
   final bool isDark;
