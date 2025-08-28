@@ -332,7 +332,7 @@ class _FaceIdConfigPageState extends State<FaceIdConfigPage> {
       debugPrint('Response body: ${response.body}');
       final data = jsonDecode(response.body);
       if (response.statusCode == 200) {
-        return data['success'] ==  true ? "success" : '';
+        return data['success'] == true ? "success" : '';
       }
       return data['detail'];
     } catch (e) {
@@ -420,10 +420,123 @@ class _FaceIdConfigPageState extends State<FaceIdConfigPage> {
   }
 
   Future<void> _toggleFaceId(bool value) async {
-    setState(() => _faceIdEnabled = value);
-    if (_user != null) {
-      await _firestore.collection('users').doc(_user!.uid).update({'faceIdEnabled': value});
-      widget.userData?['faceIdEnabled'] = value;
+    // Si l'utilisateur active Face ID et qu'il n'y a pas de photo
+    if (value && _faceImage == null) {
+      // Demander directement de prendre une photo
+      final ImageSource? source = await showModalBottomSheet<ImageSource>(
+        context: context,
+        isDismissible: false, // Empêche la fermeture en tapant à côté
+        enableDrag: false, // Empêche la fermeture en glissant
+        builder: (context) {
+          return WillPopScope(
+            onWillPop: () async => false, // Empêche le retour avec le bouton back
+            child: SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text(
+                      'Face ID Photo Required',
+                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 8),
+                    const Text(
+                      'To enable Face ID, you need to add a photo. Please choose an option:',
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 16),
+                    ListTile(
+                      leading: const Icon(Icons.camera_alt),
+                      title: const Text('Take Photo'),
+                      onTap: () => Navigator.of(context).pop(ImageSource.camera),
+                    ),
+                    ListTile(
+                      leading: const Icon(Icons.photo_library),
+                      title: const Text('Select from Gallery'),
+                      onTap: () => Navigator.of(context).pop(ImageSource.gallery),
+                    ),
+                    const SizedBox(height: 8),
+                    TextButton(
+                      onPressed: () => Navigator.of(context).pop(null),
+                      child: const Text('Cancel'),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          );
+        },
+      );
+
+      // Si l'utilisateur a annulé, on ne change pas l'état du switch
+      if (source == null) {
+        return; // Le switch reste à false
+      }
+
+      // L'utilisateur a choisi une source, on procède à la prise de photo
+      final picker = ImagePicker();
+      final XFile? image = await picker.pickImage(source: source, maxWidth: 600, maxHeight: 600);
+      
+      // Si l'utilisateur a annulé la prise de photo
+      if (image == null) {
+        return; // Le switch reste à false
+      }
+
+      setState(() => _isLoading = true);
+
+      final result = await _verifyFaceImage(File(image.path));
+      if (result != 'success') {
+        if (mounted) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(SnackBar(content: Text('Invalid face image. $result')));
+          setState(() => _isLoading = false);
+        }
+        return; // Le switch reste à false
+      }
+
+      try {
+        final dir = await getApplicationDocumentsDirectory();
+        final target = File('${dir.path}/face_id.png');
+        if (await target.exists()) await target.delete();
+        final savedImage = await File(image.path).copy('${dir.path}/face_id.png');
+
+        PaintingBinding.instance.imageCache.clear();
+        PaintingBinding.instance.imageCache.clearLiveImages();
+
+        setState(() {
+          _faceImage = savedImage;
+          _imageKey = DateTime.now().millisecondsSinceEpoch.toString();
+          _faceIdEnabled = true; // Active Face ID seulement si la photo est sauvegardée avec succès
+        });
+
+        if (_user != null) {
+          await _firestore.collection('users').doc(_user!.uid).update({'faceIdEnabled': true});
+          widget.userData?['faceIdEnabled'] = true;
+        }
+
+        widget.onImageChanged(savedImage);
+
+        if (mounted) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(const SnackBar(content: Text('Face ID enabled and image saved successfully')));
+        }
+      } catch (e) {
+        debugPrint('Error saving face image: $e');
+        if (mounted) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(const SnackBar(content: Text('Failed to save Face ID image')));
+        }
+      } finally {
+        if (mounted) setState(() => _isLoading = false);
+      }
+    } else {
+      // Cas normal : désactivation ou activation avec photo existante
+      setState(() => _faceIdEnabled = value);
+      if (_user != null) {
+        await _firestore.collection('users').doc(_user!.uid).update({'faceIdEnabled': value});
+        widget.userData?['faceIdEnabled'] = value;
+      }
     }
   }
 
@@ -472,6 +585,14 @@ class _FaceIdConfigPageState extends State<FaceIdConfigPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
+                Center(
+                  child: Icon(
+                    Icons.face_retouching_natural,
+                    size: 80,
+                    color: context.moonTheme?.tokens.colors.piccolo,
+                  ),
+                ),
+                const SizedBox(height: 24),
                 SwitchListTile(
                   title: const Text('Enable Face ID'),
                   value: _faceIdEnabled,
@@ -480,18 +601,24 @@ class _FaceIdConfigPageState extends State<FaceIdConfigPage> {
                 const SizedBox(height: 16),
                 // Image avec effet grisé/flou si Face ID désactivé
                 _faceImage != null
-                    ? ClipRRect(
-                        borderRadius: BorderRadius.circular(8),
-                        child: ColorFiltered(
-                          colorFilter: _faceIdEnabled
-                              ? const ColorFilter.mode(Colors.transparent, BlendMode.multiply)
-                              : const ColorFilter.mode(Colors.grey, BlendMode.saturation),
-                          child: Opacity(
-                            opacity: _faceIdEnabled ? 1.0 : 0.5,
-                            child: Image.file(
-                              _faceImage!,
-                              key: ValueKey(_imageKey),
-                              fit: BoxFit.contain,
+                    ? Container(
+                        constraints: const BoxConstraints(
+                          maxHeight: 300,
+                          maxWidth: 300,
+                        ),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(8),
+                          child: ColorFiltered(
+                            colorFilter: _faceIdEnabled
+                                ? const ColorFilter.mode(Colors.transparent, BlendMode.multiply)
+                                : const ColorFilter.mode(Colors.grey, BlendMode.saturation),
+                            child: Opacity(
+                              opacity: _faceIdEnabled ? 1.0 : 0.5,
+                              child: Image.file(
+                                _faceImage!,
+                                key: ValueKey(_imageKey),
+                                fit: BoxFit.contain,
+                              ),
                             ),
                           ),
                         ),
