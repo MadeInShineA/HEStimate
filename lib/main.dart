@@ -5,6 +5,9 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:path_provider/path_provider.dart';
 import 'firebase_options.dart';
+import 'ui/new_listing_page.dart'; // <-- ajoute ton chemin réel
+
+// import 'login.dart'; 
 import 'ui/register.dart';
 import 'ui/login.dart';
 import 'ui/profile.dart';
@@ -149,6 +152,17 @@ class _MyHomePageState extends State<MyHomePage> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: <Widget>[
+            ElevatedButton.icon(
+              icon: const Icon(Icons.add_business),
+              label: const Text("Go to New Listing"),
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const NewListingPage()),
+                );
+              },
+            ),
+
             const Text('Counter:'),
             Text(
               '$_counter',
