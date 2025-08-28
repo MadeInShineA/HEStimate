@@ -93,9 +93,7 @@ class _NewListingPageState extends State<NewListingPage> {
     super.dispose();
   }
 
-  // ─────────────────────────────────────────────────────────────────────────────
   // Address suggestions (Nominatim) with debounce
-  // ─────────────────────────────────────────────────────────────────────────────
   void _onAddressChanged() {
     _addrDebounce?.cancel();
     _addrDebounce = Timer(const Duration(milliseconds: 350), () async {
@@ -162,7 +160,7 @@ class _NewListingPageState extends State<NewListingPage> {
   }
 
   void _applySuggestion(_AddressSuggestion s) {
-    _addressCtrl.text = s.displayName.split(',').first; // street + number (best effort)
+    _addressCtrl.text = s.displayName.split(',').first;
     if (s.city.isNotEmpty) _cityCtrl.text = s.city;
     if (s.postcode.isNotEmpty) _npaCtrl.text = s.postcode;
     _geoLat = s.lat!;
@@ -170,9 +168,7 @@ class _NewListingPageState extends State<NewListingPage> {
     setState(() => _addressSuggestions = []);
   }
 
-  // ─────────────────────────────────────────────────────────────────────────────
   // Image pick
-  // ─────────────────────────────────────────────────────────────────────────────
   Future<void> _pickImages() async {
     final picked = await _picker.pickMultiImage(imageQuality: 85);
     if (picked.isNotEmpty) {
@@ -184,9 +180,7 @@ class _NewListingPageState extends State<NewListingPage> {
     }
   }
 
-  // ─────────────────────────────────────────────────────────────────────────────
   // Geocoding (OpenStreetMap Nominatim)
-  // ─────────────────────────────────────────────────────────────────────────────
   Future<({double lat, double lng})> _geocodeAddress({
     required String address,
     required String city,
@@ -222,13 +216,11 @@ class _NewListingPageState extends State<NewListingPage> {
     return (lat: lat, lng: lng);
   }
 
-  // ─────────────────────────────────────────────────────────────────────────────
   // Schools fetching + distance computation (Haversine)
   // Firestore collection expected: "schools" with fields:
   // - name: String
   // - latitude: double
   // - longitude: double
-  // ─────────────────────────────────────────────────────────────────────────────
   Future<List<_School>> _fetchSchools() async {
     final snap = await FirebaseFirestore.instance.collection('schools').get();
     return snap.docs.map((d) {
@@ -280,9 +272,7 @@ class _NewListingPageState extends State<NewListingPage> {
     return (km: bestKm ?? double.nan, id: best?.id ?? '');
   }
 
-  // ─────────────────────────────────────────────────────────────────────────────
   // Availability pickers
-  // ─────────────────────────────────────────────────────────────────────────────
   DateTime get _todayDateOnly {
     final now = DateTime.now();
     return DateTime(now.year, now.month, now.day);
@@ -326,14 +316,12 @@ class _NewListingPageState extends State<NewListingPage> {
     }
   }
 
-  // ─────────────────────────────────────────────────────────────────────────────
   // Save flow:
   // 1) Validate availability
   // 2) Geocode address -> lat/lng (unless already from suggestion)
   // 3) Compute nearest school
   // 4) Save listing (with availability_start & availability_end)
   // 5) Upload images
-  // ─────────────────────────────────────────────────────────────────────────────
   Future<void> _save() async {
     if (!_formKey.currentState!.validate()) return;
 
@@ -378,13 +366,23 @@ class _NewListingPageState extends State<NewListingPage> {
       _proximHesKm = nearest.km;
       _nearestHesId = nearest.id;
 
+
       double parseD(String s) => double.parse(s.replaceAll(',', '.'));
       int parseI(String s) => int.parse(s);
 
+      final price = parseD(_priceCtrl.text);
+      if (price < 0) {
+        setState(() {
+          _saving = false;
+          _error = 'Price cannot be negative';
+        });
+        return;
+      }
+    
       // 3) Build Firestore data
       final data = <String, dynamic>{
         'ownerUid': user.uid,
-        'price': parseD(_priceCtrl.text),
+        'price': price,
         'address': _addressCtrl.text.trim(),
         'city': _cityCtrl.text.trim(),
         'npa': _npaCtrl.text.trim(),
@@ -415,7 +413,7 @@ class _NewListingPageState extends State<NewListingPage> {
       // 4) Create listing
       final listingId = await _repo.createListing(data);
 
-      // 5) Upload images (optional)
+      // 5) Upload images (not working now)
       if (_images.isNotEmpty) {
         final urls = await _repo.uploadListingImages(
           ownerUid: user.uid,
@@ -540,7 +538,6 @@ class _NewListingPageState extends State<NewListingPage> {
                                 Row(
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
-                                    // Remplacement d'icône Moon "safe"
                                     Icon(MoonIcons.arrows_boost_24_regular,
                                         size: 20, color: cs.primary),
                                     const SizedBox(width: 8),
@@ -568,7 +565,13 @@ class _NewListingPageState extends State<NewListingPage> {
                                         hint: 'Price (CHF)',
                                         keyboardType: TextInputType.number,
                                         leading: const Icon(MoonIcons.arrows_boost_24_regular),
-                                        validator: (v) => (v == null || v.isEmpty) ? 'Required' : null,
+                                        validator: (v) {
+                                          if (v == null || v.isEmpty) return 'Required';
+                                          final value = double.tryParse(v.replaceAll(',', '.'));
+                                          if (value == null) return 'Invalid number';
+                                          if (value < 0) return 'Price cannot be negative';
+                                          return null;
+                                        },
                                         textAlign: TextAlign.center,
                                       ),
                                     ),
@@ -803,7 +806,7 @@ class _NewListingPageState extends State<NewListingPage> {
                                 ),
                                 const SizedBox(height: 12),
 
-                                // Start & End date pickers (more visible)
+                                // Start & End date pickers
                                 Wrap(
                                   alignment: WrapAlignment.center,
                                   spacing: 12,
@@ -958,7 +961,7 @@ class _NewListingPageState extends State<NewListingPage> {
   }
 }
 
-// Card container Moon-like (opacité en dark)
+// Card container
 class _MoonCard extends StatelessWidget {
   final Widget child;
   final bool isDark;
@@ -979,7 +982,6 @@ class _MoonCard extends StatelessWidget {
   }
 }
 
-// Label + MoonSwitch line item
 class _AmenitySwitch extends StatelessWidget {
   final String title;
   final bool value;
@@ -1017,7 +1019,7 @@ class _AmenitySwitch extends StatelessWidget {
   }
 }
 
-// Simple models
+// Models
 class _School {
   final String id;
   final String name;
