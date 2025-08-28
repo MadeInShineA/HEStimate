@@ -7,7 +7,7 @@ import 'property_list.dart';
 import 'new_listing_page.dart';
 import 'profile.dart';
 import 'about_page.dart';
-import 'home.dart'; // <-- DashboardPage is now in its own file
+import 'home.dart'; // DashboardPage lives here
 
 /// Pages add this mixin to provide menu metadata while staying Stateless/Stateful.
 mixin MenuPageMeta {
@@ -17,16 +17,18 @@ mixin MenuPageMeta {
 }
 
 /// Adaptive Moon-flavored menu container:
-/// - Compact (phones): AppBar + Drawer + Bottom NavigationBar
-/// - Wide (tablets/desktop): NavigationRail + AppBar
+/// - Phones & Tablets: AppBar + Drawer + Bottom NavigationBar
+/// - Desktop (wide screens): Purple NavigationRail + AppBar
 class MoonMenuShell extends StatefulWidget {
   final List<Widget> pages; // Widgets that also mix in MenuPageMeta
   final int initialIndex; // starting tab
   final String? title; // null => current tab label
   final List<Widget>? actions; // extra AppBar actions
   final FloatingActionButton? fab;
-  final double compactBreakpoint; // < => phone
-  final double expandedBreakpoint; // >= => extended rail
+
+  /// We treat widths < desktopBreakpoint as "compact" (phone-style UI).
+  /// This keeps tablets looking like phones, as requested.
+  final double desktopBreakpoint; // >= => desktop rail
   final VoidCallback? onToggleTheme; // top-right theme toggle
 
   const MoonMenuShell({
@@ -36,8 +38,7 @@ class MoonMenuShell extends StatefulWidget {
     this.title,
     this.actions,
     this.fab,
-    this.compactBreakpoint = 700,
-    this.expandedBreakpoint = 1100,
+    this.desktopBreakpoint = 1100, // phone/tablet below this, desktop at/above
     this.onToggleTheme,
   });
 
@@ -77,8 +78,7 @@ class _MoonMenuShellState extends State<MoonMenuShell> {
   @override
   Widget build(BuildContext context) {
     final width = MediaQuery.sizeOf(context).width;
-    final isCompact = width < widget.compactBreakpoint;
-    final isExpanded = width >= widget.expandedBreakpoint;
+    final isDesktop = width >= widget.desktopBreakpoint; // desktop only here
 
     // Get Moon tokens via ThemeExtension (fallback to light tokens)
     final moon = Theme.of(context).extension<MoonTheme>();
@@ -91,8 +91,8 @@ class _MoonMenuShellState extends State<MoonMenuShell> {
       child: widget.pages[_index],
     );
 
-    if (isCompact) {
-      // PHONE: AppBar + Drawer + Bottom NavigationBar
+    if (!isDesktop) {
+      // PHONE & TABLET: AppBar + Drawer + Bottom NavigationBar
       return Scaffold(
         appBar: AppBar(
           title: Text(widget.title ?? current.menuLabel),
@@ -155,28 +155,29 @@ class _MoonMenuShellState extends State<MoonMenuShell> {
       );
     }
 
-    // TABLET/DESKTOP: NavigationRail + AppBar
+    // DESKTOP: Purple NavigationRail + AppBar
     return Scaffold(
       body: Row(
         children: [
           SafeArea(
             child: NavigationRail(
-              backgroundColor: tokens.colors.goku,
+              backgroundColor: tokens.colors.piccolo, // purple rail bg
               selectedIndex: _index,
               onDestinationSelected: (i) => setState(() => _index = i),
-              extended: isExpanded,
-              labelType: isExpanded
-                  ? NavigationRailLabelType.none
-                  : NavigationRailLabelType.selected,
+              extended: true, // labels visible on desktop
+              selectedIconTheme: IconThemeData(color: tokens.colors.bulma),
+              unselectedIconTheme: IconThemeData(
+                color: tokens.colors.bulma.withOpacity(0.8),
+              ),
               destinations: [
                 for (final m in meta)
                   NavigationRailDestination(
-                    icon: Icon(m.menuIcon, color: tokens.colors.bulma),
-                    selectedIcon: Icon(
-                      m.menuSelectedIcon ?? m.menuIcon,
-                      color: tokens.colors.bulma,
+                    icon: Icon(m.menuIcon),
+                    selectedIcon: Icon(m.menuSelectedIcon ?? m.menuIcon),
+                    label: Text(
+                      m.menuLabel,
+                      style: TextStyle(color: tokens.colors.bulma),
                     ),
-                    label: Text(m.menuLabel),
                   ),
               ],
             ),
@@ -186,7 +187,7 @@ class _MoonMenuShellState extends State<MoonMenuShell> {
             child: Scaffold(
               appBar: AppBar(
                 title: Text(widget.title ?? current.menuLabel),
-                backgroundColor: tokens.colors.gohan,
+                backgroundColor: tokens.colors.piccolo, // purple app bar
                 foregroundColor: tokens.colors.bulma,
                 elevation: 0,
                 actions: _buildActions(context, tokens),
@@ -207,7 +208,8 @@ class _MoonMenuShellState extends State<MoonMenuShell> {
 }
 
 /// Convenience: a ready-made “menu home” page using the sections below.
-/// Use this in your routes as: '/home': (context) => HomeMenuPage(onToggleTheme: _toggleTheme),
+/// - Phone & Tablet: phone-style UI
+/// - Desktop: purple NavigationRail
 class HomeMenuPage extends StatelessWidget {
   final VoidCallback onToggleTheme;
   const HomeMenuPage({super.key, required this.onToggleTheme});
@@ -220,8 +222,9 @@ class HomeMenuPage extends StatelessWidget {
       title: 'HEStimate',
       initialIndex: maybeIndex ?? 0,
       onToggleTheme: onToggleTheme,
+      desktopBreakpoint: 1100, // tablets use phone UI; desktop gets rail
       pages: const [
-        DashboardPage(), // now imported from home.dart
+        DashboardPage(), // from home.dart
         ListingsSection(),
         NewListingSection(),
         ProfileSection(),
