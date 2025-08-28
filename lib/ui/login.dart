@@ -1,9 +1,13 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:moon_design/moon_design.dart';
+import 'faceIdLogin.dart';
+import 'page.dart';
 
 class LoginPage extends StatefulWidget {
-  const LoginPage({super.key});
+  final File? faceImage; // Image Face ID si existante
+  const LoginPage({super.key, this.faceImage});
 
   @override
   State<LoginPage> createState() => _LoginPageState();
@@ -35,9 +39,7 @@ class _LoginPageState extends State<LoginPage> {
         password: _passwordCtrl.text,
       );
       if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Logged in!')));
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Logged in!')));
       Navigator.of(context).pushReplacementNamed('/home');
     } on FirebaseAuthException catch (e) {
       final msg = switch (e.code) {
@@ -92,9 +94,9 @@ class _LoginPageState extends State<LoginPage> {
   Widget build(BuildContext context) {
     final theme = context.moonTheme;
 
-    return Scaffold(
-      appBar: AppBar(title: const Text('Login')),
-      body: SafeArea(
+    return BasePage(
+      title: '',
+      child: SafeArea(
         child: Center(
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 440),
@@ -126,9 +128,7 @@ class _LoginPageState extends State<LoginPage> {
                       validator: (value) {
                         final v = value?.trim() ?? '';
                         if (v.isEmpty) return 'Email is required';
-                        final re = RegExp(
-                          r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$',
-                        );
+                        final re = RegExp(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$');
                         if (!re.hasMatch(v)) return 'Enter a valid email';
                         return null;
                       },
@@ -141,11 +141,8 @@ class _LoginPageState extends State<LoginPage> {
                       textInputAction: TextInputAction.done,
                       leading: const Icon(Icons.lock_outline),
                       trailing: IconButton(
-                        onPressed: () =>
-                            setState(() => _obscurePw = !_obscurePw),
-                        icon: Icon(
-                          _obscurePw ? Icons.visibility : Icons.visibility_off,
-                        ),
+                        onPressed: () => setState(() => _obscurePw = !_obscurePw),
+                        icon: Icon(_obscurePw ? Icons.visibility : Icons.visibility_off),
                       ),
                       validator: (value) {
                         final v = value ?? '';
@@ -163,9 +160,7 @@ class _LoginPageState extends State<LoginPage> {
                             ? const SizedBox(
                                 height: 20,
                                 width: 20,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                ),
+                                child: CircularProgressIndicator(strokeWidth: 2),
                               )
                             : const Text('Sign in'),
                       ),
@@ -174,11 +169,26 @@ class _LoginPageState extends State<LoginPage> {
                     Align(
                       alignment: Alignment.center,
                       child: TextButton(
-                        onPressed: () =>
-                            Navigator.of(context).pushReplacementNamed('/'),
+                        onPressed: () => Navigator.of(context).pushReplacementNamed('/register'),
                         child: const Text("Don't have an account? Register"),
                       ),
                     ),
+                    if (widget.faceImage != null) ...[
+                      const SizedBox(height: 12),
+                      MoonFilledButton(
+                        onTap: () {
+                          Navigator.of(context).pushReplacement(
+                            MaterialPageRoute(
+                              builder: (_) => FaceIdLoginPage(
+                                faceImage: widget.faceImage,
+                                user: FirebaseAuth.instance.currentUser,
+                              ),
+                            ),
+                          );
+                        },
+                        label: const Text('Login with Face ID'),
+                      ),
+                    ],
                   ],
                 ),
               ),
