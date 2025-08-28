@@ -248,15 +248,20 @@ class _ListingsPageState extends State<ListingsPage> {
                       );
                     }
 
-                    // Responsive grid
+                    // Responsive grid avec aspect ratio ajusté
                     int crossAxisCount = 1;
+                    double childAspectRatio = 1.1; // Augmenté pour plus de hauteur
                     final w = constraints.maxWidth;
-                    if (w >= 1400)
+                    if (w >= 1400) {
                       crossAxisCount = 4;
-                    else if (w >= 1000)
+                      childAspectRatio = 0.95; // Plus de hauteur pour 4 colonnes
+                    } else if (w >= 1000) {
                       crossAxisCount = 3;
-                    else if (w >= 700)
+                      childAspectRatio = 1.0;
+                    } else if (w >= 700) {
                       crossAxisCount = 2;
+                      childAspectRatio = 1.05;
+                    }
 
                     return SliverPadding(
                       padding: EdgeInsets.symmetric(
@@ -270,7 +275,7 @@ class _ListingsPageState extends State<ListingsPage> {
                           crossAxisCount: crossAxisCount,
                           crossAxisSpacing: 16,
                           mainAxisSpacing: 16,
-                          childAspectRatio: 1.2,
+                          childAspectRatio: childAspectRatio,
                         ),
                         delegate: SliverChildBuilderDelegate((context, i) {
                           final data = filtered[i].data();
@@ -597,61 +602,60 @@ class _ListingCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Flexible(
-              flex: 3,
+            // Image section - ratio ajusté
+            Expanded(
+              flex: 6,
               child: SizedBox(
                 width: double.infinity,
-                child: AspectRatio(
-                  aspectRatio: 16 / 9,
-                  child: imageUrl == null
-                      ? Container(
-                          color: cs.primary.withOpacity(.08),
-                          child: Center(
-                            child: Icon(
-                              Icons.image_outlined,
-                              size: 40,
-                              color: cs.primary.withOpacity(.6),
-                            ),
+                child: imageUrl == null
+                    ? Container(
+                        color: cs.primary.withOpacity(.08),
+                        child: Center(
+                          child: Icon(
+                            Icons.image_outlined,
+                            size: 40,
+                            color: cs.primary.withOpacity(.6),
                           ),
-                        )
-                      : Image.network(
-                          imageUrl,
-                          fit: BoxFit.cover,
-                          width: double.infinity,
-                          height: double.infinity,
                         ),
-                ),
+                      )
+                    : Image.network(
+                        imageUrl,
+                        fit: BoxFit.cover,
+                        width: double.infinity,
+                        height: double.infinity,
+                      ),
               ),
             ),
 
-            // Content
-            Flexible(
-              flex: 4,
+            // Content section - plus d'espace et mieux organisé
+            Expanded(
+              flex: 6,
               child: Padding(
                 padding: const EdgeInsets.all(12),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
                   children: [
-                    // Title
-                    Text(
-                      title,
-                      style: const TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
+                    // Title - plus compact
+                    Flexible(
+                      child: Text(
+                        title,
+                        style: const TextStyle(
+                          fontSize: 15, // Réduit de 16 à 15
+                          fontWeight: FontWeight.bold,
+                        ),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
                       ),
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
                     ),
                     const SizedBox(height: 6),
 
-                    // Price + type - sans bouton
+                    // Price + type - plus compact
                     Row(
                       children: [
                         Text(
                           priceStr,
                           style: const TextStyle(
-                            fontSize: 18,
+                            fontSize: 17, // Réduit de 18 à 17
                             fontWeight: FontWeight.w900,
                           ),
                         ),
@@ -670,7 +674,7 @@ class _ListingCard extends StatelessWidget {
                             child: Text(
                               type,
                               style: TextStyle(
-                                fontSize: 12,
+                                fontSize: 11, // Réduit de 12 à 11
                                 fontWeight: FontWeight.w700,
                                 color: cs.onSurface,
                               ),
@@ -683,12 +687,12 @@ class _ListingCard extends StatelessWidget {
                     ),
 
                     const SizedBox(height: 4),
-                    // Location & specs
+                    // Location - plus compact
                     Row(
                       children: [
                         Icon(
                           Icons.place,
-                          size: 14,
+                          size: 13, // Réduit de 14 à 13
                           color: cs.onSurface.withOpacity(.7),
                         ),
                         const SizedBox(width: 4),
@@ -696,7 +700,7 @@ class _ListingCard extends StatelessWidget {
                           child: Text(
                             '$city${npa.isNotEmpty ? ' · $npa' : ''}',
                             style: TextStyle(
-                              fontSize: 13,
+                              fontSize: 12, // Réduit de 13 à 12
                               color: cs.onSurface.withOpacity(.8)
                             ),
                             maxLines: 1,
@@ -705,69 +709,77 @@ class _ListingCard extends StatelessWidget {
                         ),
                       ],
                     ),
-                    const SizedBox(height: 4),
+                    const SizedBox(height: 3), // Réduit de 4 à 3
+                    
+                    // Surface et rooms - une seule ligne
                     Row(
                       children: [
                         Icon(
                           Icons.square_foot,
-                          size: 14,
+                          size: 13, // Réduit de 14 à 13
                           color: cs.onSurface.withOpacity(.7),
                         ),
                         const SizedBox(width: 4),
                         Text(
                           surface.isNotEmpty ? '$surface m²' : '—',
                           style: TextStyle(
-                            fontSize: 13,
+                            fontSize: 12, // Réduit de 13 à 12
                             color: cs.onSurface.withOpacity(.8)
                           ),
                         ),
                         const SizedBox(width: 12),
                         Icon(
                           Icons.meeting_room,
-                          size: 14,
+                          size: 13, // Réduit de 14 à 13
                           color: cs.onSurface.withOpacity(.7),
                         ),
                         const SizedBox(width: 4),
                         Text(
                           rooms.isNotEmpty ? '$rooms rooms' : '—',
                           style: TextStyle(
-                            fontSize: 13,
+                            fontSize: 12, // Réduit de 13 à 12
                             color: cs.onSurface.withOpacity(.8)
                           ),
                         ),
                       ],
                     ),
 
-                    // Amenities
+                    // Amenities - avec espacement flexible
                     if (amenities.isNotEmpty) ...[
-                      const SizedBox(height: 8),
-                      Wrap(
-                        spacing: 4,
-                        runSpacing: 4,
-                        children: amenities
-                            .map(
-                              (a) => Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 6,
-                                  vertical: 3,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: cs.primary.withOpacity(.08),
-                                  borderRadius: BorderRadius.circular(999),
-                                  border: Border.all(
-                                    color: cs.primary.withOpacity(.18),
+                      const SizedBox(height: 6), // Réduit de 8 à 6
+                      Flexible(
+                        child: SingleChildScrollView(
+                          scrollDirection: Axis.horizontal,
+                          child: Row(
+                            children: amenities
+                                .map(
+                                  (a) => Padding(
+                                    padding: const EdgeInsets.only(right: 4),
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 6,
+                                        vertical: 2, // Réduit de 3 à 2
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: cs.primary.withOpacity(.08),
+                                        borderRadius: BorderRadius.circular(999),
+                                        border: Border.all(
+                                          color: cs.primary.withOpacity(.18),
+                                        ),
+                                      ),
+                                      child: Text(
+                                        a,
+                                        style: const TextStyle(
+                                          fontSize: 10, // Réduit de 11 à 10
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                    ),
                                   ),
-                                ),
-                                child: Text(
-                                  a,
-                                  style: const TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                              ),
-                            )
-                            .toList(),
+                                )
+                                .toList(),
+                          ),
+                        ),
                       ),
                     ],
                   ],
