@@ -88,7 +88,7 @@ class MyApp extends StatelessWidget {
           ? '/login'
           : (faceIdEnabled ? '/faceLogin' : '/home'),
       routes: {
-        '/login': (context) => LoginPage(faceImage: faceImage),
+        '/login': (context) => const LoginPage(),
         '/register': (context) => const RegisterPage(),
         '/faceIdSetup': (context) => const FaceIdSetupPage(),
         '/home': (context) =>

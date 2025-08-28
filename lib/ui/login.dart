@@ -2,12 +2,12 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:moon_design/moon_design.dart';
+import 'package:path_provider/path_provider.dart';
 import 'faceIdLogin.dart';
 import 'page.dart';
 
 class LoginPage extends StatefulWidget {
-  final File? faceImage; // Image Face ID si existante
-  const LoginPage({super.key, this.faceImage});
+  const LoginPage({super.key});
 
   @override
   State<LoginPage> createState() => _LoginPageState();
@@ -19,12 +19,41 @@ class _LoginPageState extends State<LoginPage> {
   final _passwordCtrl = TextEditingController();
   bool _isLoading = false;
   bool _obscurePw = true;
+  File? _faceImage;
+
+  @override
+  void initState() {
+    super.initState();
+    _checkFaceIdAvailability();
+  }
 
   @override
   void dispose() {
     _emailCtrl.dispose();
     _passwordCtrl.dispose();
     super.dispose();
+  }
+
+  Future<void> _checkFaceIdAvailability() async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final file = File('${dir.path}/face_id.png');
+      
+      if (await file.exists()) {
+        setState(() {
+          _faceImage = file;
+        });
+      } else {
+        setState(() {
+          _faceImage = null;
+        });
+      }
+    } catch (e) {
+      debugPrint('Error checking Face ID availability: $e');
+      setState(() {
+        _faceImage = null;
+      });
+    }
   }
 
   Future<void> _login() async {
@@ -173,14 +202,15 @@ class _LoginPageState extends State<LoginPage> {
                         child: const Text("Don't have an account? Register"),
                       ),
                     ),
-                    if (widget.faceImage != null) ...[
+
+                    if (_faceImage != null) ...[
                       const SizedBox(height: 12),
                       MoonFilledButton(
                         onTap: () {
                           Navigator.of(context).pushReplacement(
                             MaterialPageRoute(
                               builder: (_) => FaceIdLoginPage(
-                                faceImage: widget.faceImage,
+                                faceImage: _faceImage,
                                 user: FirebaseAuth.instance.currentUser,
                               ),
                             ),
