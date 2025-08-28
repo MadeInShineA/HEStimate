@@ -7,13 +7,10 @@ class FullScreenLoader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Stack(
-      children: [
-        Opacity(
-          opacity: 0.5,
-          child: ModalBarrier(dismissible: false, color: Colors.black),
-        ),
-        Center(
+    return Positioned.fill( // ← Utiliser Positioned.fill au lieu de Stack
+      child: Container(
+        color: Colors.black.withOpacity(0.5),
+        child: Center(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -30,7 +27,7 @@ class FullScreenLoader extends StatelessWidget {
             ],
           ),
         ),
-      ],
+      ),
     );
   }
 }
