@@ -10,8 +10,8 @@ class AboutPage extends StatelessWidget {
 
   // Team data
   static const _team = <_Member>[
-    _Member("Filip", "Silivuniuk"),
-    _Member("Olivier", "Amaker"),
+    _Member("Filip", "Siliwoniuk"),
+    _Member("Olivier", "Amacker"),
     _Member("Simon", "Masserey"),
     _Member("Yolan", "Savioz"),
     _Member("Robin", "Bütikofer"),
