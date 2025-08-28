@@ -4,6 +4,8 @@ import 'package:moon_design/moon_design.dart';
 import 'package:moon_icons/moon_icons.dart';
 import 'package:intl/intl.dart';
 
+import 'view_listing_page.dart';
+
 class ListingsPage extends StatefulWidget {
   const ListingsPage({super.key});
 
@@ -29,9 +31,7 @@ class _ListingsPageState extends State<ListingsPage> {
   }
 
   Query<Map<String, dynamic>> _baseQuery() {
-    Query<Map<String, dynamic>> q = FirebaseFirestore.instance.collection(
-      'listings',
-    );
+    Query<Map<String, dynamic>> q = FirebaseFirestore.instance.collection('listings');
 
     switch (_sortIndex) {
       case 1:
@@ -106,7 +106,6 @@ class _ListingsPageState extends State<ListingsPage> {
           break;
         case 0:
         default:
-
           filtered.sort((a, b) {
             final aCreated = a.data()['createdAt'] ?? '';
             final bCreated = b.data()['createdAt'] ?? '';
@@ -127,7 +126,7 @@ class _ListingsPageState extends State<ListingsPage> {
     final furnished = data['is_furnish'] == true;
 
     String title = '';
-    
+
     if (type == 'room') {
       title = furnished ? 'Furnished Room' : 'Room';
     } else if (type == 'entire_home') {
@@ -163,8 +162,7 @@ class _ListingsPageState extends State<ListingsPage> {
           IconButton(
             tooltip: 'Clear search',
             onPressed: () {
-              if (_searchCtrl.text.isNotEmpty)
-                setState(() => _searchCtrl.clear());
+              if (_searchCtrl.text.isNotEmpty) setState(() => _searchCtrl.clear());
             },
             icon: const Icon(Icons.refresh),
           ),
@@ -196,9 +194,7 @@ class _ListingsPageState extends State<ListingsPage> {
                 SliverToBoxAdapter(
                   child: Padding(
                     padding: EdgeInsets.symmetric(
-                      horizontal: isXL
-                          ? (constraints.maxWidth - 1200) / 2 + 16
-                          : 16,
+                      horizontal: isXL ? (constraints.maxWidth - 1200) / 2 + 16 : 16,
                       vertical: 16,
                     ),
                     child: _FilterBar(
@@ -251,18 +247,17 @@ class _ListingsPageState extends State<ListingsPage> {
                     // Responsive grid
                     int crossAxisCount = 1;
                     final w = constraints.maxWidth;
-                    if (w >= 1400)
+                    if (w >= 1400) {
                       crossAxisCount = 4;
-                    else if (w >= 1000)
+                    } else if (w >= 1000) {
                       crossAxisCount = 3;
-                    else if (w >= 700)
+                    } else if (w >= 700) {
                       crossAxisCount = 2;
+                    }
 
                     return SliverPadding(
                       padding: EdgeInsets.symmetric(
-                        horizontal: isXL
-                            ? (constraints.maxWidth - 1200) / 2 + 16
-                            : 16,
+                        horizontal: isXL ? (constraints.maxWidth - 1200) / 2 + 16 : 16,
                         vertical: 8,
                       ),
                       sliver: SliverGrid(
@@ -272,11 +267,19 @@ class _ListingsPageState extends State<ListingsPage> {
                           mainAxisSpacing: 16,
                           childAspectRatio: 1.2,
                         ),
-                        delegate: SliverChildBuilderDelegate((context, i) {
-                          final data = filtered[i].data();
-                          final title = _generateTitle(data);
-                          return _ListingCard(data: data, title: title);
-                        }, childCount: filtered.length),
+                        delegate: SliverChildBuilderDelegate(
+                          (context, i) {
+                            final doc = filtered[i];
+                            final data = doc.data();
+                            final title = _generateTitle(data);
+                            return _ListingCard(
+                              listingId: doc.id, // <-- on passe l'id ici
+                              data: data,
+                              title: title,
+                            );
+                          },
+                          childCount: filtered.length,
+                        ),
                       ),
                     );
                   },
@@ -354,9 +357,7 @@ class _FilterBar extends StatelessWidget {
             ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 480),
               child: MoonSegmentedControl(
-                initialIndex: typeIndex < 0
-                    ? 2
-                    : typeIndex, // hack to allow All
+                initialIndex: typeIndex < 0 ? 2 : typeIndex, // hack to allow All
                 segments: const [
                   Segment(label: Text('Entire home')),
                   Segment(label: Text('Single room')),
@@ -420,7 +421,7 @@ class _FilterBar extends StatelessWidget {
               ),
             ),
             _BoolChip(
-              label: 'Wi‑Fi included',
+              label: 'Wi-Fi included',
               value: wifiOnly,
               onChanged: (v) => onChanged(
                 _Filters(
@@ -487,9 +488,7 @@ class _BoolChip extends StatelessWidget {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         decoration: BoxDecoration(
-          color: value
-              ? cs.primary.withOpacity(.15)
-              : Theme.of(context).cardColor.withOpacity(.9),
+          color: value ? cs.primary.withOpacity(.15) : Theme.of(context).cardColor.withOpacity(.9),
           borderRadius: BorderRadius.circular(999),
           border: Border.all(color: cs.primary.withOpacity(value ? .4 : .2)),
         ),
@@ -546,9 +545,14 @@ class _EmptyState extends StatelessWidget {
 }
 
 class _ListingCard extends StatelessWidget {
+  final String listingId; // <-- on reçoit l'id
   final Map<String, dynamic> data;
   final String title;
-  const _ListingCard({required this.data, required this.title});
+  const _ListingCard({
+    required this.listingId,
+    required this.data,
+    required this.title,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -564,20 +568,23 @@ class _ListingCard extends StatelessWidget {
     final rooms = (data['num_rooms'] ?? '').toString();
     final type = (data['type'] ?? '').toString();
 
-    final photos =
-        (data['photos'] as List?)?.cast<String>() ?? const <String>[];
+    final photos = (data['photos'] as List?)?.cast<String>() ?? const <String>[];
     final imageUrl = photos.isNotEmpty ? photos.first : null;
 
     final amenities = <String>[
       if (data['is_furnish'] == true) 'Furnished',
-      if (data['wifi_incl'] == true) 'Wi‑Fi',
+      if (data['wifi_incl'] == true) 'Wi-Fi',
       if (data['charges_incl'] == true) 'Charges incl.',
       if (data['car_park'] == true) 'Car park',
     ];
 
     return InkWell(
       onTap: () {
-        // property details page could be implemented
+        Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) => ViewListingPage(listingId: listingId),
+          ),
+        );
       },
       borderRadius: BorderRadius.circular(16),
       child: Container(
@@ -645,7 +652,7 @@ class _ListingCard extends StatelessWidget {
                     ),
                     const SizedBox(height: 6),
 
-                    // Price + type - sans bouton
+                    // Price + type
                     Row(
                       children: [
                         Text(
@@ -697,7 +704,7 @@ class _ListingCard extends StatelessWidget {
                             '$city${npa.isNotEmpty ? ' · $npa' : ''}',
                             style: TextStyle(
                               fontSize: 13,
-                              color: cs.onSurface.withOpacity(.8)
+                              color: cs.onSurface.withOpacity(.8),
                             ),
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
@@ -718,7 +725,7 @@ class _ListingCard extends StatelessWidget {
                           surface.isNotEmpty ? '$surface m²' : '—',
                           style: TextStyle(
                             fontSize: 13,
-                            color: cs.onSurface.withOpacity(.8)
+                            color: cs.onSurface.withOpacity(.8),
                           ),
                         ),
                         const SizedBox(width: 12),
@@ -732,7 +739,7 @@ class _ListingCard extends StatelessWidget {
                           rooms.isNotEmpty ? '$rooms rooms' : '—',
                           style: TextStyle(
                             fontSize: 13,
-                            color: cs.onSurface.withOpacity(.8)
+                            color: cs.onSurface.withOpacity(.8),
                           ),
                         ),
                       ],
