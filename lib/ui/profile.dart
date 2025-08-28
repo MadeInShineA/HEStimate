@@ -8,6 +8,7 @@ import 'package:moon_design/moon_design.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:http/http.dart' as http;
 import 'loader.dart';
+import 'page.dart';
 
 class ProfilePage extends StatefulWidget {
   const ProfilePage({super.key});
@@ -157,9 +158,9 @@ class _ProfilePageState extends State<ProfilePage> {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
 
-    return Scaffold(
-      appBar: AppBar(title: const Text('Profile')),
-      body: SafeArea(
+    return BasePage(
+      title: 'Profile',
+      child: SafeArea(
         child: Center(
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 440),
@@ -576,9 +577,9 @@ class _FaceIdConfigPageState extends State<FaceIdConfigPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Configure Face ID')),
-      body: Stack(
+    return BasePage(
+      title: 'Configure Face ID',
+      child: Stack(
         children: [
           Padding(
             padding: const EdgeInsets.all(24),
