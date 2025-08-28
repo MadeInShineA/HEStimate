@@ -18,20 +18,14 @@ class BasePage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    Widget content = Padding(
-      padding: padding,
-      child: child,
-    );
+    Widget content = Padding(padding: padding, child: child);
 
     if (scrollable) {
       content = SingleChildScrollView(child: content);
     }
 
     return Scaffold(
-      appBar: AppBar(
-        title: Text(title),
-        actions: actions,
-      ),
+      appBar: AppBar(title: Text(title), actions: actions),
       body: SafeArea(child: content),
     );
   }
