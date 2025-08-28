@@ -392,7 +392,7 @@ class _NewListingPageState extends State<NewListingPage> {
         'longitude': _geoLng,
         'surface': _surfaceCtrl.text.trim().isEmpty ? null : parseD(_surfaceCtrl.text),
         'num_rooms': _roomsCtrl.text.trim().isEmpty ? null : parseI(_roomsCtrl.text),
-        'type': _typeOptions[_typeIndex],
+        'type': _typeOptions[_typeIndex] == "Entire home"?"entire_home":"room",
         'is_furnish': _isFurnish,
         'floor': _floorCtrl.text.trim().isEmpty ? null : parseI(_floorCtrl.text),
         'wifi_incl': _wifiIncl,
