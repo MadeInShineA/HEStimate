@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:moon_design/moon_design.dart';
+import 'page.dart';
 
 class RegisterPage extends StatefulWidget {
   const RegisterPage({super.key});
@@ -160,8 +161,9 @@ class _RegisterPageState extends State<RegisterPage> {
       ),
     ];
 
-    return Scaffold(
-      body: SafeArea(
+    return BasePage(
+      title: '',
+      child: SafeArea(
         child: Center(
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 440),

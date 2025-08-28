@@ -8,6 +8,7 @@ import 'package:moon_design/moon_design.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:http/http.dart' as http;
 import 'loader.dart';
+import 'page.dart';
 
 class FaceIdSetupPage extends StatefulWidget {
   const FaceIdSetupPage({super.key});
@@ -162,8 +163,9 @@ class _FaceIdSetupPageState extends State<FaceIdSetupPage> {
   Widget build(BuildContext context) {
     final theme = context.moonTheme;
 
-    return Scaffold(
-      body: SafeArea(
+    return BasePage(
+      title: '',
+      child: SafeArea(
         child: Stack(
           children: [
             Padding(

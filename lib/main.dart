@@ -5,12 +5,12 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:path_provider/path_provider.dart';
 import 'firebase_options.dart';
-import 'register.dart';
-import 'login.dart';
-import 'profile.dart';
+import 'ui/register.dart';
+import 'ui/login.dart';
+import 'ui/profile.dart';
 import 'ui/about_page.dart';
-import 'faceIdLogin.dart';
-import 'faceIdSetup.dart'; // Import de la nouvelle page
+import 'ui/faceIdLogin.dart';
+import 'ui/faceIdSetup.dart'; // Import de la nouvelle page
 import 'package:moon_design/moon_design.dart';
 
 Future<void> main() async {

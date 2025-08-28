@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:moon_design/moon_design.dart';
+import 'page.dart';
 
 class AboutPage extends StatelessWidget {
   const AboutPage({super.key});
@@ -33,20 +34,9 @@ class AboutPage extends StatelessWidget {
             ),
     );
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text("About"),
-        actions: [
-          Padding(
-            padding: const EdgeInsets.only(right: 12),
-            child: Center(
-              child: Text("v$appVersion",
-                  style: TextStyle(color: cs.onSurface.withOpacity(.7))),
-            ),
-          ),
-        ],
-      ),
-      body: Container(
+    return BasePage(
+      title: "About",
+      child: Container(
         decoration: bg,
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(16),

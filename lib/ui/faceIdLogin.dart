@@ -6,6 +6,7 @@ import 'package:moon_design/moon_design.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:http/http.dart' as http;
 import 'loader.dart';
+import 'page.dart';
 
 class FaceIdLoginPage extends StatefulWidget {
   final User? user;
@@ -104,9 +105,9 @@ class _FaceIdLoginPageState extends State<FaceIdLoginPage> {
   Widget build(BuildContext context) {
     final theme = context.moonTheme;
 
-    return Scaffold(
-      appBar: AppBar(title: const Text('Face ID Login')),
-      body: Stack(
+    return BasePage(
+      title: 'Face ID Login',
+      child: Stack(
         children: [
           SafeArea(
             child: Center(

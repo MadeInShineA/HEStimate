@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:moon_design/moon_design.dart';
 import 'faceIdLogin.dart';
+import 'page.dart';
 
 class LoginPage extends StatefulWidget {
   final File? faceImage; // Image Face ID si existante
@@ -93,9 +94,9 @@ class _LoginPageState extends State<LoginPage> {
   Widget build(BuildContext context) {
     final theme = context.moonTheme;
 
-    return Scaffold(
-      appBar: AppBar(title: const Text('Login')),
-      body: SafeArea(
+    return BasePage(
+      title: '',
+      child: SafeArea(
         child: Center(
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 440),
