@@ -36,3 +36,4 @@ class ListingRepository {
     return _db.collection('listings').doc(listingId).update({'ownerUid': ownerUid});
   }
 }
+

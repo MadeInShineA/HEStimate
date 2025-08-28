@@ -130,9 +130,45 @@ class _ProfilePageState extends State<ProfilePage> {
     }
   }
 
+  Future<void> _cleanupFaceIdData() async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final file = File('${dir.path}/face_id.png');
+      if (await file.exists()) {
+        await file.delete();
+        debugPrint('Face ID image deleted successfully');
+      }
+
+      if (_user != null) {
+        await _firestore.collection('users').doc(_user!.uid).update({
+          'faceIdEnabled': false,
+        });
+        debugPrint('Face ID disabled in Firestore');
+      }
+    } catch (e) {
+      debugPrint('Error cleaning up Face ID data: $e');
+    }
+  }
+
   Future<void> _signOut() async {
-    await FirebaseAuth.instance.signOut();
-    Navigator.of(context).pushNamedAndRemoveUntil('/login', (route) => false);
+    setState(() => _isLoading = true);
+    
+    try {
+      await _cleanupFaceIdData();
+      
+      await FirebaseAuth.instance.signOut();
+      
+      if (mounted) {
+        Navigator.of(context).pushNamedAndRemoveUntil('/login', (route) => false);
+      }
+    } catch (e) {
+      debugPrint('Error during sign out: $e');
+      // Même en cas d'erreur, on procède à la déconnexion
+      await FirebaseAuth.instance.signOut();
+      if (mounted) {
+        Navigator.of(context).pushNamedAndRemoveUntil('/login', (route) => false);
+      }
+    }
   }
 
   void _openFaceIdConfig() async {
