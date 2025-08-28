@@ -1,3 +1,5 @@
+// lib/ui/new_listing_page.dart
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
@@ -23,7 +25,7 @@ class _NewListingPageState extends State<NewListingPage> {
   final _formKey = GlobalKey<FormState>();
   final _repo = ListingRepository();
 
-  // Controllers 
+  // Controllers (user inputs)
   final _addressCtrl = TextEditingController();
   final _cityCtrl = TextEditingController();
   final _npaCtrl = TextEditingController();
@@ -32,6 +34,12 @@ class _NewListingPageState extends State<NewListingPage> {
   final _roomsCtrl = TextEditingController();
   final _floorCtrl = TextEditingController();
   final _distTransportCtrl = TextEditingController();
+
+  // Address suggestions
+  final FocusNode _addressFocus = FocusNode();
+  Timer? _addrDebounce;
+  List<_AddressSuggestion> _addressSuggestions = [];
+  bool _isLoadingAddr = false;
 
   // Type: Entire home / Single room  -> segmented control
   final _typeOptions = const ['Entire home', 'Single room'];
@@ -52,18 +60,29 @@ class _NewListingPageState extends State<NewListingPage> {
   final ImagePicker _picker = ImagePicker();
   final List<File> _images = [];
 
-  // Heatest hes and long, lat of the house
+  // Derived / auto-computed state
   double? _geoLat;
   double? _geoLng;
-  double? _proximHesKm;   
-  String? _nearestHesId;  
+  double? _proximHesKm;   // auto
+  String? _nearestHesId;  // auto (doc id)
 
   bool _saving = false;
   String? _error;
 
   @override
+  void initState() {
+    super.initState();
+    _addressCtrl.addListener(_onAddressChanged);
+  }
+
+  @override
   void dispose() {
-    _addressCtrl.dispose();
+    _addrDebounce?.cancel();
+    _addressCtrl
+      ..removeListener(_onAddressChanged)
+      ..dispose();
+    _addressFocus.dispose();
+
     _cityCtrl.dispose();
     _npaCtrl.dispose();
     _priceCtrl.dispose();
@@ -74,6 +93,86 @@ class _NewListingPageState extends State<NewListingPage> {
     super.dispose();
   }
 
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Address suggestions (Nominatim) with debounce
+  // ─────────────────────────────────────────────────────────────────────────────
+  void _onAddressChanged() {
+    _addrDebounce?.cancel();
+    _addrDebounce = Timer(const Duration(milliseconds: 350), () async {
+      final q = _addressCtrl.text.trim();
+      if (q.length < 3) {
+        if (mounted) {
+          setState(() => _addressSuggestions = []);
+        }
+        return;
+      }
+      await _fetchAddressSuggestions(q);
+    });
+  }
+
+  Future<void> _fetchAddressSuggestions(String query) async {
+    try {
+      setState(() => _isLoadingAddr = true);
+      final url =
+          'https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&countrycodes=ch&q=${Uri.encodeQueryComponent(query)}&limit=6';
+      final res = await http.get(
+        Uri.parse(url),
+        headers: const {
+          'User-Agent': 'HEStimate/1.0 (student project; contact: none)',
+        },
+      );
+      if (res.statusCode != 200) {
+        throw Exception('Address search failed (${res.statusCode}).');
+      }
+      final List data = jsonDecode(res.body) as List;
+      final suggestions = data.map((e) {
+        final m = e as Map<String, dynamic>;
+        return _AddressSuggestion(
+          displayName: (m['display_name'] ?? '').toString(),
+          lat: double.tryParse(m['lat']?.toString() ?? ''),
+          lon: double.tryParse(m['lon']?.toString() ?? ''),
+          city: _tryAddrPiece(m, ['address', 'city']) ??
+              _tryAddrPiece(m, ['address', 'town']) ??
+              _tryAddrPiece(m, ['address', 'village']) ??
+              '',
+          postcode: _tryAddrPiece(m, ['address', 'postcode']) ?? '',
+        );
+      }).where((s) => s.lat != null && s.lon != null).take(6).toList();
+
+      if (mounted) {
+        setState(() => _addressSuggestions = suggestions);
+      }
+    } catch (_) {
+      if (mounted) setState(() => _addressSuggestions = []);
+    } finally {
+      if (mounted) setState(() => _isLoadingAddr = false);
+    }
+  }
+
+  static String? _tryAddrPiece(Map<String, dynamic> root, List<String> path) {
+    dynamic cur = root;
+    for (final k in path) {
+      if (cur is Map && cur.containsKey(k)) {
+        cur = cur[k];
+      } else {
+        return null;
+      }
+    }
+    return cur?.toString();
+  }
+
+  void _applySuggestion(_AddressSuggestion s) {
+    _addressCtrl.text = s.displayName.split(',').first; // street + number (best effort)
+    if (s.city.isNotEmpty) _cityCtrl.text = s.city;
+    if (s.postcode.isNotEmpty) _npaCtrl.text = s.postcode;
+    _geoLat = s.lat!;
+    _geoLng = s.lon!;
+    setState(() => _addressSuggestions = []);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Image pick
+  // ─────────────────────────────────────────────────────────────────────────────
   Future<void> _pickImages() async {
     final picked = await _picker.pickMultiImage(imageQuality: 85);
     if (picked.isNotEmpty) {
@@ -85,7 +184,9 @@ class _NewListingPageState extends State<NewListingPage> {
     }
   }
 
+  // ─────────────────────────────────────────────────────────────────────────────
   // Geocoding (OpenStreetMap Nominatim)
+  // ─────────────────────────────────────────────────────────────────────────────
   Future<({double lat, double lng})> _geocodeAddress({
     required String address,
     required String city,
@@ -121,11 +222,13 @@ class _NewListingPageState extends State<NewListingPage> {
     return (lat: lat, lng: lng);
   }
 
-  // Schools fetching + distance computation
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Schools fetching + distance computation (Haversine)
   // Firestore collection expected: "schools" with fields:
   // - name: String
   // - latitude: double
   // - longitude: double
+  // ─────────────────────────────────────────────────────────────────────────────
   Future<List<_School>> _fetchSchools() async {
     final snap = await FirebaseFirestore.instance.collection('schools').get();
     return snap.docs.map((d) {
@@ -177,11 +280,13 @@ class _NewListingPageState extends State<NewListingPage> {
     return (km: bestKm ?? double.nan, id: best?.id ?? '');
   }
 
+  // ─────────────────────────────────────────────────────────────────────────────
   // Availability pickers
+  // ─────────────────────────────────────────────────────────────────────────────
   DateTime get _todayDateOnly {
     final now = DateTime.now();
     return DateTime(now.year, now.month, now.day);
-    }
+  }
 
   String _formatDate(DateTime? d) {
     if (d == null) return 'Select date';
@@ -198,7 +303,6 @@ class _NewListingPageState extends State<NewListingPage> {
     if (picked != null) {
       setState(() {
         _availStart = DateTime(picked.year, picked.month, picked.day);
-        // If end exists but is before start → clear end
         if (_availEnd != null && _availEnd!.isBefore(_availStart!)) {
           _availEnd = null;
         }
@@ -207,7 +311,7 @@ class _NewListingPageState extends State<NewListingPage> {
   }
 
   Future<void> _pickEndDate() async {
-    if (_noEndDate) return; 
+    if (_noEndDate) return;
     final first = _availStart ?? _todayDateOnly;
     final picked = await showDatePicker(
       context: context,
@@ -222,12 +326,14 @@ class _NewListingPageState extends State<NewListingPage> {
     }
   }
 
+  // ─────────────────────────────────────────────────────────────────────────────
   // Save flow:
   // 1) Validate availability
-  // 2) Geocode address -> lat/lng
+  // 2) Geocode address -> lat/lng (unless already from suggestion)
   // 3) Compute nearest school
   // 4) Save listing (with availability_start & availability_end)
   // 5) Upload images
+  // ─────────────────────────────────────────────────────────────────────────────
   Future<void> _save() async {
     if (!_formKey.currentState!.validate()) return;
 
@@ -256,17 +362,19 @@ class _NewListingPageState extends State<NewListingPage> {
         throw Exception('User not authenticated');
       }
 
-      // 1) Geocode
-      final coords = await _geocodeAddress(
-        address: _addressCtrl.text.trim(),
-        city: _cityCtrl.text.trim(),
-        npa: _npaCtrl.text.trim(),
-      );
-      _geoLat = coords.lat;
-      _geoLng = coords.lng;
+      // 1) Geocode (only if not provided by a suggestion)
+      if (_geoLat == null || _geoLng == null) {
+        final coords = await _geocodeAddress(
+          address: _addressCtrl.text.trim(),
+          city: _cityCtrl.text.trim(),
+          npa: _npaCtrl.text.trim(),
+        );
+        _geoLat = coords.lat;
+        _geoLng = coords.lng;
+      }
 
       // 2) Nearest school (id + km)
-      final nearest = await _computeNearestSchool(lat: coords.lat, lng: coords.lng);
+      final nearest = await _computeNearestSchool(lat: _geoLat!, lng: _geoLng!);
       _proximHesKm = nearest.km;
       _nearestHesId = nearest.id;
 
@@ -292,7 +400,7 @@ class _NewListingPageState extends State<NewListingPage> {
         'car_park': _carPark,
         'dist_public_transport_km': _distTransportCtrl.text.trim().isEmpty ? null : parseD(_distTransportCtrl.text),
 
-        // Auto-computed:
+        // Auto-computed and stored:
         'proxim_hesso_km': _proximHesKm,
         'nearest_hesso_id': _nearestHesId,
 
@@ -307,7 +415,7 @@ class _NewListingPageState extends State<NewListingPage> {
       // 4) Create listing
       final listingId = await _repo.createListing(data);
 
-      // 5) Upload images (not working now)
+      // 5) Upload images (optional)
       if (_images.isNotEmpty) {
         final urls = await _repo.uploadListingImages(
           ownerUid: user.uid,
@@ -334,6 +442,7 @@ class _NewListingPageState extends State<NewListingPage> {
     }
   }
 
+  // MOON input helper
   Widget _moonInput({
     required TextEditingController controller,
     required String hint,
@@ -343,6 +452,7 @@ class _NewListingPageState extends State<NewListingPage> {
     TextAlign textAlign = TextAlign.left,
     bool readOnly = false,
     VoidCallback? onTap,
+    FocusNode? focusNode,
   }) {
     return MoonFormTextInput(
       hasFloatingLabel: false,
@@ -354,6 +464,7 @@ class _NewListingPageState extends State<NewListingPage> {
       textAlign: textAlign,
       readOnly: readOnly,
       onTap: onTap,
+      focusNode: focusNode,
     );
   }
 
@@ -420,6 +531,7 @@ class _NewListingPageState extends State<NewListingPage> {
                       key: _formKey,
                       child: Column(
                         children: [
+                          // ==== Basics ====
                           _MoonCard(
                             isDark: isDark,
                             child: Column(
@@ -428,6 +540,7 @@ class _NewListingPageState extends State<NewListingPage> {
                                 Row(
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
+                                    // Remplacement d'icône Moon "safe"
                                     Icon(MoonIcons.arrows_boost_24_regular,
                                         size: 20, color: cs.primary),
                                     const SizedBox(width: 8),
@@ -459,23 +572,62 @@ class _NewListingPageState extends State<NewListingPage> {
                                         textAlign: TextAlign.center,
                                       ),
                                     ),
+
+                                    // Address + suggestions panel
                                     SizedBox(
                                       width: fieldWidth,
-                                      child: _moonInput(
-                                        controller: _addressCtrl,
-                                        hint: 'Address (street & number)',
-                                        keyboardType: TextInputType.streetAddress,
-                                        leading: const Icon(MoonIcons.arrows_forward_24_regular),
-                                        validator: (v) => (v == null || v.isEmpty) ? 'Required' : null,
-                                        textAlign: TextAlign.center,
+                                      child: Column(
+                                        children: [
+                                          _moonInput(
+                                            controller: _addressCtrl,
+                                            hint: 'Address (street & number)',
+                                            keyboardType: TextInputType.streetAddress,
+                                            leading: const Icon(Icons.place_outlined),
+                                            validator: (v) => (v == null || v.isEmpty) ? 'Required' : null,
+                                            textAlign: TextAlign.center,
+                                            focusNode: _addressFocus,
+                                          ),
+                                          if (_addressFocus.hasFocus || _isLoadingAddr || _addressSuggestions.isNotEmpty)
+                                            const SizedBox(height: 6),
+                                          if (_isLoadingAddr)
+                                            const LinearProgressIndicator(minHeight: 2),
+                                          if (_addressSuggestions.isNotEmpty)
+                                            Container(
+                                              decoration: BoxDecoration(
+                                                color: Theme.of(context).cardColor,
+                                                borderRadius: BorderRadius.circular(12),
+                                                border: Border.all(color: cs.primary.withOpacity(.15)),
+                                              ),
+                                              child: ListView.separated(
+                                                shrinkWrap: true,
+                                                physics: const NeverScrollableScrollPhysics(),
+                                                itemCount: _addressSuggestions.length,
+                                                separatorBuilder: (_, __) => Divider(height: 1, color: cs.primary.withOpacity(.08)),
+                                                itemBuilder: (ctx, i) {
+                                                  final s = _addressSuggestions[i];
+                                                  return ListTile(
+                                                    dense: true,
+                                                    leading: const Icon(Icons.location_on_outlined),
+                                                    title: Text(
+                                                      s.displayName,
+                                                      maxLines: 2,
+                                                      overflow: TextOverflow.ellipsis,
+                                                    ),
+                                                    onTap: () => _applySuggestion(s),
+                                                  );
+                                                },
+                                              ),
+                                            ),
+                                        ],
                                       ),
                                     ),
+
                                     SizedBox(
                                       width: fieldWidth,
                                       child: _moonInput(
                                         controller: _cityCtrl,
                                         hint: 'City',
-                                        leading: const Icon(MoonIcons.arrows_forward_24_regular),
+                                        leading: const Icon(Icons.location_city_outlined),
                                         validator: (v) => (v == null || v.isEmpty) ? 'Required' : null,
                                         textAlign: TextAlign.center,
                                       ),
@@ -486,7 +638,7 @@ class _NewListingPageState extends State<NewListingPage> {
                                         controller: _npaCtrl,
                                         hint: 'Postal code (NPA)',
                                         keyboardType: TextInputType.number,
-                                        leading: const Icon(MoonIcons.arrows_down_24_regular),
+                                        leading: const Icon(Icons.local_post_office_outlined),
                                         validator: (v) => (v == null || v.isEmpty) ? 'Required' : null,
                                         textAlign: TextAlign.center,
                                       ),
@@ -497,7 +649,7 @@ class _NewListingPageState extends State<NewListingPage> {
                                         controller: _surfaceCtrl,
                                         hint: 'Surface (m²)',
                                         keyboardType: TextInputType.number,
-                                        leading: const Icon(MoonIcons.arrows_bottom_right_24_regular),
+                                        leading: const Icon(Icons.square_foot_outlined),
                                         textAlign: TextAlign.center,
                                       ),
                                     ),
@@ -507,7 +659,7 @@ class _NewListingPageState extends State<NewListingPage> {
                                         controller: _roomsCtrl,
                                         hint: 'Number of rooms',
                                         keyboardType: TextInputType.number,
-                                        leading: const Icon(MoonIcons.arrows_left_24_regular),
+                                        leading: const Icon(Icons.meeting_room_outlined),
                                         textAlign: TextAlign.center,
                                       ),
                                     ),
@@ -517,7 +669,7 @@ class _NewListingPageState extends State<NewListingPage> {
                                         controller: _floorCtrl,
                                         hint: 'Floor',
                                         keyboardType: TextInputType.number,
-                                        leading: const Icon(MoonIcons.arrows_refresh_24_regular),
+                                        leading: const Icon(Icons.unfold_more_outlined),
                                         textAlign: TextAlign.center,
                                       ),
                                     ),
@@ -651,7 +803,7 @@ class _NewListingPageState extends State<NewListingPage> {
                                 ),
                                 const SizedBox(height: 12),
 
-                                // Start & End date pickers
+                                // Start & End date pickers (more visible)
                                 Wrap(
                                   alignment: WrapAlignment.center,
                                   spacing: 12,
@@ -659,9 +811,10 @@ class _NewListingPageState extends State<NewListingPage> {
                                   children: [
                                     SizedBox(
                                       width: fieldWidth,
-                                      child: MoonButton(
+                                      child: MoonFilledButton(
+                                        isFullWidth: true,
                                         onTap: _pickStartDate,
-                                        leading: const Icon(MoonIcons.time_alarm_24_regular),
+                                        leading: const Icon(Icons.event_available_outlined),
                                         label: Text('Start: ${_formatDate(_availStart)}'),
                                       ),
                                     ),
@@ -671,8 +824,10 @@ class _NewListingPageState extends State<NewListingPage> {
                                         mainAxisSize: MainAxisSize.min,
                                         children: [
                                           Expanded(
-                                            child: MoonButton(
+                                            child: MoonFilledButton(
+                                              isFullWidth: true,
                                               onTap: _noEndDate ? null : _pickEndDate,
+                                              leading: const Icon(Icons.event_note_outlined),
                                               label: Text(_noEndDate
                                                   ? 'End: None'
                                                   : 'End: ${_formatDate(_availEnd)}'),
@@ -711,7 +866,7 @@ class _NewListingPageState extends State<NewListingPage> {
 
                           const SizedBox(height: 16),
 
-                          // ==== Distances (manual transport for now) ====
+                          // ==== Distances (only manual transport; HES auto & hidden) ====
                           _MoonCard(
                             isDark: isDark,
                             child: Column(
@@ -733,7 +888,7 @@ class _NewListingPageState extends State<NewListingPage> {
                                     hintText: 'Distance to public transport (km)',
                                     controller: _distTransportCtrl,
                                     keyboardType: TextInputType.number,
-                                    leading: const Icon(MoonIcons.arrows_forward_24_regular),
+                                    leading: const Icon(Icons.directions_bus_outlined),
                                     textAlign: TextAlign.center,
                                   ),
                                 ),
@@ -758,7 +913,7 @@ class _NewListingPageState extends State<NewListingPage> {
                             children: [
                               MoonButton(
                                 onTap: _pickImages,
-                                leading: const Icon(MoonIcons.arrows_cross_lines_24_regular),
+                                leading: const Icon(Icons.image_outlined),
                                 label: const Text('Pick images'),
                               ),
                               Text(
@@ -803,7 +958,7 @@ class _NewListingPageState extends State<NewListingPage> {
   }
 }
 
-// Card container Moon-like 
+// Card container Moon-like (opacité en dark)
 class _MoonCard extends StatelessWidget {
   final Widget child;
   final bool isDark;
@@ -862,7 +1017,7 @@ class _AmenitySwitch extends StatelessWidget {
   }
 }
 
-// School model
+// Simple models
 class _School {
   final String id;
   final String name;
@@ -873,5 +1028,21 @@ class _School {
     required this.name,
     required this.latitude,
     required this.longitude,
+  });
+}
+
+class _AddressSuggestion {
+  final String displayName;
+  final double? lat;
+  final double? lon;
+  final String city;
+  final String postcode;
+
+  const _AddressSuggestion({
+    required this.displayName,
+    required this.lat,
+    required this.lon,
+    required this.city,
+    required this.postcode,
   });
 }
