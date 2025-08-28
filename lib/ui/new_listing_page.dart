@@ -14,6 +14,7 @@ import 'package:moon_design/moon_design.dart';
 import 'package:moon_icons/moon_icons.dart';
 
 import '../data/listing_repository.dart';
+import 'view_listing_page.dart';
 
 class NewListingPage extends StatefulWidget {
   const NewListingPage({super.key});
@@ -63,8 +64,8 @@ class _NewListingPageState extends State<NewListingPage> {
   // Derived / auto-computed state
   double? _geoLat;
   double? _geoLng;
-  double? _proximHesKm;   // auto
-  String? _nearestHesId;  // auto (doc id)
+  double? _proximHesKm; // auto
+  String? _nearestHesId; // auto (doc id)
 
   bool _saving = false;
   String? _error;
@@ -123,19 +124,24 @@ class _NewListingPageState extends State<NewListingPage> {
         throw Exception('Address search failed (${res.statusCode}).');
       }
       final List data = jsonDecode(res.body) as List;
-      final suggestions = data.map((e) {
-        final m = e as Map<String, dynamic>;
-        return _AddressSuggestion(
-          displayName: (m['display_name'] ?? '').toString(),
-          lat: double.tryParse(m['lat']?.toString() ?? ''),
-          lon: double.tryParse(m['lon']?.toString() ?? ''),
-          city: _tryAddrPiece(m, ['address', 'city']) ??
-              _tryAddrPiece(m, ['address', 'town']) ??
-              _tryAddrPiece(m, ['address', 'village']) ??
-              '',
-          postcode: _tryAddrPiece(m, ['address', 'postcode']) ?? '',
-        );
-      }).where((s) => s.lat != null && s.lon != null).take(6).toList();
+      final suggestions = data
+          .map((e) {
+            final m = e as Map<String, dynamic>;
+            return _AddressSuggestion(
+              displayName: (m['display_name'] ?? '').toString(),
+              lat: double.tryParse(m['lat']?.toString() ?? ''),
+              lon: double.tryParse(m['lon']?.toString() ?? ''),
+              city:
+                  _tryAddrPiece(m, ['address', 'city']) ??
+                  _tryAddrPiece(m, ['address', 'town']) ??
+                  _tryAddrPiece(m, ['address', 'village']) ??
+                  '',
+              postcode: _tryAddrPiece(m, ['address', 'postcode']) ?? '',
+            );
+          })
+          .where((s) => s.lat != null && s.lon != null)
+          .take(6)
+          .toList();
 
       if (mounted) {
         setState(() => _addressSuggestions = suggestions);
@@ -238,7 +244,8 @@ class _NewListingPageState extends State<NewListingPage> {
     const earthRadius = 6371.0; // km
     final dLat = _toRad(lat2 - lat1);
     final dLon = _toRad(lon2 - lon1);
-    final a = math.sin(dLat / 2) * math.sin(dLat / 2) +
+    final a =
+        math.sin(dLat / 2) * math.sin(dLat / 2) +
         math.cos(_toRad(lat1)) *
             math.cos(_toRad(lat2)) *
             math.sin(dLon / 2) *
@@ -366,7 +373,6 @@ class _NewListingPageState extends State<NewListingPage> {
       _proximHesKm = nearest.km;
       _nearestHesId = nearest.id;
 
-
       double parseD(String s) => double.parse(s.replaceAll(',', '.'));
       int parseI(String s) => int.parse(s);
 
@@ -378,7 +384,7 @@ class _NewListingPageState extends State<NewListingPage> {
         });
         return;
       }
-    
+
       // 3) Build Firestore data
       final data = <String, dynamic>{
         'ownerUid': user.uid,
@@ -388,15 +394,25 @@ class _NewListingPageState extends State<NewListingPage> {
         'npa': _npaCtrl.text.trim(),
         'latitude': _geoLat,
         'longitude': _geoLng,
-        'surface': _surfaceCtrl.text.trim().isEmpty ? null : parseD(_surfaceCtrl.text),
-        'num_rooms': _roomsCtrl.text.trim().isEmpty ? null : parseI(_roomsCtrl.text),
-        'type': _typeOptions[_typeIndex] == "Entire home"?"entire_home":"room",
+        'surface': _surfaceCtrl.text.trim().isEmpty
+            ? null
+            : parseD(_surfaceCtrl.text),
+        'num_rooms': _roomsCtrl.text.trim().isEmpty
+            ? null
+            : parseI(_roomsCtrl.text),
+        'type': _typeOptions[_typeIndex] == "Entire home"
+            ? "entire_home"
+            : "room",
         'is_furnish': _isFurnish,
-        'floor': _floorCtrl.text.trim().isEmpty ? null : parseI(_floorCtrl.text),
+        'floor': _floorCtrl.text.trim().isEmpty
+            ? null
+            : parseI(_floorCtrl.text),
         'wifi_incl': _wifiIncl,
         'charges_incl': _chargesIncl,
         'car_park': _carPark,
-        'dist_public_transport_km': _distTransportCtrl.text.trim().isEmpty ? null : parseD(_distTransportCtrl.text),
+        'dist_public_transport_km': _distTransportCtrl.text.trim().isEmpty
+            ? null
+            : parseD(_distTransportCtrl.text),
 
         // Auto-computed and stored:
         'proxim_hesso_km': _proximHesKm,
@@ -404,7 +420,9 @@ class _NewListingPageState extends State<NewListingPage> {
 
         // Availability:
         'availability_start': Timestamp.fromDate(_availStart!),
-        'availability_end': _noEndDate || _availEnd == null ? null : Timestamp.fromDate(_availEnd!),
+        'availability_end': _noEndDate || _availEnd == null
+            ? null
+            : Timestamp.fromDate(_availEnd!),
 
         'photos': <String>[],
         'createdAt': Timestamp.now(),
@@ -429,9 +447,15 @@ class _NewListingPageState extends State<NewListingPage> {
       if (mounted) {
         final km = _proximHesKm?.toStringAsFixed(2) ?? '?';
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Listing saved. Nearest HES stored ($km km).')),
+          SnackBar(
+            content: Text('Listing saved. Nearest HES stored ($km km).'),
+          ),
         );
-        Navigator.of(context).pop();
+        Navigator.of(context).pushReplacement(
+          MaterialPageRoute(
+            builder: (_) => ViewListingPage(listingId: listingId),
+          ),
+        );
       }
     } catch (e) {
       setState(() => _error = e.toString());
@@ -507,10 +531,13 @@ class _NewListingPageState extends State<NewListingPage> {
 
           final gap = 12.0;
           final double contentMax = 900;
-          final double gridWidth =
-              (constraints.maxWidth.clamp(360, contentMax)).toDouble();
-          final double fieldWidth =
-              isWide ? ((gridWidth - gap) / 2) : gridWidth;
+          final double gridWidth = (constraints.maxWidth.clamp(
+            360,
+            contentMax,
+          )).toDouble();
+          final double fieldWidth = isWide
+              ? ((gridWidth - gap) / 2)
+              : gridWidth;
 
           return Container(
             decoration: bg,
@@ -518,8 +545,9 @@ class _NewListingPageState extends State<NewListingPage> {
               absorbing: _saving,
               child: SingleChildScrollView(
                 padding: EdgeInsets.symmetric(
-                  horizontal:
-                      isXL ? (constraints.maxWidth - contentMax) / 2 + 16 : 16,
+                  horizontal: isXL
+                      ? (constraints.maxWidth - contentMax) / 2 + 16
+                      : 16,
                   vertical: 16,
                 ),
                 child: Center(
@@ -538,8 +566,11 @@ class _NewListingPageState extends State<NewListingPage> {
                                 Row(
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
-                                    Icon(MoonIcons.arrows_boost_24_regular,
-                                        size: 20, color: cs.primary),
+                                    Icon(
+                                      MoonIcons.arrows_boost_24_regular,
+                                      size: 20,
+                                      color: cs.primary,
+                                    ),
                                     const SizedBox(width: 8),
                                     Text(
                                       'Basics',
@@ -564,12 +595,19 @@ class _NewListingPageState extends State<NewListingPage> {
                                         controller: _priceCtrl,
                                         hint: 'Price (CHF)',
                                         keyboardType: TextInputType.number,
-                                        leading: const Icon(MoonIcons.arrows_boost_24_regular),
+                                        leading: const Icon(
+                                          MoonIcons.arrows_boost_24_regular,
+                                        ),
                                         validator: (v) {
-                                          if (v == null || v.isEmpty) return 'Required';
-                                          final value = double.tryParse(v.replaceAll(',', '.'));
-                                          if (value == null) return 'Invalid number';
-                                          if (value < 0) return 'Price cannot be negative';
+                                          if (v == null || v.isEmpty)
+                                            return 'Required';
+                                          final value = double.tryParse(
+                                            v.replaceAll(',', '.'),
+                                          );
+                                          if (value == null)
+                                            return 'Invalid number';
+                                          if (value < 0)
+                                            return 'Price cannot be negative';
                                           return null;
                                         },
                                         textAlign: TextAlign.center,
@@ -584,39 +622,69 @@ class _NewListingPageState extends State<NewListingPage> {
                                           _moonInput(
                                             controller: _addressCtrl,
                                             hint: 'Address (street & number)',
-                                            keyboardType: TextInputType.streetAddress,
-                                            leading: const Icon(Icons.place_outlined),
-                                            validator: (v) => (v == null || v.isEmpty) ? 'Required' : null,
+                                            keyboardType:
+                                                TextInputType.streetAddress,
+                                            leading: const Icon(
+                                              Icons.place_outlined,
+                                            ),
+                                            validator: (v) =>
+                                                (v == null || v.isEmpty)
+                                                ? 'Required'
+                                                : null,
                                             textAlign: TextAlign.center,
                                             focusNode: _addressFocus,
                                           ),
-                                          if (_addressFocus.hasFocus || _isLoadingAddr || _addressSuggestions.isNotEmpty)
+                                          if (_addressFocus.hasFocus ||
+                                              _isLoadingAddr ||
+                                              _addressSuggestions.isNotEmpty)
                                             const SizedBox(height: 6),
                                           if (_isLoadingAddr)
-                                            const LinearProgressIndicator(minHeight: 2),
+                                            const LinearProgressIndicator(
+                                              minHeight: 2,
+                                            ),
                                           if (_addressSuggestions.isNotEmpty)
                                             Container(
                                               decoration: BoxDecoration(
-                                                color: Theme.of(context).cardColor,
-                                                borderRadius: BorderRadius.circular(12),
-                                                border: Border.all(color: cs.primary.withOpacity(.15)),
+                                                color: Theme.of(
+                                                  context,
+                                                ).cardColor,
+                                                borderRadius:
+                                                    BorderRadius.circular(12),
+                                                border: Border.all(
+                                                  color: cs.primary.withOpacity(
+                                                    .15,
+                                                  ),
+                                                ),
                                               ),
                                               child: ListView.separated(
                                                 shrinkWrap: true,
-                                                physics: const NeverScrollableScrollPhysics(),
-                                                itemCount: _addressSuggestions.length,
-                                                separatorBuilder: (_, __) => Divider(height: 1, color: cs.primary.withOpacity(.08)),
+                                                physics:
+                                                    const NeverScrollableScrollPhysics(),
+                                                itemCount:
+                                                    _addressSuggestions.length,
+                                                separatorBuilder: (_, __) =>
+                                                    Divider(
+                                                      height: 1,
+                                                      color: cs.primary
+                                                          .withOpacity(.08),
+                                                    ),
                                                 itemBuilder: (ctx, i) {
-                                                  final s = _addressSuggestions[i];
+                                                  final s =
+                                                      _addressSuggestions[i];
                                                   return ListTile(
                                                     dense: true,
-                                                    leading: const Icon(Icons.location_on_outlined),
+                                                    leading: const Icon(
+                                                      Icons
+                                                          .location_on_outlined,
+                                                    ),
                                                     title: Text(
                                                       s.displayName,
                                                       maxLines: 2,
-                                                      overflow: TextOverflow.ellipsis,
+                                                      overflow:
+                                                          TextOverflow.ellipsis,
                                                     ),
-                                                    onTap: () => _applySuggestion(s),
+                                                    onTap: () =>
+                                                        _applySuggestion(s),
                                                   );
                                                 },
                                               ),
@@ -630,8 +698,13 @@ class _NewListingPageState extends State<NewListingPage> {
                                       child: _moonInput(
                                         controller: _cityCtrl,
                                         hint: 'City',
-                                        leading: const Icon(Icons.location_city_outlined),
-                                        validator: (v) => (v == null || v.isEmpty) ? 'Required' : null,
+                                        leading: const Icon(
+                                          Icons.location_city_outlined,
+                                        ),
+                                        validator: (v) =>
+                                            (v == null || v.isEmpty)
+                                            ? 'Required'
+                                            : null,
                                         textAlign: TextAlign.center,
                                       ),
                                     ),
@@ -641,8 +714,13 @@ class _NewListingPageState extends State<NewListingPage> {
                                         controller: _npaCtrl,
                                         hint: 'Postal code (NPA)',
                                         keyboardType: TextInputType.number,
-                                        leading: const Icon(Icons.local_post_office_outlined),
-                                        validator: (v) => (v == null || v.isEmpty) ? 'Required' : null,
+                                        leading: const Icon(
+                                          Icons.local_post_office_outlined,
+                                        ),
+                                        validator: (v) =>
+                                            (v == null || v.isEmpty)
+                                            ? 'Required'
+                                            : null,
                                         textAlign: TextAlign.center,
                                       ),
                                     ),
@@ -652,7 +730,9 @@ class _NewListingPageState extends State<NewListingPage> {
                                         controller: _surfaceCtrl,
                                         hint: 'Surface (m²)',
                                         keyboardType: TextInputType.number,
-                                        leading: const Icon(Icons.square_foot_outlined),
+                                        leading: const Icon(
+                                          Icons.square_foot_outlined,
+                                        ),
                                         textAlign: TextAlign.center,
                                       ),
                                     ),
@@ -662,7 +742,9 @@ class _NewListingPageState extends State<NewListingPage> {
                                         controller: _roomsCtrl,
                                         hint: 'Number of rooms',
                                         keyboardType: TextInputType.number,
-                                        leading: const Icon(Icons.meeting_room_outlined),
+                                        leading: const Icon(
+                                          Icons.meeting_room_outlined,
+                                        ),
                                         textAlign: TextAlign.center,
                                       ),
                                     ),
@@ -672,48 +754,81 @@ class _NewListingPageState extends State<NewListingPage> {
                                         controller: _floorCtrl,
                                         hint: 'Floor',
                                         keyboardType: TextInputType.number,
-                                        leading: const Icon(Icons.unfold_more_outlined),
+                                        leading: const Icon(
+                                          Icons.unfold_more_outlined,
+                                        ),
                                         textAlign: TextAlign.center,
                                       ),
                                     ),
                                     SizedBox(
                                       width: gridWidth,
                                       child: Column(
-                                        crossAxisAlignment: CrossAxisAlignment.center,
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.center,
                                         children: [
                                           Text(
                                             'Type',
                                             style: TextStyle(
-                                              color: cs.onSurface.withOpacity(.8),
+                                              color: cs.onSurface.withOpacity(
+                                                .8,
+                                              ),
                                               fontWeight: FontWeight.w600,
                                             ),
                                           ),
                                           const SizedBox(height: 8),
                                           LayoutBuilder(
                                             builder: (context, box) {
-                                              final isNarrow = box.maxWidth < 300;
+                                              final isNarrow =
+                                                  box.maxWidth < 300;
                                               if (isNarrow) {
                                                 return Wrap(
                                                   spacing: 8,
                                                   runSpacing: 8,
-                                                  alignment: WrapAlignment.center,
-                                                  children: List.generate(_typeOptions.length, (i) {
-                                                    return SizedBox(
-                                                      width: box.maxWidth,
-                                                      child: MoonSegmentedControl(
-                                                        initialIndex: _typeIndex == i ? 0 : -1,
-                                                        segments: [Segment(label: Text(_typeOptions[i]))],
-                                                        onSegmentChanged: (_) => setState(() => _typeIndex = i),
-                                                        isExpanded: true,
-                                                      ),
-                                                    );
-                                                  }),
+                                                  alignment:
+                                                      WrapAlignment.center,
+                                                  children: List.generate(
+                                                    _typeOptions.length,
+                                                    (i) {
+                                                      return SizedBox(
+                                                        width: box.maxWidth,
+                                                        child: MoonSegmentedControl(
+                                                          initialIndex:
+                                                              _typeIndex == i
+                                                              ? 0
+                                                              : -1,
+                                                          segments: [
+                                                            Segment(
+                                                              label: Text(
+                                                                _typeOptions[i],
+                                                              ),
+                                                            ),
+                                                          ],
+                                                          onSegmentChanged:
+                                                              (_) => setState(
+                                                                () =>
+                                                                    _typeIndex =
+                                                                        i,
+                                                              ),
+                                                          isExpanded: true,
+                                                        ),
+                                                      );
+                                                    },
+                                                  ),
                                                 );
                                               }
                                               return MoonSegmentedControl(
                                                 initialIndex: _typeIndex,
-                                                segments: _typeOptions.map((t) => Segment(label: Text(t))).toList(),
-                                                onSegmentChanged: (i) => setState(() => _typeIndex = i),
+                                                segments: _typeOptions
+                                                    .map(
+                                                      (t) => Segment(
+                                                        label: Text(t),
+                                                      ),
+                                                    )
+                                                    .toList(),
+                                                onSegmentChanged: (i) =>
+                                                    setState(
+                                                      () => _typeIndex = i,
+                                                    ),
                                                 isExpanded: true,
                                               );
                                             },
@@ -738,9 +853,20 @@ class _NewListingPageState extends State<NewListingPage> {
                                 Row(
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
-                                    Icon(MoonIcons.arrows_cross_lines_24_regular, size: 20, color: cs.primary),
+                                    Icon(
+                                      MoonIcons.arrows_cross_lines_24_regular,
+                                      size: 20,
+                                      color: cs.primary,
+                                    ),
                                     const SizedBox(width: 8),
-                                    Text('Amenities', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: cs.onSurface)),
+                                    Text(
+                                      'Amenities',
+                                      style: TextStyle(
+                                        fontSize: 18,
+                                        fontWeight: FontWeight.w800,
+                                        color: cs.onSurface,
+                                      ),
+                                    ),
                                   ],
                                 ),
                                 const SizedBox(height: 8),
@@ -755,7 +881,8 @@ class _NewListingPageState extends State<NewListingPage> {
                                       child: _AmenitySwitch(
                                         title: 'Have furniture?',
                                         value: _isFurnish,
-                                        onChanged: (v) => setState(() => _isFurnish = v),
+                                        onChanged: (v) =>
+                                            setState(() => _isFurnish = v),
                                       ),
                                     ),
                                     SizedBox(
@@ -763,7 +890,8 @@ class _NewListingPageState extends State<NewListingPage> {
                                       child: _AmenitySwitch(
                                         title: 'Wifi included?',
                                         value: _wifiIncl,
-                                        onChanged: (v) => setState(() => _wifiIncl = v),
+                                        onChanged: (v) =>
+                                            setState(() => _wifiIncl = v),
                                       ),
                                     ),
                                     SizedBox(
@@ -771,7 +899,8 @@ class _NewListingPageState extends State<NewListingPage> {
                                       child: _AmenitySwitch(
                                         title: 'Charges included?',
                                         value: _chargesIncl,
-                                        onChanged: (v) => setState(() => _chargesIncl = v),
+                                        onChanged: (v) =>
+                                            setState(() => _chargesIncl = v),
                                       ),
                                     ),
                                     SizedBox(
@@ -779,7 +908,8 @@ class _NewListingPageState extends State<NewListingPage> {
                                       child: _AmenitySwitch(
                                         title: 'Car park?',
                                         value: _carPark,
-                                        onChanged: (v) => setState(() => _carPark = v),
+                                        onChanged: (v) =>
+                                            setState(() => _carPark = v),
                                       ),
                                     ),
                                   ],
@@ -799,9 +929,20 @@ class _NewListingPageState extends State<NewListingPage> {
                                 Row(
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
-                                    Icon(MoonIcons.time_calendar_24_regular, size: 20, color: cs.primary),
+                                    Icon(
+                                      MoonIcons.time_calendar_24_regular,
+                                      size: 20,
+                                      color: cs.primary,
+                                    ),
                                     const SizedBox(width: 8),
-                                    Text('Availability', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: cs.onSurface)),
+                                    Text(
+                                      'Availability',
+                                      style: TextStyle(
+                                        fontSize: 18,
+                                        fontWeight: FontWeight.w800,
+                                        color: cs.onSurface,
+                                      ),
+                                    ),
                                   ],
                                 ),
                                 const SizedBox(height: 12),
@@ -817,8 +958,12 @@ class _NewListingPageState extends State<NewListingPage> {
                                       child: MoonFilledButton(
                                         isFullWidth: true,
                                         onTap: _pickStartDate,
-                                        leading: const Icon(Icons.event_available_outlined),
-                                        label: Text('Start: ${_formatDate(_availStart)}'),
+                                        leading: const Icon(
+                                          Icons.event_available_outlined,
+                                        ),
+                                        label: Text(
+                                          'Start: ${_formatDate(_availStart)}',
+                                        ),
                                       ),
                                     ),
                                     SizedBox(
@@ -829,18 +974,30 @@ class _NewListingPageState extends State<NewListingPage> {
                                           Expanded(
                                             child: MoonFilledButton(
                                               isFullWidth: true,
-                                              onTap: _noEndDate ? null : _pickEndDate,
-                                              leading: const Icon(Icons.event_note_outlined),
-                                              label: Text(_noEndDate
-                                                  ? 'End: None'
-                                                  : 'End: ${_formatDate(_availEnd)}'),
+                                              onTap: _noEndDate
+                                                  ? null
+                                                  : _pickEndDate,
+                                              leading: const Icon(
+                                                Icons.event_note_outlined,
+                                              ),
+                                              label: Text(
+                                                _noEndDate
+                                                    ? 'End: None'
+                                                    : 'End: ${_formatDate(_availEnd)}',
+                                              ),
                                             ),
                                           ),
                                           const SizedBox(width: 8),
                                           Row(
                                             mainAxisSize: MainAxisSize.min,
                                             children: [
-                                              Text('No end', style: TextStyle(color: cs.onSurface.withOpacity(.8))),
+                                              Text(
+                                                'No end',
+                                                style: TextStyle(
+                                                  color: cs.onSurface
+                                                      .withOpacity(.8),
+                                                ),
+                                              ),
                                               const SizedBox(width: 6),
                                               MoonSwitch(
                                                 value: _noEndDate,
@@ -861,7 +1018,10 @@ class _NewListingPageState extends State<NewListingPage> {
                                 Text(
                                   'Start date cannot be before today. End date is optional.',
                                   textAlign: TextAlign.center,
-                                  style: TextStyle(color: cs.onSurface.withOpacity(.65), fontSize: 12),
+                                  style: TextStyle(
+                                    color: cs.onSurface.withOpacity(.65),
+                                    fontSize: 12,
+                                  ),
                                 ),
                               ],
                             ),
@@ -878,9 +1038,21 @@ class _NewListingPageState extends State<NewListingPage> {
                                 Row(
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
-                                    Icon(MoonIcons.arrows_diagonals_tlbr_24_regular, size: 20, color: cs.primary),
+                                    Icon(
+                                      MoonIcons
+                                          .arrows_diagonals_tlbr_24_regular,
+                                      size: 20,
+                                      color: cs.primary,
+                                    ),
                                     const SizedBox(width: 8),
-                                    Text('Distances', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: cs.onSurface)),
+                                    Text(
+                                      'Distances',
+                                      style: TextStyle(
+                                        fontSize: 18,
+                                        fontWeight: FontWeight.w800,
+                                        color: cs.onSurface,
+                                      ),
+                                    ),
                                   ],
                                 ),
                                 const SizedBox(height: 12),
@@ -888,10 +1060,13 @@ class _NewListingPageState extends State<NewListingPage> {
                                   width: fieldWidth,
                                   child: MoonFormTextInput(
                                     hasFloatingLabel: false,
-                                    hintText: 'Distance to public transport (km)',
+                                    hintText:
+                                        'Distance to public transport (km)',
                                     controller: _distTransportCtrl,
                                     keyboardType: TextInputType.number,
-                                    leading: const Icon(Icons.directions_bus_outlined),
+                                    leading: const Icon(
+                                      Icons.directions_bus_outlined,
+                                    ),
                                     textAlign: TextAlign.center,
                                   ),
                                 ),
@@ -899,7 +1074,10 @@ class _NewListingPageState extends State<NewListingPage> {
                                 Text(
                                   'HES proximity is computed automatically from your address.',
                                   textAlign: TextAlign.center,
-                                  style: TextStyle(color: cs.onSurface.withOpacity(.65), fontSize: 12),
+                                  style: TextStyle(
+                                    color: cs.onSurface.withOpacity(.65),
+                                    fontSize: 12,
+                                  ),
                                 ),
                               ],
                             ),
@@ -921,7 +1099,9 @@ class _NewListingPageState extends State<NewListingPage> {
                               ),
                               Text(
                                 '${_images.length} selected',
-                                style: TextStyle(color: cs.onSurface.withOpacity(.65)),
+                                style: TextStyle(
+                                  color: cs.onSurface.withOpacity(.65),
+                                ),
                               ),
                             ],
                           ),
@@ -932,7 +1112,10 @@ class _NewListingPageState extends State<NewListingPage> {
                             Text(
                               _error!,
                               textAlign: TextAlign.center,
-                              style: const TextStyle(color: Colors.redAccent, fontWeight: FontWeight.w700),
+                              style: const TextStyle(
+                                color: Colors.redAccent,
+                                fontWeight: FontWeight.w700,
+                              ),
                             ),
 
                           const SizedBox(height: 4),
@@ -941,7 +1124,13 @@ class _NewListingPageState extends State<NewListingPage> {
                             isFullWidth: true,
                             onTap: _saving ? null : _save,
                             leading: _saving
-                                ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                                ? const SizedBox(
+                                    width: 18,
+                                    height: 18,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  )
                                 : const Icon(MoonIcons.arrows_boost_24_regular),
                             label: Text(_saving ? 'Saving…' : 'Save listing'),
                           ),
@@ -1009,7 +1198,10 @@ class _AmenitySwitch extends StatelessWidget {
             child: Text(
               title,
               textAlign: TextAlign.center,
-              style: TextStyle(color: cs.onSurface, fontWeight: FontWeight.w600),
+              style: TextStyle(
+                color: cs.onSurface,
+                fontWeight: FontWeight.w600,
+              ),
             ),
           ),
           MoonSwitch(value: value, onChanged: onChanged),

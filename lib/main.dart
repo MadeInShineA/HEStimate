@@ -3,19 +3,23 @@ import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'ui/property_list.dart';
 import 'package:path_provider/path_provider.dart';
-import 'firebase_options.dart';
-import 'ui/new_listing_page.dart'; // <-- ajoute ton chemin réel
 
-// import 'login.dart'; 
+// Moon Design
+import 'package:moon_design/moon_design.dart';
+
+// Your UI pages
+import 'ui/property_list.dart';
+import 'ui/new_listing_page.dart';
 import 'ui/register.dart';
 import 'ui/login.dart';
 import 'ui/profile.dart';
 import 'ui/about_page.dart';
 import 'ui/faceIdLogin.dart';
-import 'ui/faceIdSetup.dart'; // Import de la nouvelle page
-import 'package:moon_design/moon_design.dart';
+import 'ui/faceIdSetup.dart';
+import 'ui/menu.dart'; // HomeMenuPage lives here
+
+import 'firebase_options.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -54,7 +58,7 @@ Future<void> main() async {
   );
 }
 
-class MyApp extends StatelessWidget {
+class MyApp extends StatefulWidget {
   final User? initialUser;
   final bool faceIdEnabled;
   final File? faceImage;
@@ -65,6 +69,21 @@ class MyApp extends StatelessWidget {
     required this.faceIdEnabled,
     this.faceImage,
   });
+
+  @override
+  State<MyApp> createState() => _MyAppState();
+}
+
+class _MyAppState extends State<MyApp> {
+  ThemeMode _themeMode = ThemeMode.system;
+
+  void _toggleTheme() {
+    setState(() {
+      _themeMode = _themeMode == ThemeMode.dark
+          ? ThemeMode.light
+          : ThemeMode.dark;
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -85,21 +104,28 @@ class MyApp extends StatelessWidget {
 
     return MaterialApp(
       title: 'HEStimate App',
+      themeMode: _themeMode,
       theme: baseLight.copyWith(extensions: [MoonTheme(tokens: lightTokens)]),
       darkTheme: baseDark.copyWith(extensions: [MoonTheme(tokens: darkTokens)]),
-      initialRoute: initialUser == null
+      initialRoute: widget.initialUser == null
           ? '/login'
-          : (faceIdEnabled ? '/faceLogin' : '/home'),
+          : (widget.faceIdEnabled ? '/faceLogin' : '/home'),
       routes: {
         '/login': (context) => const LoginPage(),
         '/register': (context) => const RegisterPage(),
         '/faceIdSetup': (context) => const FaceIdSetupPage(),
-        '/home': (context) =>
-            const MyHomePage(title: 'Firebase Test Home Page'),
+        '/home': (context) => HomeMenuPage(onToggleTheme: _toggleTheme),
         '/profile': (context) => const ProfilePage(),
-        '/faceLogin': (context) =>
-            FaceIdLoginPage(faceImage: faceImage, user: initialUser),
+        '/faceLogin': (context) => FaceIdLoginPage(
+          faceImage: widget.faceImage,
+          user: widget.initialUser,
+        ),
+        // Convenience routes to your other screens (still usable outside menu)
+        '/listings': (context) => const ListingsPage(),
+        '/newListing': (context) => const NewListingPage(),
+        '/about': (context) => const AboutPage(),
       },
+      debugShowCheckedModeBanner: false,
     );
   }
 }
@@ -201,7 +227,10 @@ class _MyHomePageState extends State<MyHomePage> {
             ),
             const SizedBox(height: 20),
             MoonButton(
-              onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const AboutPage())),
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const AboutPage()),
+              ),
               leading: const Icon(MoonIcons.arrows_forward_24_regular),
               label: const Text('About'),
             ),
@@ -225,3 +254,4 @@ class _MyHomePageState extends State<MyHomePage> {
     );
   }
 }
+
