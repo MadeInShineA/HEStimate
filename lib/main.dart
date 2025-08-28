@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:hestimate/property_list.dart';
+import 'ui/property_list.dart';
 import 'package:path_provider/path_provider.dart';
 import 'firebase_options.dart';
 import 'ui/register.dart';

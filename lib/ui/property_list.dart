@@ -15,7 +15,7 @@ class _ListingsPageState extends State<ListingsPage> {
   final _searchCtrl = TextEditingController();
 
   // Filters
-  int _typeIndex = -1; // -1 = all, 0 = Entire home, 1 = Single room
+  int _typeIndex = -1; // -1 = all, 0 = entire_home, 1 = room
   int _sortIndex = 0; // 0 = Newest, 1 = Price ↑, 2 = Price ↓
   bool _furnishedOnly = false;
   bool _wifiOnly = false;
@@ -33,17 +33,6 @@ class _ListingsPageState extends State<ListingsPage> {
       'listings',
     );
 
-    // Type filter
-    if (_typeIndex == 0) q = q.where('type', isEqualTo: 'Entire home');
-    if (_typeIndex == 1) q = q.where('type', isEqualTo: 'Single room');
-
-    // Boolean amenity filters
-    if (_furnishedOnly) q = q.where('is_furnish', isEqualTo: true);
-    if (_wifiOnly) q = q.where('wifi_incl', isEqualTo: true);
-    if (_chargesInclOnly) q = q.where('charges_incl', isEqualTo: true);
-    if (_carParkOnly) q = q.where('car_park', isEqualTo: true);
-
-    // Sorting
     switch (_sortIndex) {
       case 1:
         q = q.orderBy('price');
@@ -57,6 +46,109 @@ class _ListingsPageState extends State<ListingsPage> {
     }
 
     return q;
+  }
+
+  List<QueryDocumentSnapshot<Map<String, dynamic>>> _applyClientSideFilters(
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
+  ) {
+    var filtered = docs;
+
+    // Client-side search on city / npa
+    final query = _searchCtrl.text.trim().toLowerCase();
+    if (query.isNotEmpty) {
+      filtered = filtered.where((d) {
+        final m = d.data();
+        final hay = [
+          (m['city'] ?? '').toString(),
+          (m['npa'] ?? '').toString(),
+        ].join(' ').toLowerCase();
+        return hay.contains(query);
+      }).toList();
+    }
+
+    // Type filter (client-side)
+    if (_typeIndex == 0) {
+      filtered = filtered.where((d) {
+        final type = (d.data()['type'] ?? '').toString().trim();
+        return type == 'entire_home';
+      }).toList();
+    }
+    if (_typeIndex == 1) {
+      filtered = filtered.where((d) {
+        final type = (d.data()['type'] ?? '').toString().trim();
+        return type == 'room';
+      }).toList();
+    }
+
+    // Boolean amenity filters (client-side)
+    if (_furnishedOnly) {
+      filtered = filtered.where((d) => d.data()['is_furnish'] == true).toList();
+    }
+    if (_wifiOnly) {
+      filtered = filtered.where((d) => d.data()['wifi_incl'] == true).toList();
+    }
+    if (_chargesInclOnly) {
+      filtered = filtered.where((d) => d.data()['charges_incl'] == true).toList();
+    }
+    if (_carParkOnly) {
+      filtered = filtered.where((d) => d.data()['car_park'] == true).toList();
+    }
+
+    // Client-side sorting si on a des filtres qui ont pu changer l'ordre
+    bool hasFilters = _typeIndex >= 0 || _furnishedOnly || _wifiOnly || _chargesInclOnly || _carParkOnly;
+    if (hasFilters) {
+      switch (_sortIndex) {
+        case 1:
+          filtered.sort((a, b) => (a.data()['price'] ?? 0).compareTo(b.data()['price'] ?? 0));
+          break;
+        case 2:
+          filtered.sort((a, b) => (b.data()['price'] ?? 0).compareTo(a.data()['price'] ?? 0));
+          break;
+        case 0:
+        default:
+
+          filtered.sort((a, b) {
+            final aCreated = a.data()['createdAt'] ?? '';
+            final bCreated = b.data()['createdAt'] ?? '';
+            return bCreated.compareTo(aCreated);
+          });
+          break;
+      }
+    }
+
+    return filtered;
+  }
+
+  String _generateTitle(Map<String, dynamic> data) {
+    final type = (data['type'] ?? '').toString();
+    final rooms = (data['num_rooms'] ?? 0).toString();
+    final surface = (data['surface'] ?? 0).toString();
+    final city = (data['city'] ?? '').toString();
+    final furnished = data['is_furnish'] == true;
+
+    String title = '';
+    
+    if (type == 'room') {
+      title = furnished ? 'Furnished Room' : 'Room';
+    } else if (type == 'entire_home') {
+      if (rooms == '1' || rooms == '1.0') {
+        title = furnished ? 'Furnished Studio' : 'Studio';
+      } else {
+        title = furnished ? 'Furnished ${rooms}-Room Apartment' : '${rooms}-Room Apartment';
+      }
+    } else {
+      title = furnished ? 'Furnished Property' : 'Property';
+    }
+
+    if (surface != '0' && surface.isNotEmpty) {
+      title += ' - ${surface}m²';
+    }
+
+    if (city.isNotEmpty) {
+      title += ' in $city';
+    }
+
+    return title;
   }
 
   @override
@@ -147,20 +239,7 @@ class _ListingsPageState extends State<ListingsPage> {
                     }
 
                     final docs = snapshot.data?.docs ?? [];
-
-                    // Client-side search on city / npa / nearest_hesso_name
-                    final query = _searchCtrl.text.trim().toLowerCase();
-                    final filtered = query.isEmpty
-                        ? docs
-                        : docs.where((d) {
-                            final m = d.data();
-                            final hay = [
-                              (m['city'] ?? '').toString(),
-                              (m['npa'] ?? '').toString(),
-                              (m['nearest_hesso_name'] ?? '').toString(),
-                            ].join(' ').toLowerCase();
-                            return hay.contains(query);
-                          }).toList();
+                    final filtered = _applyClientSideFilters(docs);
 
                     if (filtered.isEmpty) {
                       return const SliverFillRemaining(
@@ -191,11 +270,12 @@ class _ListingsPageState extends State<ListingsPage> {
                           crossAxisCount: crossAxisCount,
                           crossAxisSpacing: 16,
                           mainAxisSpacing: 16,
-                          childAspectRatio: 1.45,
+                          childAspectRatio: 1.2,
                         ),
                         delegate: SliverChildBuilderDelegate((context, i) {
                           final data = filtered[i].data();
-                          return _ListingCard(data: data);
+                          final title = _generateTitle(data);
+                          return _ListingCard(data: data, title: title);
                         }, childCount: filtered.length),
                       ),
                     );
@@ -245,7 +325,7 @@ class _FilterBar extends StatelessWidget {
             Expanded(
               child: MoonFormTextInput(
                 hasFloatingLabel: false,
-                hintText: 'Search by city, NPA, HES…',
+                hintText: 'Search by city, NPA…',
                 controller: searchCtrl,
                 leading: const Icon(Icons.search),
                 onChanged: (_) => onChanged(
@@ -467,7 +547,8 @@ class _EmptyState extends StatelessWidget {
 
 class _ListingCard extends StatelessWidget {
   final Map<String, dynamic> data;
-  const _ListingCard({required this.data});
+  final String title;
+  const _ListingCard({required this.data, required this.title});
 
   @override
   Widget build(BuildContext context) {
@@ -494,166 +575,207 @@ class _ListingCard extends StatelessWidget {
       if (data['car_park'] == true) 'Car park',
     ];
 
-    return Container(
-      decoration: BoxDecoration(
-        color: Theme.of(context).cardColor.withOpacity(.96),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: cs.primary.withOpacity(0.12)),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(.08),
-            blurRadius: 16,
-            offset: const Offset(0, 8),
-          ),
-        ],
-      ),
-      clipBehavior: Clip.antiAlias,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Image
-          AspectRatio(
-            aspectRatio: 16 / 9,
-            child: imageUrl == null
-                ? Container(
-                    color: cs.primary.withOpacity(.08),
-                    child: Center(
-                      child: Icon(
-                        Icons.image_outlined,
-                        size: 40,
-                        color: cs.primary.withOpacity(.6),
-                      ),
-                    ),
-                  )
-                : Ink.image(
-                    image: NetworkImage(imageUrl),
-                    fit: BoxFit.cover,
-                    child: const SizedBox.expand(),
-                  ),
-          ),
-
-          // Content
-          Padding(
-            padding: const EdgeInsets.all(14),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                // Price + type
-                Row(
-                  children: [
-                    Text(
-                      priceStr,
-                      style: const TextStyle(
-                        fontSize: 20,
-                        fontWeight: FontWeight.w900,
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 8,
-                        vertical: 4,
-                      ),
-                      decoration: BoxDecoration(
-                        color: cs.primary.withOpacity(.12),
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: cs.primary.withOpacity(.25)),
-                      ),
-                      child: Text(
-                        type,
-                        style: TextStyle(
-                          fontWeight: FontWeight.w700,
-                          color: cs.onSurface,
-                        ),
-                      ),
-                    ),
-                    const Spacer(),
-                    IconButton(
-                      tooltip: 'Open details',
-                      onPressed: () {},
-                      icon: const Icon(Icons.open_in_new),
-                    ),
-                  ],
-                ),
-
-                const SizedBox(height: 6),
-                // Location & specs
-                Row(
-                  children: [
-                    Icon(
-                      Icons.place,
-                      size: 16,
-                      color: cs.onSurface.withOpacity(.7),
-                    ),
-                    const SizedBox(width: 4),
-                    Text(
-                      '$city${npa.isNotEmpty ? ' · $npa' : ''}',
-                      style: TextStyle(color: cs.onSurface.withOpacity(.8)),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 6),
-                Row(
-                  children: [
-                    Icon(
-                      Icons.square_foot,
-                      size: 16,
-                      color: cs.onSurface.withOpacity(.7),
-                    ),
-                    const SizedBox(width: 4),
-                    Text(
-                      surface.isNotEmpty ? '$surface m²' : '—',
-                      style: TextStyle(color: cs.onSurface.withOpacity(.8)),
-                    ),
-                    const SizedBox(width: 12),
-                    Icon(
-                      Icons.meeting_room,
-                      size: 16,
-                      color: cs.onSurface.withOpacity(.7),
-                    ),
-                    const SizedBox(width: 4),
-                    Text(
-                      rooms.isNotEmpty ? '$rooms rooms' : '—',
-                      style: TextStyle(color: cs.onSurface.withOpacity(.8)),
-                    ),
-                  ],
-                ),
-
-                // Amenities
-                if (amenities.isNotEmpty) ...[
-                  const SizedBox(height: 10),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: amenities
-                        .map(
-                          (a) => Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 10,
-                              vertical: 6,
-                            ),
-                            decoration: BoxDecoration(
-                              color: cs.primary.withOpacity(.08),
-                              borderRadius: BorderRadius.circular(999),
-                              border: Border.all(
-                                color: cs.primary.withOpacity(.18),
-                              ),
-                            ),
-                            child: Text(
-                              a,
-                              style: const TextStyle(
-                                fontWeight: FontWeight.w600,
-                              ),
+    return InkWell(
+      onTap: () {
+        // property details page could be implemented
+      },
+      borderRadius: BorderRadius.circular(16),
+      child: Container(
+        decoration: BoxDecoration(
+          color: Theme.of(context).cardColor.withOpacity(.96),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: cs.primary.withOpacity(0.12)),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(.08),
+              blurRadius: 16,
+              offset: const Offset(0, 8),
+            ),
+          ],
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Flexible(
+              flex: 3,
+              child: SizedBox(
+                width: double.infinity,
+                child: AspectRatio(
+                  aspectRatio: 16 / 9,
+                  child: imageUrl == null
+                      ? Container(
+                          color: cs.primary.withOpacity(.08),
+                          child: Center(
+                            child: Icon(
+                              Icons.image_outlined,
+                              size: 40,
+                              color: cs.primary.withOpacity(.6),
                             ),
                           ),
                         )
-                        .toList(),
-                  ),
-                ],
-              ],
+                      : Image.network(
+                          imageUrl,
+                          fit: BoxFit.cover,
+                          width: double.infinity,
+                          height: double.infinity,
+                        ),
+                ),
+              ),
             ),
-          ),
-        ],
+
+            // Content
+            Flexible(
+              flex: 4,
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // Title
+                    Text(
+                      title,
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                      ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 6),
+
+                    // Price + type - sans bouton
+                    Row(
+                      children: [
+                        Text(
+                          priceStr,
+                          style: const TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.w900,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Flexible(
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 6,
+                              vertical: 2,
+                            ),
+                            decoration: BoxDecoration(
+                              color: cs.primary.withOpacity(.12),
+                              borderRadius: BorderRadius.circular(6),
+                              border: Border.all(color: cs.primary.withOpacity(.25)),
+                            ),
+                            child: Text(
+                              type,
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w700,
+                                color: cs.onSurface,
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+
+                    const SizedBox(height: 4),
+                    // Location & specs
+                    Row(
+                      children: [
+                        Icon(
+                          Icons.place,
+                          size: 14,
+                          color: cs.onSurface.withOpacity(.7),
+                        ),
+                        const SizedBox(width: 4),
+                        Expanded(
+                          child: Text(
+                            '$city${npa.isNotEmpty ? ' · $npa' : ''}',
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: cs.onSurface.withOpacity(.8)
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Row(
+                      children: [
+                        Icon(
+                          Icons.square_foot,
+                          size: 14,
+                          color: cs.onSurface.withOpacity(.7),
+                        ),
+                        const SizedBox(width: 4),
+                        Text(
+                          surface.isNotEmpty ? '$surface m²' : '—',
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: cs.onSurface.withOpacity(.8)
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Icon(
+                          Icons.meeting_room,
+                          size: 14,
+                          color: cs.onSurface.withOpacity(.7),
+                        ),
+                        const SizedBox(width: 4),
+                        Text(
+                          rooms.isNotEmpty ? '$rooms rooms' : '—',
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: cs.onSurface.withOpacity(.8)
+                          ),
+                        ),
+                      ],
+                    ),
+
+                    // Amenities
+                    if (amenities.isNotEmpty) ...[
+                      const SizedBox(height: 8),
+                      Wrap(
+                        spacing: 4,
+                        runSpacing: 4,
+                        children: amenities
+                            .map(
+                              (a) => Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 6,
+                                  vertical: 3,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: cs.primary.withOpacity(.08),
+                                  borderRadius: BorderRadius.circular(999),
+                                  border: Border.all(
+                                    color: cs.primary.withOpacity(.18),
+                                  ),
+                                ),
+                                child: Text(
+                                  a,
+                                  style: const TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                            )
+                            .toList(),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
