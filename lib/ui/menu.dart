@@ -16,19 +16,16 @@ mixin MenuPageMeta {
   IconData? get menuSelectedIcon => null;
 }
 
-/// Adaptive Moon-flavored menu container:
-/// - Phones & Tablets: AppBar + Drawer + Bottom NavigationBar
-/// - Desktop (wide screens): Purple NavigationRail + AppBar
+/// Moon-flavored menu container:
+/// - Phone & Tablet: AppBar + Drawer + Bottom NavigationBar
+/// - Desktop: AppBar + Drawer only (no bottom bar)
 class MoonMenuShell extends StatefulWidget {
   final List<Widget> pages; // Widgets that also mix in MenuPageMeta
   final int initialIndex; // starting tab
   final String? title; // null => current tab label
   final List<Widget>? actions; // extra AppBar actions
   final FloatingActionButton? fab;
-
-  /// We treat widths < desktopBreakpoint as "compact" (phone-style UI).
-  /// This keeps tablets looking like phones, as requested.
-  final double desktopBreakpoint; // >= => desktop rail
+  final double desktopBreakpoint; // >= => desktop
   final VoidCallback? onToggleTheme; // top-right theme toggle
 
   const MoonMenuShell({
@@ -38,7 +35,7 @@ class MoonMenuShell extends StatefulWidget {
     this.title,
     this.actions,
     this.fab,
-    this.desktopBreakpoint = 1100, // phone/tablet below this, desktop at/above
+    this.desktopBreakpoint = 1100,
     this.onToggleTheme,
   });
 
@@ -78,7 +75,7 @@ class _MoonMenuShellState extends State<MoonMenuShell> {
   @override
   Widget build(BuildContext context) {
     final width = MediaQuery.sizeOf(context).width;
-    final isDesktop = width >= widget.desktopBreakpoint; // desktop only here
+    final isDesktop = width >= widget.desktopBreakpoint;
 
     // Get Moon tokens via ThemeExtension (fallback to light tokens)
     final moon = Theme.of(context).extension<MoonTheme>();
@@ -91,125 +88,73 @@ class _MoonMenuShellState extends State<MoonMenuShell> {
       child: widget.pages[_index],
     );
 
-    if (!isDesktop) {
-      // PHONE & TABLET: AppBar + Drawer + Bottom NavigationBar
-      return Scaffold(
-        appBar: AppBar(
-          title: Text(widget.title ?? current.menuLabel),
-          backgroundColor: tokens.colors.gohan,
-          foregroundColor: tokens.colors.bulma,
-          elevation: 0,
-          actions: _buildActions(context, tokens),
-        ),
-        drawer: Drawer(
-          backgroundColor: tokens.colors.goku,
-          child: SafeArea(
-            child: ListView(
-              padding: const EdgeInsets.symmetric(vertical: 12),
-              children: [
-                const SizedBox(height: 8),
-                for (int i = 0; i < meta.length; i++)
-                  ListTile(
-                    leading: Icon(
-                      i == _index
-                          ? (meta[i].menuSelectedIcon ?? meta[i].menuIcon)
-                          : meta[i].menuIcon,
-                      color: tokens.colors.bulma,
-                    ),
-                    title: Text(meta[i].menuLabel),
-                    selected: i == _index,
-                    onTap: () {
-                      Navigator.of(context).pop();
-                      setState(() => _index = i);
-                    },
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(widget.title ?? current.menuLabel),
+        backgroundColor: tokens.colors.gohan,
+        foregroundColor: tokens.colors.bulma,
+        elevation: 0,
+        actions: _buildActions(context, tokens),
+      ),
+      drawer: Drawer(
+        backgroundColor: tokens.colors.goku,
+        child: SafeArea(
+          child: ListView(
+            padding: const EdgeInsets.symmetric(vertical: 12),
+            children: [
+              const SizedBox(height: 8),
+              for (int i = 0; i < meta.length; i++)
+                ListTile(
+                  leading: Icon(
+                    i == _index
+                        ? (meta[i].menuSelectedIcon ?? meta[i].menuIcon)
+                        : meta[i].menuIcon,
+                    color: tokens.colors.bulma,
                   ),
-              ],
-            ),
+                  title: Text(meta[i].menuLabel),
+                  selected: i == _index,
+                  onTap: () {
+                    Navigator.of(context).pop();
+                    setState(() => _index = i);
+                  },
+                ),
+            ],
           ),
         ),
-        body: AnimatedSwitcher(
-          duration: const Duration(milliseconds: 220),
-          switchInCurve: Curves.easeOutCubic,
-          switchOutCurve: Curves.easeInCubic,
-          child: page,
-        ),
-        floatingActionButton: widget.fab,
-        bottomNavigationBar: NavigationBar(
-          backgroundColor: tokens.colors.gohan,
-          indicatorColor: tokens.colors.piccolo,
-          surfaceTintColor: Colors.transparent,
-          selectedIndex: _index,
-          onDestinationSelected: (i) => setState(() => _index = i),
-          destinations: [
-            for (final m in meta)
-              NavigationDestination(
-                icon: Icon(m.menuIcon, color: tokens.colors.bulma),
-                selectedIcon: Icon(
-                  m.menuSelectedIcon ?? m.menuIcon,
-                  color: tokens.colors.bulma,
-                ),
-                label: m.menuLabel,
-              ),
-          ],
-        ),
-      );
-    }
-
-    // DESKTOP: Purple NavigationRail + AppBar
-    return Scaffold(
-      body: Row(
-        children: [
-          SafeArea(
-            child: NavigationRail(
-              backgroundColor: tokens.colors.piccolo, // purple rail bg
+      ),
+      body: AnimatedSwitcher(
+        duration: const Duration(milliseconds: 220),
+        switchInCurve: Curves.easeOutCubic,
+        switchOutCurve: Curves.easeInCubic,
+        child: page,
+      ),
+      floatingActionButton: widget.fab,
+      // Bottom nav only if not desktop
+      bottomNavigationBar: isDesktop
+          ? null
+          : NavigationBar(
+              backgroundColor: tokens.colors.gohan,
+              indicatorColor: tokens.colors.piccolo,
+              surfaceTintColor: Colors.transparent,
               selectedIndex: _index,
               onDestinationSelected: (i) => setState(() => _index = i),
-              extended: true, // labels visible on desktop
-              selectedIconTheme: IconThemeData(color: tokens.colors.bulma),
-              unselectedIconTheme: IconThemeData(
-                color: tokens.colors.bulma.withOpacity(0.8),
-              ),
               destinations: [
                 for (final m in meta)
-                  NavigationRailDestination(
-                    icon: Icon(m.menuIcon),
-                    selectedIcon: Icon(m.menuSelectedIcon ?? m.menuIcon),
-                    label: Text(
-                      m.menuLabel,
-                      style: TextStyle(color: tokens.colors.bulma),
+                  NavigationDestination(
+                    icon: Icon(m.menuIcon, color: tokens.colors.bulma),
+                    selectedIcon: Icon(
+                      m.menuSelectedIcon ?? m.menuIcon,
+                      color: tokens.colors.bulma,
                     ),
+                    label: m.menuLabel,
                   ),
               ],
             ),
-          ),
-          const VerticalDivider(width: 1),
-          Expanded(
-            child: Scaffold(
-              appBar: AppBar(
-                title: Text(widget.title ?? current.menuLabel),
-                backgroundColor: tokens.colors.piccolo, // purple app bar
-                foregroundColor: tokens.colors.bulma,
-                elevation: 0,
-                actions: _buildActions(context, tokens),
-              ),
-              body: AnimatedSwitcher(
-                duration: const Duration(milliseconds: 220),
-                switchInCurve: Curves.easeOutCubic,
-                switchOutCurve: Curves.easeInCubic,
-                child: page,
-              ),
-              floatingActionButton: widget.fab,
-            ),
-          ),
-        ],
-      ),
     );
   }
 }
 
 /// Convenience: a ready-made “menu home” page using the sections below.
-/// - Phone & Tablet: phone-style UI
-/// - Desktop: purple NavigationRail
 class HomeMenuPage extends StatelessWidget {
   final VoidCallback onToggleTheme;
   const HomeMenuPage({super.key, required this.onToggleTheme});
@@ -222,9 +167,9 @@ class HomeMenuPage extends StatelessWidget {
       title: 'HEStimate',
       initialIndex: maybeIndex ?? 0,
       onToggleTheme: onToggleTheme,
-      desktopBreakpoint: 1100, // tablets use phone UI; desktop gets rail
+      desktopBreakpoint: 1100, // phones & tablets below, desktop above
       pages: const [
-        DashboardPage(), // from home.dart
+        DashboardPage(),
         ListingsSection(),
         NewListingSection(),
         ProfileSection(),
