@@ -19,10 +19,11 @@ class _RegisterPageState extends State<RegisterPage> {
 
   bool _isLoading = false;
   bool _obscurePw = true;
-  bool _isHes = false;
 
   String? _selectedSchool;
   List<String> _schools = [];
+
+  String _role = "student";
 
   @override
   void initState() {
@@ -58,7 +59,8 @@ class _RegisterPageState extends State<RegisterPage> {
 
     setState(() => _isLoading = true);
     try {
-      final userCred = await FirebaseAuth.instance.createUserWithEmailAndPassword(
+      final userCred =
+          await FirebaseAuth.instance.createUserWithEmailAndPassword(
         email: _emailCtrl.text.trim(),
         password: _passwordCtrl.text,
       );
@@ -68,15 +70,16 @@ class _RegisterPageState extends State<RegisterPage> {
         await FirebaseFirestore.instance.collection('users').doc(uid).set({
           'name': _nameCtrl.text.trim(),
           'email': _emailCtrl.text.trim(),
-          'isHes': _isHes,
-          'school': _isHes ? _selectedSchool : null,
+          'role': _role,
+          'school': _role == "student" ? _selectedSchool : null,
+          'faceIdEnabled': false, // Par défaut désactivé
           'createdAt': FieldValue.serverTimestamp(),
         });
       }
 
       if (!mounted) return;
       _showToast(context, 'Welcome! Account created.');
-      Navigator.of(context).pushReplacementNamed('/home');
+      Navigator.of(context).pushReplacementNamed('/faceIdSetup');
     } on FirebaseAuthException catch (e) {
       final msg = switch (e.code) {
         'email-already-in-use' => 'That email is already in use.',
@@ -96,8 +99,8 @@ class _RegisterPageState extends State<RegisterPage> {
     showDialog(
       context: context,
       builder: (context) => Dialog(
-        shape: MoonSquircleBorder(
-          borderRadius: const MoonSquircleBorderRadius.all(
+        shape: const MoonSquircleBorder(
+          borderRadius: MoonSquircleBorderRadius.all(
             MoonSquircleRadius(cornerRadius: 16),
           ),
         ),
@@ -134,6 +137,28 @@ class _RegisterPageState extends State<RegisterPage> {
   @override
   Widget build(BuildContext context) {
     final theme = context.moonTheme;
+    final primary = Theme.of(context).colorScheme.primary;
+
+    final segments = [
+      Segment(
+        label: const Text('Student'),
+        segmentStyle: SegmentStyle(
+          selectedSegmentColor: primary,
+          selectedTextColor: Colors.white,
+          segmentBorderRadius: BorderRadius.circular(12),
+          segmentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        ),
+      ),
+      Segment(
+        label: const Text('Homeowner'),
+        segmentStyle: SegmentStyle(
+          selectedSegmentColor: primary,
+          selectedTextColor: Colors.white,
+          segmentBorderRadius: BorderRadius.circular(12),
+          segmentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        ),
+      ),
+    ];
 
     return Scaffold(
       body: SafeArea(
@@ -146,7 +171,6 @@ class _RegisterPageState extends State<RegisterPage> {
                 key: _formKey,
                 child: SingleChildScrollView(
                   child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
                       const SizedBox(height: 16),
@@ -236,49 +260,63 @@ class _RegisterPageState extends State<RegisterPage> {
                       ),
                       const SizedBox(height: 16),
 
-                      // Checkbox HES
-                      Row(
-                        children: [
-                          Checkbox(
-                            value: _isHes,
-                            onChanged: (v) {
-                              setState(() {
-                                _isHes = v ?? false;
-                                if (!_isHes) _selectedSchool = null;
-                              });
-                            },
-                          ),
-                          const Text("I am a HES student"),
-                        ],
-                      ),
-
-                      // Select school if HES
-                      if (_isHes)
-                        DropdownButtonFormField<String>(
-                          value: _selectedSchool,
-                          items: _schools
-                              .map(
-                                (s) => DropdownMenuItem(
-                                  value: s,
-                                  child: Text(s),
-                                ),
-                              )
-                              .toList(),
-                          onChanged: (val) => setState(() {
-                            _selectedSchool = val;
-                          }),
-                          decoration: const InputDecoration(
-                            border: OutlineInputBorder(),
-                            labelText: "Select your school",
-                          ),
-                          validator: (val) {
-                            if (_isHes && (val == null || val.isEmpty)) {
-                              return "School is required";
-                            }
-                            return null;
+                      SizedBox(
+                        width: double.infinity,
+                        height: 48,
+                        child: MoonSegmentedControl(
+                          isExpanded: true,
+                          initialIndex: _role == 'student' ? 0 : 1,
+                          segments: segments,
+                          gap: 8,
+                          borderRadius: BorderRadius.circular(12),
+                          backgroundColor: Theme.of(context)
+                              .colorScheme
+                              .surfaceVariant
+                              .withOpacity(0.5),
+                          onSegmentChanged: (index) {
+                            setState(() {
+                              _role = index == 0 ? 'student' : 'homeowner';
+                              if (_role != 'student') _selectedSchool = null;
+                            });
                           },
                         ),
+                      ),
+                      const SizedBox(height: 16),
 
+                      // Select school if Student
+                      AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 200),
+                        child: _role == "student"
+                            ? DropdownButtonFormField<String>(
+                                key: const ValueKey("dropdown"),
+                                value: _selectedSchool,
+                                items: _schools
+                                    .map(
+                                      (s) => DropdownMenuItem(
+                                        value: s,
+                                        child: Text(s),
+                                      ),
+                                    )
+                                    .toList(),
+                                onChanged: (val) => setState(() {
+                                  _selectedSchool = val;
+                                }),
+                                decoration: const InputDecoration(
+                                  border: OutlineInputBorder(),
+                                  labelText: "Select your school",
+                                ),
+                                validator: (val) {
+                                  if (_role == "student" && (val == null || val.isEmpty)) {
+                                    return "School is required";
+                                  }
+                                  return null;
+                                },
+                              )
+                            : const SizedBox(
+                                key: ValueKey("empty"),
+                                height: 60,
+                              ),
+                      ),
                       const SizedBox(height: 20),
 
                       // Submit
@@ -303,7 +341,8 @@ class _RegisterPageState extends State<RegisterPage> {
                         alignment: Alignment.center,
                         child: TextButton(
                           onPressed: () {
-                            Navigator.of(context).pushReplacementNamed('/login');
+                            Navigator.of(context)
+                                .pushReplacementNamed('/login');
                           },
                           child: const Text('Already have an account? Sign in'),
                         ),

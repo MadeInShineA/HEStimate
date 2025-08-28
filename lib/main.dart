@@ -10,6 +10,7 @@ import 'login.dart';
 import 'profile.dart';
 import 'ui/about_page.dart';
 import 'faceIdLogin.dart';
+import 'faceIdSetup.dart'; // Import de la nouvelle page
 import 'package:moon_design/moon_design.dart';
 
 Future<void> main() async {
@@ -18,7 +19,6 @@ Future<void> main() async {
 
   final currentUser = FirebaseAuth.instance.currentUser;
 
-  // Vérification si Face ID est activé
   bool faceIdEnabled = false;
   File? faceImage;
 
@@ -79,6 +79,7 @@ class MyApp extends StatelessWidget {
       routes: {
         '/login': (context) => LoginPage(faceImage: faceImage),
         '/register': (context) => const RegisterPage(),
+        '/faceIdSetup': (context) => const FaceIdSetupPage(), // Nouvelle route
         '/home': (context) => const MyHomePage(title: 'Firebase Test Home Page'),
         '/profile': (context) => const ProfilePage(),
         '/faceLogin': (context) => FaceIdLoginPage(faceImage: faceImage, user: initialUser),
