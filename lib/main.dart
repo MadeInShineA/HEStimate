@@ -5,7 +5,8 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:path_provider/path_provider.dart';
 import 'firebase_options.dart';
-import 'ui/new_listing_page.dart'; // <-- ajoute ton chemin réel
+import 'ui/new_listing_page.dart';
+import 'ui/edit_listing_page.dart';
 
 // import 'login.dart'; 
 import 'ui/register.dart';
@@ -169,6 +170,19 @@ class _MyHomePageState extends State<MyHomePage> {
               style: Theme.of(context).textTheme.headlineMedium,
             ),
             const SizedBox(height: 20),
+            MoonButton(
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => EditListingPage(listingId: 'IUg6Q2dnz3y3tcEvHX5n'),
+                  ),
+                );
+              },
+              leading: const Icon(MoonIcons.arrows_forward_24_regular),
+              label: const Text('Edit listing'),
+            ),
+
             MoonButton(
               onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const AboutPage())),
               leading: const Icon(MoonIcons.arrows_forward_24_regular),

@@ -1,4 +1,3 @@
-// lib/ui/new_listing_page.dart
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
