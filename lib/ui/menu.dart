@@ -8,6 +8,7 @@ import 'new_listing_page.dart';
 import 'profile.dart';
 import 'about_page.dart';
 import 'home.dart'; // DashboardPage lives here
+import 'owner_property_list.dart';
 
 /// Pages add this mixin to provide menu metadata while staying Stateless/Stateful.
 mixin MenuPageMeta {
@@ -171,6 +172,7 @@ class HomeMenuPage extends StatelessWidget {
       pages: const [
         DashboardPage(),
         ListingsSection(),
+        MyListingsSection(),
         NewListingSection(),
         ProfileSection(),
         AboutSection(),
@@ -228,4 +230,23 @@ class AboutSection extends StatelessWidget with MenuPageMeta {
   IconData? get menuSelectedIcon => Icons.info;
   @override
   Widget build(BuildContext context) => const AboutPage();
+}
+
+class MyListingsSection extends StatelessWidget with MenuPageMeta {
+  const MyListingsSection({super.key});
+
+  @override
+  String get menuLabel => 'My Properties';
+
+  @override
+  IconData get menuIcon => Icons.home_outlined;
+
+  @override
+  IconData? get menuSelectedIcon => Icons.home;
+
+  @override
+  Widget build(BuildContext context) {
+    // You can reuse ListingsPage but pass a flag that it should show only current user's listings
+    return const OwnerListingsPage();
+  }
 }
