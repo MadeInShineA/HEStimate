@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
@@ -7,7 +8,6 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:http/http.dart' as http;
 
-// Moon
 import 'package:moon_design/moon_design.dart';
 import 'package:moon_icons/moon_icons.dart';
 
@@ -23,7 +23,7 @@ class _NewListingPageState extends State<NewListingPage> {
   final _formKey = GlobalKey<FormState>();
   final _repo = ListingRepository();
 
-  // Controllers
+  // Controllers 
   final _addressCtrl = TextEditingController();
   final _cityCtrl = TextEditingController();
   final _npaCtrl = TextEditingController();
@@ -32,20 +32,31 @@ class _NewListingPageState extends State<NewListingPage> {
   final _roomsCtrl = TextEditingController();
   final _floorCtrl = TextEditingController();
   final _distTransportCtrl = TextEditingController();
-  final _proximHessoCtrl = TextEditingController();
-  final _nearestHessoCtrl = TextEditingController();
 
   // Type: Entire home / Single room  -> segmented control
   final _typeOptions = const ['Entire home', 'Single room'];
   int _typeIndex = 1;
 
+  // Amenities
   bool _isFurnish = false;
   bool _wifiIncl = false;
   bool _chargesIncl = false;
   bool _carPark = false;
 
+  // Availability
+  DateTime? _availStart;
+  DateTime? _availEnd;
+  bool _noEndDate = false;
+
+  // Images
   final ImagePicker _picker = ImagePicker();
   final List<File> _images = [];
+
+  // Heatest hes and long, lat of the house
+  double? _geoLat;
+  double? _geoLng;
+  double? _proximHesKm;   
+  String? _nearestHesId;  
 
   bool _saving = false;
   String? _error;
@@ -60,8 +71,6 @@ class _NewListingPageState extends State<NewListingPage> {
     _roomsCtrl.dispose();
     _floorCtrl.dispose();
     _distTransportCtrl.dispose();
-    _proximHessoCtrl.dispose();
-    _nearestHessoCtrl.dispose();
     super.dispose();
   }
 
@@ -76,13 +85,12 @@ class _NewListingPageState extends State<NewListingPage> {
     }
   }
 
-  // --- Geocoding using OpenStreetMap Nominatim ---
+  // Geocoding (OpenStreetMap Nominatim)
   Future<({double lat, double lng})> _geocodeAddress({
     required String address,
     required String city,
     required String npa,
   }) async {
-    // Build a friendly single-line address
     final q = Uri.encodeQueryComponent('$address, $npa $city, Switzerland');
     final uri = Uri.parse(
       'https://nominatim.openstreetmap.org/search?q=$q&format=json&limit=1',
@@ -91,7 +99,6 @@ class _NewListingPageState extends State<NewListingPage> {
     final res = await http.get(
       uri,
       headers: const {
-        // Nominatim etiquette: identify your app
         'User-Agent': 'HEStimate/1.0 (student project; contact: none)',
       },
     );
@@ -114,8 +121,130 @@ class _NewListingPageState extends State<NewListingPage> {
     return (lat: lat, lng: lng);
   }
 
+  // Schools fetching + distance computation
+  // Firestore collection expected: "schools" with fields:
+  // - name: String
+  // - latitude: double
+  // - longitude: double
+  Future<List<_School>> _fetchSchools() async {
+    final snap = await FirebaseFirestore.instance.collection('schools').get();
+    return snap.docs.map((d) {
+      final m = d.data();
+      return _School(
+        id: d.id,
+        name: (m['name'] ?? '').toString(),
+        latitude: (m['latitude'] as num).toDouble(),
+        longitude: (m['longitude'] as num).toDouble(),
+      );
+    }).toList();
+  }
+
+  double _haversineKm(double lat1, double lon1, double lat2, double lon2) {
+    const earthRadius = 6371.0; // km
+    final dLat = _toRad(lat2 - lat1);
+    final dLon = _toRad(lon2 - lon1);
+    final a = math.sin(dLat / 2) * math.sin(dLat / 2) +
+        math.cos(_toRad(lat1)) *
+            math.cos(_toRad(lat2)) *
+            math.sin(dLon / 2) *
+            math.sin(dLon / 2);
+    final c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a));
+    return earthRadius * c;
+  }
+
+  double _toRad(double degrees) => degrees * math.pi / 180.0;
+
+  Future<({double km, String id})> _computeNearestSchool({
+    required double lat,
+    required double lng,
+  }) async {
+    final schools = await _fetchSchools();
+    if (schools.isEmpty) {
+      throw Exception('No schools found in Firestore (collection "schools").');
+    }
+
+    _School? best;
+    double? bestKm;
+
+    for (final s in schools) {
+      final dist = _haversineKm(lat, lng, s.latitude, s.longitude);
+      if (bestKm == null || dist < bestKm) {
+        best = s;
+        bestKm = dist;
+      }
+    }
+
+    return (km: bestKm ?? double.nan, id: best?.id ?? '');
+  }
+
+  // Availability pickers
+  DateTime get _todayDateOnly {
+    final now = DateTime.now();
+    return DateTime(now.year, now.month, now.day);
+    }
+
+  String _formatDate(DateTime? d) {
+    if (d == null) return 'Select date';
+    return '${d.year.toString().padLeft(4, '0')}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+  }
+
+  Future<void> _pickStartDate() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _availStart ?? _todayDateOnly,
+      firstDate: _todayDateOnly,
+      lastDate: DateTime(_todayDateOnly.year + 5),
+    );
+    if (picked != null) {
+      setState(() {
+        _availStart = DateTime(picked.year, picked.month, picked.day);
+        // If end exists but is before start → clear end
+        if (_availEnd != null && _availEnd!.isBefore(_availStart!)) {
+          _availEnd = null;
+        }
+      });
+    }
+  }
+
+  Future<void> _pickEndDate() async {
+    if (_noEndDate) return; 
+    final first = _availStart ?? _todayDateOnly;
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _availEnd ?? first,
+      firstDate: first,
+      lastDate: DateTime(first.year + 6),
+    );
+    if (picked != null) {
+      setState(() {
+        _availEnd = DateTime(picked.year, picked.month, picked.day);
+      });
+    }
+  }
+
+  // Save flow:
+  // 1) Validate availability
+  // 2) Geocode address -> lat/lng
+  // 3) Compute nearest school
+  // 4) Save listing (with availability_start & availability_end)
+  // 5) Upload images
   Future<void> _save() async {
     if (!_formKey.currentState!.validate()) return;
+
+    // Validate availability rules
+    if (_availStart == null) {
+      setState(() => _error = 'Please select an availability start date.');
+      return;
+    }
+    if (_availStart!.isBefore(_todayDateOnly)) {
+      setState(() => _error = 'Start date cannot be before today.');
+      return;
+    }
+    if (!_noEndDate && _availEnd != null && _availEnd!.isBefore(_availStart!)) {
+      setState(() => _error = 'End date cannot be before start date.');
+      return;
+    }
+
     setState(() {
       _saving = true;
       _error = null;
@@ -127,25 +256,32 @@ class _NewListingPageState extends State<NewListingPage> {
         throw Exception('User not authenticated');
       }
 
-      // 1) Geocode the address -> lat/lng
+      // 1) Geocode
       final coords = await _geocodeAddress(
         address: _addressCtrl.text.trim(),
         city: _cityCtrl.text.trim(),
         npa: _npaCtrl.text.trim(),
       );
+      _geoLat = coords.lat;
+      _geoLng = coords.lng;
+
+      // 2) Nearest school (id + km)
+      final nearest = await _computeNearestSchool(lat: coords.lat, lng: coords.lng);
+      _proximHesKm = nearest.km;
+      _nearestHesId = nearest.id;
 
       double parseD(String s) => double.parse(s.replaceAll(',', '.'));
       int parseI(String s) => int.parse(s);
 
-      // 2) Build Firestore data
+      // 3) Build Firestore data
       final data = <String, dynamic>{
         'ownerUid': user.uid,
         'price': parseD(_priceCtrl.text),
         'address': _addressCtrl.text.trim(),
         'city': _cityCtrl.text.trim(),
         'npa': _npaCtrl.text.trim(),
-        'latitude': coords.lat,
-        'longitude': coords.lng,
+        'latitude': _geoLat,
+        'longitude': _geoLng,
         'surface': _surfaceCtrl.text.trim().isEmpty ? null : parseD(_surfaceCtrl.text),
         'num_rooms': _roomsCtrl.text.trim().isEmpty ? null : parseI(_roomsCtrl.text),
         'type': _typeOptions[_typeIndex],
@@ -155,16 +291,23 @@ class _NewListingPageState extends State<NewListingPage> {
         'charges_incl': _chargesIncl,
         'car_park': _carPark,
         'dist_public_transport_km': _distTransportCtrl.text.trim().isEmpty ? null : parseD(_distTransportCtrl.text),
-        'proxim_hesso_km': _proximHessoCtrl.text.trim().isEmpty ? null : parseD(_proximHessoCtrl.text),
-        'nearest_hesso_name': _nearestHessoCtrl.text.trim(),
+
+        // Auto-computed:
+        'proxim_hesso_km': _proximHesKm,
+        'nearest_hesso_id': _nearestHesId,
+
+        // Availability:
+        'availability_start': Timestamp.fromDate(_availStart!),
+        'availability_end': _noEndDate || _availEnd == null ? null : Timestamp.fromDate(_availEnd!),
+
         'photos': <String>[],
         'createdAt': Timestamp.now(),
       };
 
-      // 3) Create listing
+      // 4) Create listing
       final listingId = await _repo.createListing(data);
 
-      // 4) Upload images (optional)
+      // 5) Upload images (not working now)
       if (_images.isNotEmpty) {
         final urls = await _repo.uploadListingImages(
           ownerUid: user.uid,
@@ -178,8 +321,9 @@ class _NewListingPageState extends State<NewListingPage> {
       }
 
       if (mounted) {
+        final km = _proximHesKm?.toStringAsFixed(2) ?? '?';
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Listing saved successfully')),
+          SnackBar(content: Text('Listing saved. Nearest HES stored ($km km).')),
         );
         Navigator.of(context).pop();
       }
@@ -190,14 +334,15 @@ class _NewListingPageState extends State<NewListingPage> {
     }
   }
 
-  // Moon input helper
   Widget _moonInput({
     required TextEditingController controller,
     required String hint,
     TextInputType? keyboardType,
     String? Function(String?)? validator,
     Widget? leading,
-    TextAlign textAlign = TextAlign.left, // allow centered text if needed
+    TextAlign textAlign = TextAlign.left,
+    bool readOnly = false,
+    VoidCallback? onTap,
   }) {
     return MoonFormTextInput(
       hasFloatingLabel: false,
@@ -207,6 +352,8 @@ class _NewListingPageState extends State<NewListingPage> {
       leading: leading,
       validator: validator,
       textAlign: textAlign,
+      readOnly: readOnly,
+      onTap: onTap,
     );
   }
 
@@ -246,13 +393,11 @@ class _NewListingPageState extends State<NewListingPage> {
       ),
       body: LayoutBuilder(
         builder: (context, constraints) {
-          // Breakpoints
           final isWide = constraints.maxWidth >= 720;
           final isXL = constraints.maxWidth >= 1100;
 
-          // Grid widths (fields centered)
           final gap = 12.0;
-          final double contentMax = 900; // narrower to emphasize centering
+          final double contentMax = 900;
           final double gridWidth =
               (constraints.maxWidth.clamp(360, contentMax)).toDouble();
           final double fieldWidth =
@@ -269,14 +414,12 @@ class _NewListingPageState extends State<NewListingPage> {
                   vertical: 16,
                 ),
                 child: Center(
-                  // Center all content
                   child: ConstrainedBox(
                     constraints: BoxConstraints(maxWidth: contentMax),
                     child: Form(
                       key: _formKey,
                       child: Column(
                         children: [
-                          // ==== Basics ====
                           _MoonCard(
                             isDark: isDark,
                             child: Column(
@@ -300,7 +443,6 @@ class _NewListingPageState extends State<NewListingPage> {
                                 ),
                                 const SizedBox(height: 12),
 
-                                // Responsive Wrap (centered)
                                 Wrap(
                                   alignment: WrapAlignment.center,
                                   spacing: gap,
@@ -379,54 +521,34 @@ class _NewListingPageState extends State<NewListingPage> {
                                         textAlign: TextAlign.center,
                                       ),
                                     ),
-                                    // Type selector (spans full "grid" width)
                                     SizedBox(
                                       width: gridWidth,
                                       child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.center,
+                                        crossAxisAlignment: CrossAxisAlignment.center,
                                         children: [
                                           Text(
                                             'Type',
                                             style: TextStyle(
-                                              color: cs.onSurface
-                                                  .withOpacity(.8),
+                                              color: cs.onSurface.withOpacity(.8),
                                               fontWeight: FontWeight.w600,
                                             ),
                                           ),
                                           const SizedBox(height: 8),
                                           LayoutBuilder(
                                             builder: (context, box) {
-                                              final isNarrow =
-                                                  box.maxWidth < 300;
+                                              final isNarrow = box.maxWidth < 300;
                                               if (isNarrow) {
                                                 return Wrap(
                                                   spacing: 8,
                                                   runSpacing: 8,
-                                                  alignment:
-                                                      WrapAlignment.center,
-                                                  children: List.generate(
-                                                      _typeOptions.length,
-                                                      (i) {
+                                                  alignment: WrapAlignment.center,
+                                                  children: List.generate(_typeOptions.length, (i) {
                                                     return SizedBox(
                                                       width: box.maxWidth,
-                                                      child:
-                                                          MoonSegmentedControl(
-                                                        initialIndex:
-                                                            _typeIndex == i
-                                                                ? 0
-                                                                : -1,
-                                                        segments: [
-                                                          Segment(
-                                                            label: Text(
-                                                                _typeOptions[
-                                                                    i]),
-                                                          )
-                                                        ],
-                                                        onSegmentChanged: (_) =>
-                                                            setState(() =>
-                                                                _typeIndex =
-                                                                    i),
+                                                      child: MoonSegmentedControl(
+                                                        initialIndex: _typeIndex == i ? 0 : -1,
+                                                        segments: [Segment(label: Text(_typeOptions[i]))],
+                                                        onSegmentChanged: (_) => setState(() => _typeIndex = i),
                                                         isExpanded: true,
                                                       ),
                                                     );
@@ -435,13 +557,8 @@ class _NewListingPageState extends State<NewListingPage> {
                                               }
                                               return MoonSegmentedControl(
                                                 initialIndex: _typeIndex,
-                                                segments: _typeOptions
-                                                    .map((t) =>
-                                                        Segment(label: Text(t)))
-                                                    .toList(),
-                                                onSegmentChanged: (i) =>
-                                                    setState(
-                                                        () => _typeIndex = i),
+                                                segments: _typeOptions.map((t) => Segment(label: Text(t))).toList(),
+                                                onSegmentChanged: (i) => setState(() => _typeIndex = i),
                                                 isExpanded: true,
                                               );
                                             },
@@ -466,30 +583,24 @@ class _NewListingPageState extends State<NewListingPage> {
                                 Row(
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
-                                    Icon(MoonIcons.arrows_cross_lines_24_regular,
-                                        size: 20, color: cs.primary),
+                                    Icon(MoonIcons.arrows_cross_lines_24_regular, size: 20, color: cs.primary),
                                     const SizedBox(width: 8),
-                                    Text('Amenities',
-                                        style: TextStyle(
-                                            fontSize: 18,
-                                            fontWeight: FontWeight.w800,
-                                            color: cs.onSurface)),
+                                    Text('Amenities', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: cs.onSurface)),
                                   ],
                                 ),
                                 const SizedBox(height: 8),
 
                                 Wrap(
                                   alignment: WrapAlignment.center,
-                                  spacing: gap,
-                                  runSpacing: gap,
+                                  spacing: 12,
+                                  runSpacing: 12,
                                   children: [
                                     SizedBox(
                                       width: fieldWidth,
                                       child: _AmenitySwitch(
                                         title: 'Have furniture?',
                                         value: _isFurnish,
-                                        onChanged: (v) =>
-                                            setState(() => _isFurnish = v),
+                                        onChanged: (v) => setState(() => _isFurnish = v),
                                       ),
                                     ),
                                     SizedBox(
@@ -497,8 +608,7 @@ class _NewListingPageState extends State<NewListingPage> {
                                       child: _AmenitySwitch(
                                         title: 'Wifi included?',
                                         value: _wifiIncl,
-                                        onChanged: (v) =>
-                                            setState(() => _wifiIncl = v),
+                                        onChanged: (v) => setState(() => _wifiIncl = v),
                                       ),
                                     ),
                                     SizedBox(
@@ -506,8 +616,7 @@ class _NewListingPageState extends State<NewListingPage> {
                                       child: _AmenitySwitch(
                                         title: 'Charges included?',
                                         value: _chargesIncl,
-                                        onChanged: (v) =>
-                                            setState(() => _chargesIncl = v),
+                                        onChanged: (v) => setState(() => _chargesIncl = v),
                                       ),
                                     ),
                                     SizedBox(
@@ -515,8 +624,7 @@ class _NewListingPageState extends State<NewListingPage> {
                                       child: _AmenitySwitch(
                                         title: 'Car park?',
                                         value: _carPark,
-                                        onChanged: (v) =>
-                                            setState(() => _carPark = v),
+                                        onChanged: (v) => setState(() => _carPark = v),
                                       ),
                                     ),
                                   ],
@@ -527,7 +635,7 @@ class _NewListingPageState extends State<NewListingPage> {
 
                           const SizedBox(height: 16),
 
-                          // ==== Distances ====
+                          // ==== Availability ====
                           _MoonCard(
                             isDark: isDark,
                             child: Column(
@@ -536,58 +644,104 @@ class _NewListingPageState extends State<NewListingPage> {
                                 Row(
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
-                                    Icon(MoonIcons.arrows_diagonals_tlbr_24_regular,
-                                        size: 20, color: cs.primary),
+                                    Icon(MoonIcons.time_calendar_24_regular, size: 20, color: cs.primary),
                                     const SizedBox(width: 8),
-                                    Text('Distances',
-                                        style: TextStyle(
-                                            fontSize: 18,
-                                            fontWeight: FontWeight.w800,
-                                            color: cs.onSurface)),
+                                    Text('Availability', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: cs.onSurface)),
                                   ],
                                 ),
                                 const SizedBox(height: 12),
 
+                                // Start & End date pickers
                                 Wrap(
                                   alignment: WrapAlignment.center,
-                                  spacing: gap,
-                                  runSpacing: gap,
+                                  spacing: 12,
+                                  runSpacing: 12,
                                   children: [
                                     SizedBox(
                                       width: fieldWidth,
-                                      child: _moonInput(
-                                        controller: _distTransportCtrl,
-                                        hint:
-                                            'Distance to public transport (km)',
-                                        keyboardType: TextInputType.number,
-                                        leading: const Icon(
-                                            MoonIcons.arrows_forward_24_regular),
-                                        textAlign: TextAlign.center,
+                                      child: MoonButton(
+                                        onTap: _pickStartDate,
+                                        leading: const Icon(MoonIcons.time_alarm_24_regular),
+                                        label: Text('Start: ${_formatDate(_availStart)}'),
                                       ),
                                     ),
                                     SizedBox(
                                       width: fieldWidth,
-                                      child: _moonInput(
-                                        controller: _proximHessoCtrl,
-                                        hint: 'Proximity to HES (km)',
-                                        keyboardType: TextInputType.number,
-                                        leading: const Icon(
-                                            MoonIcons.arrows_up_24_regular),
-                                        textAlign: TextAlign.center,
-                                      ),
-                                    ),
-                                    SizedBox(
-                                      width: gridWidth,
-                                      child: _moonInput(
-                                        controller: _nearestHessoCtrl,
-                                        hint: 'Nearest HES name',
-                                        keyboardType: TextInputType.text,
-                                        leading: const Icon(MoonIcons
-                                            .arrows_chevron_right_double_24_regular),
-                                        textAlign: TextAlign.center,
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Expanded(
+                                            child: MoonButton(
+                                              onTap: _noEndDate ? null : _pickEndDate,
+                                              label: Text(_noEndDate
+                                                  ? 'End: None'
+                                                  : 'End: ${_formatDate(_availEnd)}'),
+                                            ),
+                                          ),
+                                          const SizedBox(width: 8),
+                                          Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              Text('No end', style: TextStyle(color: cs.onSurface.withOpacity(.8))),
+                                              const SizedBox(width: 6),
+                                              MoonSwitch(
+                                                value: _noEndDate,
+                                                onChanged: (v) => setState(() {
+                                                  _noEndDate = v;
+                                                  if (v) _availEnd = null;
+                                                }),
+                                              ),
+                                            ],
+                                          ),
+                                        ],
                                       ),
                                     ),
                                   ],
+                                ),
+
+                                const SizedBox(height: 8),
+                                Text(
+                                  'Start date cannot be before today. End date is optional.',
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(color: cs.onSurface.withOpacity(.65), fontSize: 12),
+                                ),
+                              ],
+                            ),
+                          ),
+
+                          const SizedBox(height: 16),
+
+                          // ==== Distances (manual transport for now) ====
+                          _MoonCard(
+                            isDark: isDark,
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.center,
+                              children: [
+                                Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(MoonIcons.arrows_diagonals_tlbr_24_regular, size: 20, color: cs.primary),
+                                    const SizedBox(width: 8),
+                                    Text('Distances', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: cs.onSurface)),
+                                  ],
+                                ),
+                                const SizedBox(height: 12),
+                                SizedBox(
+                                  width: fieldWidth,
+                                  child: MoonFormTextInput(
+                                    hasFloatingLabel: false,
+                                    hintText: 'Distance to public transport (km)',
+                                    controller: _distTransportCtrl,
+                                    keyboardType: TextInputType.number,
+                                    leading: const Icon(MoonIcons.arrows_forward_24_regular),
+                                    textAlign: TextAlign.center,
+                                  ),
+                                ),
+                                const SizedBox(height: 8),
+                                Text(
+                                  'HES proximity is computed automatically from your address.',
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(color: cs.onSurface.withOpacity(.65), fontSize: 12),
                                 ),
                               ],
                             ),
@@ -604,14 +758,12 @@ class _NewListingPageState extends State<NewListingPage> {
                             children: [
                               MoonButton(
                                 onTap: _pickImages,
-                                leading: const Icon(
-                                    MoonIcons.arrows_cross_lines_24_regular),
+                                leading: const Icon(MoonIcons.arrows_cross_lines_24_regular),
                                 label: const Text('Pick images'),
                               ),
                               Text(
                                 '${_images.length} selected',
-                                style: TextStyle(
-                                    color: cs.onSurface.withOpacity(.65)),
+                                style: TextStyle(color: cs.onSurface.withOpacity(.65)),
                               ),
                             ],
                           ),
@@ -619,11 +771,11 @@ class _NewListingPageState extends State<NewListingPage> {
                           const SizedBox(height: 16),
 
                           if (_error != null)
-                            Text(_error!,
-                                textAlign: TextAlign.center,
-                                style: const TextStyle(
-                                    color: Colors.redAccent,
-                                    fontWeight: FontWeight.w700)),
+                            Text(
+                              _error!,
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(color: Colors.redAccent, fontWeight: FontWeight.w700),
+                            ),
 
                           const SizedBox(height: 4),
 
@@ -631,13 +783,8 @@ class _NewListingPageState extends State<NewListingPage> {
                             isFullWidth: true,
                             onTap: _saving ? null : _save,
                             leading: _saving
-                                ? const SizedBox(
-                                    width: 18,
-                                    height: 18,
-                                    child:
-                                        CircularProgressIndicator(strokeWidth: 2))
-                                : const Icon(
-                                    MoonIcons.arrows_boost_24_regular),
+                                ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                                : const Icon(MoonIcons.arrows_boost_24_regular),
                             label: Text(_saving ? 'Saving…' : 'Save listing'),
                           ),
 
@@ -656,7 +803,7 @@ class _NewListingPageState extends State<NewListingPage> {
   }
 }
 
-// Card container Moon-like (opacité en dark)
+// Card container Moon-like 
 class _MoonCard extends StatelessWidget {
   final Widget child;
   final bool isDark;
@@ -682,8 +829,12 @@ class _AmenitySwitch extends StatelessWidget {
   final String title;
   final bool value;
   final ValueChanged<bool> onChanged;
-  const _AmenitySwitch(
-      {required this.title, required this.value, required this.onChanged, super.key});
+  const _AmenitySwitch({
+    required this.title,
+    required this.value,
+    required this.onChanged,
+    super.key,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -698,10 +849,12 @@ class _AmenitySwitch extends StatelessWidget {
       child: Row(
         children: [
           Expanded(
-              child: Text(title,
-                  textAlign: TextAlign.center,
-                  style:
-                      TextStyle(color: cs.onSurface, fontWeight: FontWeight.w600))),
+            child: Text(
+              title,
+              textAlign: TextAlign.center,
+              style: TextStyle(color: cs.onSurface, fontWeight: FontWeight.w600),
+            ),
+          ),
           MoonSwitch(value: value, onChanged: onChanged),
         ],
       ),
@@ -709,8 +862,16 @@ class _AmenitySwitch extends StatelessWidget {
   }
 }
 
-class _Member {
-  final String first;
-  final String last;
-  const _Member(this.first, this.last);
+// School model
+class _School {
+  final String id;
+  final String name;
+  final double latitude;
+  final double longitude;
+  const _School({
+    required this.id,
+    required this.name,
+    required this.latitude,
+    required this.longitude,
+  });
 }
