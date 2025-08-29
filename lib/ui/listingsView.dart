@@ -24,7 +24,7 @@ class ListingsPage extends StatefulWidget {
   State<ListingsPage> createState() => _ListingsPageState();
 }
 
-class _ListingsPageState extends State<ListingsPage> {
+class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClientMixin {
   final _searchCtrl = TextEditingController();
 
   // Filters
@@ -36,6 +36,18 @@ class _ListingsPageState extends State<ListingsPage> {
   bool _carParkOnly = false;
 
   @override
+  // TODO: implement wantKeepAlive
+  bool get wantKeepAlive => true;
+
+  late final Stream<QuerySnapshot<Map<String, dynamic>>> _listingsStream;
+
+  @override
+  void initState() {
+    super.initState();
+    _listingsStream = _baseQuery().snapshots();
+  }
+
+  @override
   void dispose() {
     _searchCtrl.dispose();
     super.dispose();
@@ -44,11 +56,9 @@ class _ListingsPageState extends State<ListingsPage> {
   Query<Map<String, dynamic>> _baseQuery() {
     Query<Map<String, dynamic>> q = FirebaseFirestore.instance.collection('listings');
 
-    // Filter by owner if in owner mode
     if (widget.mode == ListingsMode.owner) {
       final uid = FirebaseAuth.instance.currentUser?.uid;
       if (uid == null) {
-        // User not logged in: return empty query
         return FirebaseFirestore.instance
             .collection('listings')
             .where('ownerUid', isEqualTo: '__none__');
@@ -56,7 +66,6 @@ class _ListingsPageState extends State<ListingsPage> {
       q = q.where('ownerUid', isEqualTo: uid);
     }
 
-    // Apply sorting
     switch (_sortIndex) {
       case 1:
         q = q.orderBy('price');
@@ -203,6 +212,7 @@ class _ListingsPageState extends State<ListingsPage> {
 
   @override
   Widget build(BuildContext context) {
+    super.build(context);
     final cs = Theme.of(context).colorScheme;
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
@@ -268,7 +278,7 @@ class _ListingsPageState extends State<ListingsPage> {
                   ),
                 ),
                 StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                  stream: _baseQuery().snapshots(),
+                  stream: _listingsStream, // <-- ici on ne recrée plus le stream
                   builder: (context, snapshot) {
                     if (snapshot.connectionState == ConnectionState.waiting) {
                       return const SliverFillRemaining(
