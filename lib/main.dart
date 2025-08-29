@@ -17,7 +17,8 @@ import 'ui/profile.dart';
 import 'ui/about_page.dart';
 import 'ui/faceIdLogin.dart';
 import 'ui/faceIdSetup.dart';
-import 'ui/menu.dart'; // HomeMenuPage lives here
+import 'ui/menu.dart';
+import 'ui/not_allowed.dart';
 
 import 'firebase_options.dart';
 
@@ -35,6 +36,7 @@ Future<void> main() async {
         .collection('users')
         .doc(currentUser.uid)
         .get();
+
     if (doc.exists) {
       faceIdEnabled = doc.data()?['faceIdEnabled'] ?? false;
       if (faceIdEnabled) {
@@ -79,10 +81,16 @@ class _MyAppState extends State<MyApp> {
 
   void _toggleTheme() {
     setState(() {
-      _themeMode = _themeMode == ThemeMode.dark
-          ? ThemeMode.light
-          : ThemeMode.dark;
+      _themeMode = _themeMode == ThemeMode.dark ? ThemeMode.light : ThemeMode.dark;
     });
+  }
+
+  Future<bool> _checkHomeowner() async {
+    final u = FirebaseAuth.instance.currentUser;
+    if (u == null) return false;
+    final d = await FirebaseFirestore.instance.collection('users').doc(u.uid).get();
+    final role = (d.data()?['role'] as String?)?.toLowerCase();
+    return role == 'homeowner';
   }
 
   @override
@@ -114,15 +122,27 @@ class _MyAppState extends State<MyApp> {
         '/login': (context) => const LoginPage(),
         '/register': (context) => const RegisterPage(),
         '/faceIdSetup': (context) => const FaceIdSetupPage(),
+        // HomeMenuPage lit le rôle en live (voir menu.dart)
         '/home': (context) => HomeMenuPage(onToggleTheme: _toggleTheme),
+
         '/profile': (context) => const ProfilePage(),
         '/faceLogin': (context) => FaceIdLoginPage(
-          faceImage: widget.faceImage,
-          user: widget.initialUser,
-        ),
-        // Convenience routes to your other screens (still usable outside menu)
-        '/listings': (context) => const ListingsPage(),
-        '/newListing': (context) => const NewListingPage(),
+              faceImage: widget.faceImage,
+              user: widget.initialUser,
+            ),
+
+        // Routes protégées : on re-vérifie Firestore à chaque ouverture
+        '/listings': (context) => FutureBuilder<bool>(
+              future: _checkHomeowner(),
+              builder: (ctx, snap) =>
+                  (snap.data ?? false) ? const ListingsPage() : const NotAllowedPage(),
+            ),
+        '/newListing': (context) => FutureBuilder<bool>(
+              future: _checkHomeowner(),
+              builder: (ctx, snap) =>
+                  (snap.data ?? false) ? const NewListingPage() : const NotAllowedPage(),
+            ),
+
         '/about': (context) => const AboutPage(),
       },
       debugShowCheckedModeBanner: false,
@@ -151,25 +171,22 @@ class _MyHomePageState extends State<MyHomePage> {
         const SnackBar(content: Text('Valeur ajoutée à Firebase !')),
       );
     } catch (e) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Erreur: $e')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Erreur: $e')),
+      );
     }
   }
 
   Future<void> _removeValue() async {
     try {
-      await _firestore
-          .collection('test_collection')
-          .doc('counter_doc')
-          .delete();
+      await _firestore.collection('test_collection').doc('counter_doc').delete();
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Valeur supprimée de Firebase !')),
       );
     } catch (e) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Erreur: $e')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Erreur: $e')),
+      );
     }
   }
 
@@ -188,9 +205,7 @@ class _MyHomePageState extends State<MyHomePage> {
         actions: [
           IconButton(
             icon: const Icon(Icons.person),
-            onPressed: () {
-              Navigator.of(context).pushNamed('/profile');
-            },
+            onPressed: () => Navigator.of(context).pushNamed('/profile'),
           ),
         ],
       ),
@@ -200,7 +215,6 @@ class _MyHomePageState extends State<MyHomePage> {
           children: <Widget>[
             ElevatedButton.icon(
               icon: const Icon(Icons.add_business),
-
               label: const Text("Go to Property List"),
               onPressed: () {
                 Navigator.push(
@@ -219,7 +233,6 @@ class _MyHomePageState extends State<MyHomePage> {
                 );
               },
             ),
-
             const Text('Counter:'),
             Text(
               '$_counter',
@@ -254,4 +267,3 @@ class _MyHomePageState extends State<MyHomePage> {
     );
   }
 }
-
