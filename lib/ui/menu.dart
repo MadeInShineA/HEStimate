@@ -1,4 +1,3 @@
-// lib/ui/menu.dart
 import 'package:flutter/material.dart';
 import 'package:moon_design/moon_design.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -137,7 +136,7 @@ class _MoonMenuShellState extends State<MoonMenuShell> {
   }
 }
 
-/// HomeMenuPage : construit la liste d’onglets en fonction du rôle lu en live.
+/// HomeMenuPage: builds the list of tabs depending on the role fetched from Firestore.
 class HomeMenuPage extends StatelessWidget {
   final VoidCallback onToggleTheme;
 
@@ -165,9 +164,9 @@ class HomeMenuPage extends StatelessWidget {
 
         final pages = <Widget>[
           const DashboardPage(),
-          const ListingsSection(),           // visible à tous (catalogue global)
+          const ListingsSection(),           // visible to all (global catalog)
           if (isHomeowner) const NewListingSection(),   // homeowner only
-          if (isHomeowner) const MyListingsSection(),   // homeowner only (mes biens)
+          if (isHomeowner) const MyListingsSection(),   // homeowner only (my properties)
           const ProfileSection(),
           const AboutSection(),
         ];
