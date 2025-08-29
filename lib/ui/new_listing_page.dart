@@ -36,8 +36,11 @@ class _NewListingPageState extends State<NewListingPage> {
   final _floorCtrl = TextEditingController();
   final _distTransportCtrl = TextEditingController();
 
-  // Address suggestions
+  // Focus
   final FocusNode _addressFocus = FocusNode();
+  final FocusNode _priceFocus = FocusNode();
+
+  // Address suggestions
   Timer? _addrDebounce;
   List<_AddressSuggestion> _addressSuggestions = [];
   bool _isLoadingAddr = false;
@@ -70,19 +73,50 @@ class _NewListingPageState extends State<NewListingPage> {
   bool _saving = false;
   String? _error;
 
+  // ===== HEStimate API integration =====
+  static const _apiBase = 'https://hestimate-api-production.up.railway.app';
+  static const _estimatePath = '/estimate-price';
+  static const _observationPath = '/observations';
+
+  bool _estimating = false;
+  double? _estimatedPrice;
+  String? _estimationError;
+
+  // HES distance recompute debounce/status
+  Timer? _hesDebounce;
+  bool _isComputingHes = false;
+
   @override
   void initState() {
     super.initState();
     _addressCtrl.addListener(_onAddressChanged);
+    _cityCtrl.addListener(_onAddressPiecesChanged);
+    _npaCtrl.addListener(_onAddressPiecesChanged);
+
+    // Round price to nearest 0.05 on blur
+    _priceFocus.addListener(() {
+      if (!_priceFocus.hasFocus) {
+        final raw = _priceCtrl.text.replaceAll(',', '.').trim();
+        final v = double.tryParse(raw);
+        if (v != null && v > 0) {
+          final rounded = _roundToNearest005(v);
+          _priceCtrl.text = rounded.toStringAsFixed(2);
+          setState(() {}); // refresh UI/validators
+        }
+      }
+    });
   }
 
   @override
   void dispose() {
+    _hesDebounce?.cancel();
     _addrDebounce?.cancel();
-    _addressCtrl
-      ..removeListener(_onAddressChanged)
-      ..dispose();
-    _addressFocus.dispose();
+
+    _addressCtrl.removeListener(_onAddressChanged);
+    _addressCtrl.dispose();
+
+    _cityCtrl.removeListener(_onAddressPiecesChanged);
+    _npaCtrl.removeListener(_onAddressPiecesChanged);
 
     _cityCtrl.dispose();
     _npaCtrl.dispose();
@@ -91,8 +125,15 @@ class _NewListingPageState extends State<NewListingPage> {
     _roomsCtrl.dispose();
     _floorCtrl.dispose();
     _distTransportCtrl.dispose();
+
+    _addressFocus.dispose();
+    _priceFocus.dispose();
     super.dispose();
   }
+
+  // ---------- rounding helpers (nearest 0.05) ----------
+  double _roundToNearest005(double v) => (v * 20).round() / 20.0;
+  bool _isOn005Step(double v) => ((v * 20).roundToDouble() == v * 20);
 
   // Address suggestions (Nominatim) with debounce
   void _onAddressChanged() {
@@ -100,13 +141,44 @@ class _NewListingPageState extends State<NewListingPage> {
     _addrDebounce = Timer(const Duration(milliseconds: 350), () async {
       final q = _addressCtrl.text.trim();
       if (q.length < 3) {
-        if (mounted) {
-          setState(() => _addressSuggestions = []);
-        }
+        if (mounted) setState(() => _addressSuggestions = []);
         return;
       }
       await _fetchAddressSuggestions(q);
     });
+  }
+
+  void _onAddressPiecesChanged() {
+    _hesDebounce?.cancel();
+    _hesDebounce = Timer(const Duration(milliseconds: 500), _recomputeHesDistanceIfPossible);
+  }
+
+  Future<void> _recomputeHesDistanceIfPossible() async {
+    final address = _addressCtrl.text.trim();
+    final city = _cityCtrl.text.trim();
+    final npa = _npaCtrl.text.trim();
+    if (address.isEmpty || city.isEmpty || npa.isEmpty) return;
+
+    setState(() => _isComputingHes = true);
+    try {
+      // Always refresh coords from current address fields
+      final coords = await _geocodeAddress(address: address, city: city, npa: npa);
+      _geoLat = coords.lat;
+      _geoLng = coords.lng;
+
+      final nearest = await _computeNearestSchool(lat: _geoLat!, lng: _geoLng!);
+      setState(() {
+        _proximHesKm = nearest.km;
+        _nearestHesId = nearest.id;
+      });
+    } catch (_) {
+      setState(() {
+        _proximHesKm = null;
+        _nearestHesId = null;
+      });
+    } finally {
+      if (mounted) setState(() => _isComputingHes = false);
+    }
   }
 
   Future<void> _fetchAddressSuggestions(String query) async {
@@ -143,9 +215,7 @@ class _NewListingPageState extends State<NewListingPage> {
           .take(6)
           .toList();
 
-      if (mounted) {
-        setState(() => _addressSuggestions = suggestions);
-      }
+      if (mounted) setState(() => _addressSuggestions = suggestions);
     } catch (_) {
       if (mounted) setState(() => _addressSuggestions = []);
     } finally {
@@ -172,6 +242,8 @@ class _NewListingPageState extends State<NewListingPage> {
     _geoLat = s.lat!;
     _geoLng = s.lon!;
     setState(() => _addressSuggestions = []);
+    // Recompute HES distance now that address is set
+    _recomputeHesDistanceIfPossible();
   }
 
   // Image pick
@@ -223,10 +295,6 @@ class _NewListingPageState extends State<NewListingPage> {
   }
 
   // Schools fetching + distance computation (Haversine)
-  // Firestore collection expected: "schools" with fields:
-  // - name: String
-  // - latitude: double
-  // - longitude: double
   Future<List<_School>> _fetchSchools() async {
     final snap = await FirebaseFirestore.instance.collection('schools').get();
     return snap.docs.map((d) {
@@ -323,12 +391,211 @@ class _NewListingPageState extends State<NewListingPage> {
     }
   }
 
+  // ===== Helpers for API integration =====
+  Future<void> _ensureGeoAndNearestSchool() async {
+    if (_geoLat == null || _geoLng == null) {
+      final coords = await _geocodeAddress(
+        address: _addressCtrl.text.trim(),
+        city: _cityCtrl.text.trim(),
+        npa: _npaCtrl.text.trim(),
+      );
+      _geoLat = coords.lat;
+      _geoLng = coords.lng;
+    }
+    if (_proximHesKm == null || _nearestHesId == null || _nearestHesId!.isEmpty) {
+      final nearest = await _computeNearestSchool(lat: _geoLat!, lng: _geoLng!);
+      _proximHesKm = nearest.km;
+      _nearestHesId = nearest.id;
+    }
+  }
+
+  // EXACT payload required by /estimate-price (all required)
+  Map<String, dynamic> _buildExactEstimatePayload() {
+    double reqNum(String label, String s, {double? min}) {
+      final raw = s.trim();
+      if (raw.isEmpty) throw '$label is required';
+      final v = double.tryParse(raw.replaceAll(',', '.'));
+      if (v == null) throw '$label must be a number';
+      if (min != null && v < min) throw '$label must be ≥ ${min.toStringAsFixed(0)}';
+      return v;
+    }
+
+    int reqInt(String label, String s, {int? min}) {
+      final raw = s.trim();
+      if (raw.isEmpty) throw '$label is required';
+      final v = int.tryParse(raw);
+      if (v == null) throw '$label must be an integer';
+      if (min != null && v < min) throw '$label must be ≥ $min';
+      return v;
+    }
+
+    if (_geoLat == null || _geoLng == null) {
+      throw 'Latitude/Longitude missing; please provide a valid address.';
+    }
+    if (_proximHesKm == null) {
+      throw 'HES proximity could not be computed from the address.';
+    }
+
+    return {
+      "latitude": _geoLat!,
+      "longitude": _geoLng!,
+      "surface_m2": reqNum('Surface (m²)', _surfaceCtrl.text, min: 1),
+      "num_rooms": reqInt('Number of rooms', _roomsCtrl.text, min: 1),
+      "type": _typeOptions[_typeIndex] == 'Single room' ? "room" : "entire_home",
+      "is_furnished": _isFurnish,
+      "floor": reqInt('Floor', _floorCtrl.text), // negative allowed if needed
+      "wifi_incl": _wifiIncl,
+      "charges_incl": _chargesIncl,
+      "car_park": _carPark,
+      "dist_public_transport_km":
+          reqNum('Distance to public transport (km)', _distTransportCtrl.text, min: 0),
+      "proxim_hesso_km": _proximHesKm!,
+    };
+  }
+
+  String? _validateForEstimate() {
+    if (_addressCtrl.text.trim().isEmpty) return 'Address is required.';
+    if (_cityCtrl.text.trim().isEmpty) return 'City is required.';
+    if (_npaCtrl.text.trim().isEmpty) return 'Postal code (NPA) is required.';
+    if (_surfaceCtrl.text.trim().isEmpty) return 'Surface (m²) is required.';
+    if (_roomsCtrl.text.trim().isEmpty) return 'Number of rooms is required.';
+    if (_floorCtrl.text.trim().isEmpty) return 'Floor is required.';
+    if (_distTransportCtrl.text.trim().isEmpty) {
+      return 'Distance to public transport (km) is required.';
+    }
+    return null;
+  }
+
+  Future<void> _estimatePrice() async {
+    final quickErr = _validateForEstimate();
+    if (quickErr != null) {
+      setState(() {
+        _estimationError = quickErr;
+        _estimatedPrice = null;
+      });
+      return;
+    }
+
+    setState(() {
+      _estimating = true;
+      _estimationError = null;
+      _estimatedPrice = null;
+    });
+
+    try {
+      await _ensureGeoAndNearestSchool();
+
+      final payload = _buildExactEstimatePayload();
+
+      final uri = Uri.parse('$_apiBase$_estimatePath');
+      final resp = await http.post(
+        uri,
+        headers: const {
+          'Content-Type': 'application/json',
+          'User-Agent': 'HEStimate/1.0 (student project; contact: none)',
+        },
+        body: jsonEncode(payload),
+      );
+
+      if (resp.statusCode < 200 || resp.statusCode >= 300) {
+        throw Exception('Estimate failed (HTTP ${resp.statusCode}).');
+      }
+
+      final Map<String, dynamic> data = jsonDecode(resp.body) as Map<String, dynamic>;
+
+      // API returns { predicted_price_chf: number (or string) }
+      final raw = data['predicted_price_chf'];
+      final parsed = (raw is num) ? raw.toDouble() : double.tryParse(raw?.toString() ?? '');
+      if (parsed == null) {
+        throw Exception('No valid predicted_price_chf in response.');
+      }
+
+      // Round prediction to nearest 0.05
+      final rounded = _roundToNearest005(parsed);
+
+      if (rounded.isNaN || rounded.isInfinite || rounded < 0) {
+        throw Exception('Invalid predicted price: $parsed');
+      }
+
+      setState(() => _estimatedPrice = rounded);
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Estimated price: CHF ${rounded.toStringAsFixed(2)}')),
+        );
+      }
+    } catch (e) {
+      setState(() {
+        _estimationError = e.toString();
+        _estimatedPrice = null;
+      });
+    } finally {
+      if (mounted) setState(() => _estimating = false);
+    }
+  }
+
+  void _applyEstimateToPriceField() {
+    if (_estimatedPrice == null) return;
+    _priceCtrl.text = _estimatedPrice!.toStringAsFixed(2);
+    setState(() {}); // refresh UI/validators
+  }
+
+  // POST observation automatically after listing creation (lat, lng, price).
+  Future<void> _postObservationOnCreate({
+    required String listingId,
+    required double price,
+  }) async {
+    try {
+      await _ensureGeoAndNearestSchool();
+
+      final payload = <String, dynamic>{
+        'listing_id': listingId,
+        'latitude': _geoLat,
+        'longitude': _geoLng,
+        'price': price,
+        'timestamp': DateTime.now().toIso8601String(),
+        'source': 'new_listing_created',
+      };
+
+      final uri = Uri.parse('$_apiBase$_observationPath');
+      final resp = await http.post(
+        uri,
+        headers: const {
+          'Content-Type': 'application/json',
+          'User-Agent': 'HEStimate/1.0 (student project; contact: none)',
+        },
+        body: jsonEncode(payload),
+      );
+
+      if (!(resp.statusCode >= 200 && resp.statusCode < 300)) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Observation failed (HTTP ${resp.statusCode}).')),
+          );
+        }
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Observation sent.')),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Observation error: $e')),
+        );
+      }
+    }
+  }
+
   // Save flow:
   // 1) Validate availability
   // 2) Geocode address -> lat/lng (unless already from suggestion)
   // 3) Compute nearest school
   // 4) Save listing (with availability_start & availability_end)
   // 5) Upload images
+  // 6) Post observation automatically (lat, lng, price)
   Future<void> _save() async {
     if (!_formKey.currentState!.validate()) return;
 
@@ -373,16 +640,25 @@ class _NewListingPageState extends State<NewListingPage> {
       _proximHesKm = nearest.km;
       _nearestHesId = nearest.id;
 
+      // Parsers
       double parseD(String s) => double.parse(s.replaceAll(',', '.'));
       int parseI(String s) => int.parse(s);
 
+      // Enforce required fields for listing too
+      if (_surfaceCtrl.text.trim().isEmpty ||
+          _roomsCtrl.text.trim().isEmpty ||
+          _floorCtrl.text.trim().isEmpty ||
+          _distTransportCtrl.text.trim().isEmpty) {
+        throw Exception('Surface, number of rooms, floor, and distance to public transport are required.');
+      }
+
+      // Price must be > 0 and on 0.05 step
       final price = parseD(_priceCtrl.text);
-      if (price < 0) {
-        setState(() {
-          _saving = false;
-          _error = 'Price cannot be negative';
-        });
-        return;
+      if (price <= 0) {
+        throw Exception('Price must be > 0.');
+      }
+      if (!_isOn005Step(price)) {
+        throw Exception('Price must be multiple of 0.05.');
       }
 
       // 3) Build Firestore data
@@ -394,25 +670,15 @@ class _NewListingPageState extends State<NewListingPage> {
         'npa': _npaCtrl.text.trim(),
         'latitude': _geoLat,
         'longitude': _geoLng,
-        'surface': _surfaceCtrl.text.trim().isEmpty
-            ? null
-            : parseD(_surfaceCtrl.text),
-        'num_rooms': _roomsCtrl.text.trim().isEmpty
-            ? null
-            : parseI(_roomsCtrl.text),
-        'type': _typeOptions[_typeIndex] == "Entire home"
-            ? "entire_home"
-            : "room",
+        'surface': parseD(_surfaceCtrl.text),
+        'num_rooms': parseI(_roomsCtrl.text),
+        'type': _typeOptions[_typeIndex] == "Entire home" ? "entire_home" : "room",
         'is_furnish': _isFurnish,
-        'floor': _floorCtrl.text.trim().isEmpty
-            ? null
-            : parseI(_floorCtrl.text),
+        'floor': parseI(_floorCtrl.text),
         'wifi_incl': _wifiIncl,
         'charges_incl': _chargesIncl,
         'car_park': _carPark,
-        'dist_public_transport_km': _distTransportCtrl.text.trim().isEmpty
-            ? null
-            : parseD(_distTransportCtrl.text),
+        'dist_public_transport_km': parseD(_distTransportCtrl.text),
 
         // Auto-computed and stored:
         'proxim_hesso_km': _proximHesKm,
@@ -431,7 +697,7 @@ class _NewListingPageState extends State<NewListingPage> {
       // 4) Create listing
       final listingId = await _repo.createListing(data);
 
-      // 5) Upload images (not working now)
+      // 5) Upload images (optional)
       if (_images.isNotEmpty) {
         final urls = await _repo.uploadListingImages(
           ownerUid: user.uid,
@@ -444,17 +710,16 @@ class _NewListingPageState extends State<NewListingPage> {
             .update({'photos': urls});
       }
 
+      // 6) Send observation automatically (lat, lng, price)
+      await _postObservationOnCreate(listingId: listingId, price: price);
+
       if (mounted) {
         final km = _proximHesKm?.toStringAsFixed(2) ?? '?';
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Listing saved. Nearest HES stored ($km km).'),
-          ),
+          SnackBar(content: Text('Listing saved. Nearest HES stored ($km km).')),
         );
         Navigator.of(context).pushReplacement(
-          MaterialPageRoute(
-            builder: (_) => ViewListingPage(listingId: listingId),
-          ),
+          MaterialPageRoute(builder: (_) => ViewListingPage(listingId: listingId)),
         );
       }
     } catch (e) {
@@ -531,13 +796,8 @@ class _NewListingPageState extends State<NewListingPage> {
 
           final gap = 12.0;
           final double contentMax = 900;
-          final double gridWidth = (constraints.maxWidth.clamp(
-            360,
-            contentMax,
-          )).toDouble();
-          final double fieldWidth = isWide
-              ? ((gridWidth - gap) / 2)
-              : gridWidth;
+          final double gridWidth = (constraints.maxWidth.clamp(360, contentMax)).toDouble();
+          final double fieldWidth = isWide ? ((gridWidth - gap) / 2) : gridWidth;
 
           return Container(
             decoration: bg,
@@ -545,9 +805,7 @@ class _NewListingPageState extends State<NewListingPage> {
               absorbing: _saving,
               child: SingleChildScrollView(
                 padding: EdgeInsets.symmetric(
-                  horizontal: isXL
-                      ? (constraints.maxWidth - contentMax) / 2 + 16
-                      : 16,
+                  horizontal: isXL ? (constraints.maxWidth - contentMax) / 2 + 16 : 16,
                   vertical: 16,
                 ),
                 child: Center(
@@ -566,19 +824,11 @@ class _NewListingPageState extends State<NewListingPage> {
                                 Row(
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
-                                    Icon(
-                                      MoonIcons.arrows_boost_24_regular,
-                                      size: 20,
-                                      color: cs.primary,
-                                    ),
+                                    Icon(MoonIcons.arrows_boost_24_regular, size: 20, color: cs.primary),
                                     const SizedBox(width: 8),
                                     Text(
                                       'Basics',
-                                      style: TextStyle(
-                                        fontSize: 18,
-                                        fontWeight: FontWeight.w800,
-                                        color: cs.onSurface,
-                                      ),
+                                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: cs.onSurface),
                                     ),
                                   ],
                                 ),
@@ -589,32 +839,7 @@ class _NewListingPageState extends State<NewListingPage> {
                                   spacing: gap,
                                   runSpacing: gap,
                                   children: [
-                                    SizedBox(
-                                      width: fieldWidth,
-                                      child: _moonInput(
-                                        controller: _priceCtrl,
-                                        hint: 'Price (CHF)',
-                                        keyboardType: TextInputType.number,
-                                        leading: const Icon(
-                                          MoonIcons.arrows_boost_24_regular,
-                                        ),
-                                        validator: (v) {
-                                          if (v == null || v.isEmpty)
-                                            return 'Required';
-                                          final value = double.tryParse(
-                                            v.replaceAll(',', '.'),
-                                          );
-                                          if (value == null)
-                                            return 'Invalid number';
-                                          if (value < 0)
-                                            return 'Price cannot be negative';
-                                          return null;
-                                        },
-                                        textAlign: TextAlign.center,
-                                      ),
-                                    ),
-
-                                    // Address + suggestions panel
+                                    // Address + suggestions
                                     SizedBox(
                                       width: fieldWidth,
                                       child: Column(
@@ -622,69 +847,35 @@ class _NewListingPageState extends State<NewListingPage> {
                                           _moonInput(
                                             controller: _addressCtrl,
                                             hint: 'Address (street & number)',
-                                            keyboardType:
-                                                TextInputType.streetAddress,
-                                            leading: const Icon(
-                                              Icons.place_outlined,
-                                            ),
-                                            validator: (v) =>
-                                                (v == null || v.isEmpty)
-                                                ? 'Required'
-                                                : null,
+                                            keyboardType: TextInputType.streetAddress,
+                                            leading: const Icon(Icons.place_outlined),
+                                            validator: (v) => (v == null || v.isEmpty) ? 'Required' : null,
                                             textAlign: TextAlign.center,
                                             focusNode: _addressFocus,
                                           ),
-                                          if (_addressFocus.hasFocus ||
-                                              _isLoadingAddr ||
-                                              _addressSuggestions.isNotEmpty)
+                                          if (_addressFocus.hasFocus || _isLoadingAddr || _addressSuggestions.isNotEmpty)
                                             const SizedBox(height: 6),
-                                          if (_isLoadingAddr)
-                                            const LinearProgressIndicator(
-                                              minHeight: 2,
-                                            ),
+                                          if (_isLoadingAddr) const LinearProgressIndicator(minHeight: 2),
                                           if (_addressSuggestions.isNotEmpty)
                                             Container(
                                               decoration: BoxDecoration(
-                                                color: Theme.of(
-                                                  context,
-                                                ).cardColor,
-                                                borderRadius:
-                                                    BorderRadius.circular(12),
-                                                border: Border.all(
-                                                  color: cs.primary.withOpacity(
-                                                    .15,
-                                                  ),
-                                                ),
+                                                color: Theme.of(context).cardColor,
+                                                borderRadius: BorderRadius.circular(12),
+                                                border: Border.all(color: cs.primary.withOpacity(.15)),
                                               ),
                                               child: ListView.separated(
                                                 shrinkWrap: true,
-                                                physics:
-                                                    const NeverScrollableScrollPhysics(),
-                                                itemCount:
-                                                    _addressSuggestions.length,
+                                                physics: const NeverScrollableScrollPhysics(),
+                                                itemCount: _addressSuggestions.length,
                                                 separatorBuilder: (_, __) =>
-                                                    Divider(
-                                                      height: 1,
-                                                      color: cs.primary
-                                                          .withOpacity(.08),
-                                                    ),
+                                                    Divider(height: 1, color: cs.primary.withOpacity(.08)),
                                                 itemBuilder: (ctx, i) {
-                                                  final s =
-                                                      _addressSuggestions[i];
+                                                  final s = _addressSuggestions[i];
                                                   return ListTile(
                                                     dense: true,
-                                                    leading: const Icon(
-                                                      Icons
-                                                          .location_on_outlined,
-                                                    ),
-                                                    title: Text(
-                                                      s.displayName,
-                                                      maxLines: 2,
-                                                      overflow:
-                                                          TextOverflow.ellipsis,
-                                                    ),
-                                                    onTap: () =>
-                                                        _applySuggestion(s),
+                                                    leading: const Icon(Icons.location_on_outlined),
+                                                    title: Text(s.displayName, maxLines: 2, overflow: TextOverflow.ellipsis),
+                                                    onTap: () => _applySuggestion(s),
                                                   );
                                                 },
                                               ),
@@ -698,13 +889,8 @@ class _NewListingPageState extends State<NewListingPage> {
                                       child: _moonInput(
                                         controller: _cityCtrl,
                                         hint: 'City',
-                                        leading: const Icon(
-                                          Icons.location_city_outlined,
-                                        ),
-                                        validator: (v) =>
-                                            (v == null || v.isEmpty)
-                                            ? 'Required'
-                                            : null,
+                                        leading: const Icon(Icons.location_city_outlined),
+                                        validator: (v) => (v == null || v.isEmpty) ? 'Required' : null,
                                         textAlign: TextAlign.center,
                                       ),
                                     ),
@@ -714,13 +900,8 @@ class _NewListingPageState extends State<NewListingPage> {
                                         controller: _npaCtrl,
                                         hint: 'Postal code (NPA)',
                                         keyboardType: TextInputType.number,
-                                        leading: const Icon(
-                                          Icons.local_post_office_outlined,
-                                        ),
-                                        validator: (v) =>
-                                            (v == null || v.isEmpty)
-                                            ? 'Required'
-                                            : null,
+                                        leading: const Icon(Icons.local_post_office_outlined),
+                                        validator: (v) => (v == null || v.isEmpty) ? 'Required' : null,
                                         textAlign: TextAlign.center,
                                       ),
                                     ),
@@ -730,9 +911,14 @@ class _NewListingPageState extends State<NewListingPage> {
                                         controller: _surfaceCtrl,
                                         hint: 'Surface (m²)',
                                         keyboardType: TextInputType.number,
-                                        leading: const Icon(
-                                          Icons.square_foot_outlined,
-                                        ),
+                                        leading: const Icon(Icons.square_foot_outlined),
+                                        validator: (v) {
+                                          if (v == null || v.isEmpty) return 'Required';
+                                          final n = double.tryParse(v.replaceAll(',', '.'));
+                                          if (n == null) return 'Invalid number';
+                                          if (n < 1) return 'Must be ≥ 1';
+                                          return null;
+                                        },
                                         textAlign: TextAlign.center,
                                       ),
                                     ),
@@ -742,9 +928,14 @@ class _NewListingPageState extends State<NewListingPage> {
                                         controller: _roomsCtrl,
                                         hint: 'Number of rooms',
                                         keyboardType: TextInputType.number,
-                                        leading: const Icon(
-                                          Icons.meeting_room_outlined,
-                                        ),
+                                        leading: const Icon(Icons.meeting_room_outlined),
+                                        validator: (v) {
+                                          if (v == null || v.isEmpty) return 'Required';
+                                          final n = int.tryParse(v);
+                                          if (n == null) return 'Invalid integer';
+                                          if (n < 1) return 'Must be ≥ 1';
+                                          return null;
+                                        },
                                         textAlign: TextAlign.center,
                                       ),
                                     ),
@@ -754,81 +945,56 @@ class _NewListingPageState extends State<NewListingPage> {
                                         controller: _floorCtrl,
                                         hint: 'Floor',
                                         keyboardType: TextInputType.number,
-                                        leading: const Icon(
-                                          Icons.unfold_more_outlined,
-                                        ),
+                                        leading: const Icon(Icons.unfold_more_outlined),
+                                        validator: (v) {
+                                          if (v == null || v.isEmpty) return 'Required';
+                                          final n = int.tryParse(v);
+                                          if (n == null) return 'Invalid integer';
+                                          return null; // allow negative floors if needed
+                                        },
                                         textAlign: TextAlign.center,
                                       ),
                                     ),
+
+                                    // Type
                                     SizedBox(
                                       width: gridWidth,
                                       child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.center,
+                                        crossAxisAlignment: CrossAxisAlignment.center,
                                         children: [
                                           Text(
                                             'Type',
                                             style: TextStyle(
-                                              color: cs.onSurface.withOpacity(
-                                                .8,
-                                              ),
+                                              color: cs.onSurface.withOpacity(.8),
                                               fontWeight: FontWeight.w600,
                                             ),
                                           ),
                                           const SizedBox(height: 8),
                                           LayoutBuilder(
                                             builder: (context, box) {
-                                              final isNarrow =
-                                                  box.maxWidth < 300;
+                                              final isNarrow = box.maxWidth < 300;
                                               if (isNarrow) {
                                                 return Wrap(
                                                   spacing: 8,
                                                   runSpacing: 8,
-                                                  alignment:
-                                                      WrapAlignment.center,
-                                                  children: List.generate(
-                                                    _typeOptions.length,
-                                                    (i) {
-                                                      return SizedBox(
-                                                        width: box.maxWidth,
-                                                        child: MoonSegmentedControl(
-                                                          initialIndex:
-                                                              _typeIndex == i
-                                                              ? 0
-                                                              : -1,
-                                                          segments: [
-                                                            Segment(
-                                                              label: Text(
-                                                                _typeOptions[i],
-                                                              ),
-                                                            ),
-                                                          ],
-                                                          onSegmentChanged:
-                                                              (_) => setState(
-                                                                () =>
-                                                                    _typeIndex =
-                                                                        i,
-                                                              ),
-                                                          isExpanded: true,
-                                                        ),
-                                                      );
-                                                    },
-                                                  ),
+                                                  alignment: WrapAlignment.center,
+                                                  children: List.generate(_typeOptions.length, (i) {
+                                                    return SizedBox(
+                                                      width: box.maxWidth,
+                                                      child: MoonSegmentedControl(
+                                                        initialIndex: _typeIndex == i ? 0 : -1,
+                                                        segments: [Segment(label: Text(_typeOptions[i]))],
+                                                        onSegmentChanged: (_) => setState(() => _typeIndex = i),
+                                                        isExpanded: true,
+                                                      ),
+                                                    );
+                                                  }),
                                                 );
                                               }
                                               return MoonSegmentedControl(
                                                 initialIndex: _typeIndex,
-                                                segments: _typeOptions
-                                                    .map(
-                                                      (t) => Segment(
-                                                        label: Text(t),
-                                                      ),
-                                                    )
-                                                    .toList(),
-                                                onSegmentChanged: (i) =>
-                                                    setState(
-                                                      () => _typeIndex = i,
-                                                    ),
+                                                segments: _typeOptions.map((t) => Segment(label: Text(t))).toList(),
+                                                onSegmentChanged: (i) => setState(() => _typeIndex = i),
                                                 isExpanded: true,
                                               );
                                             },
@@ -853,19 +1019,11 @@ class _NewListingPageState extends State<NewListingPage> {
                                 Row(
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
-                                    Icon(
-                                      MoonIcons.arrows_cross_lines_24_regular,
-                                      size: 20,
-                                      color: cs.primary,
-                                    ),
+                                    Icon(MoonIcons.arrows_cross_lines_24_regular, size: 20, color: cs.primary),
                                     const SizedBox(width: 8),
                                     Text(
                                       'Amenities',
-                                      style: TextStyle(
-                                        fontSize: 18,
-                                        fontWeight: FontWeight.w800,
-                                        color: cs.onSurface,
-                                      ),
+                                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: cs.onSurface),
                                     ),
                                   ],
                                 ),
@@ -881,8 +1039,7 @@ class _NewListingPageState extends State<NewListingPage> {
                                       child: _AmenitySwitch(
                                         title: 'Have furniture?',
                                         value: _isFurnish,
-                                        onChanged: (v) =>
-                                            setState(() => _isFurnish = v),
+                                        onChanged: (v) => setState(() => _isFurnish = v),
                                       ),
                                     ),
                                     SizedBox(
@@ -890,8 +1047,7 @@ class _NewListingPageState extends State<NewListingPage> {
                                       child: _AmenitySwitch(
                                         title: 'Wifi included?',
                                         value: _wifiIncl,
-                                        onChanged: (v) =>
-                                            setState(() => _wifiIncl = v),
+                                        onChanged: (v) => setState(() => _wifiIncl = v),
                                       ),
                                     ),
                                     SizedBox(
@@ -899,8 +1055,7 @@ class _NewListingPageState extends State<NewListingPage> {
                                       child: _AmenitySwitch(
                                         title: 'Charges included?',
                                         value: _chargesIncl,
-                                        onChanged: (v) =>
-                                            setState(() => _chargesIncl = v),
+                                        onChanged: (v) => setState(() => _chargesIncl = v),
                                       ),
                                     ),
                                     SizedBox(
@@ -908,8 +1063,7 @@ class _NewListingPageState extends State<NewListingPage> {
                                       child: _AmenitySwitch(
                                         title: 'Car park?',
                                         value: _carPark,
-                                        onChanged: (v) =>
-                                            setState(() => _carPark = v),
+                                        onChanged: (v) => setState(() => _carPark = v),
                                       ),
                                     ),
                                   ],
@@ -929,25 +1083,15 @@ class _NewListingPageState extends State<NewListingPage> {
                                 Row(
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
-                                    Icon(
-                                      MoonIcons.time_calendar_24_regular,
-                                      size: 20,
-                                      color: cs.primary,
-                                    ),
+                                    Icon(MoonIcons.time_calendar_24_regular, size: 20, color: cs.primary),
                                     const SizedBox(width: 8),
                                     Text(
                                       'Availability',
-                                      style: TextStyle(
-                                        fontSize: 18,
-                                        fontWeight: FontWeight.w800,
-                                        color: cs.onSurface,
-                                      ),
+                                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: cs.onSurface),
                                     ),
                                   ],
                                 ),
                                 const SizedBox(height: 12),
-
-                                // Start & End date pickers
                                 Wrap(
                                   alignment: WrapAlignment.center,
                                   spacing: 12,
@@ -958,12 +1102,8 @@ class _NewListingPageState extends State<NewListingPage> {
                                       child: MoonFilledButton(
                                         isFullWidth: true,
                                         onTap: _pickStartDate,
-                                        leading: const Icon(
-                                          Icons.event_available_outlined,
-                                        ),
-                                        label: Text(
-                                          'Start: ${_formatDate(_availStart)}',
-                                        ),
+                                        leading: const Icon(Icons.event_available_outlined),
+                                        label: Text('Start: ${_formatDate(_availStart)}'),
                                       ),
                                     ),
                                     SizedBox(
@@ -974,16 +1114,10 @@ class _NewListingPageState extends State<NewListingPage> {
                                           Expanded(
                                             child: MoonFilledButton(
                                               isFullWidth: true,
-                                              onTap: _noEndDate
-                                                  ? null
-                                                  : _pickEndDate,
-                                              leading: const Icon(
-                                                Icons.event_note_outlined,
-                                              ),
+                                              onTap: _noEndDate ? null : _pickEndDate,
+                                              leading: const Icon(Icons.event_note_outlined),
                                               label: Text(
-                                                _noEndDate
-                                                    ? 'End: None'
-                                                    : 'End: ${_formatDate(_availEnd)}',
+                                                _noEndDate ? 'End: None' : 'End: ${_formatDate(_availEnd)}',
                                               ),
                                             ),
                                           ),
@@ -991,13 +1125,7 @@ class _NewListingPageState extends State<NewListingPage> {
                                           Row(
                                             mainAxisSize: MainAxisSize.min,
                                             children: [
-                                              Text(
-                                                'No end',
-                                                style: TextStyle(
-                                                  color: cs.onSurface
-                                                      .withOpacity(.8),
-                                                ),
-                                              ),
+                                              Text('No end', style: TextStyle(color: cs.onSurface.withOpacity(.8))),
                                               const SizedBox(width: 6),
                                               MoonSwitch(
                                                 value: _noEndDate,
@@ -1013,15 +1141,11 @@ class _NewListingPageState extends State<NewListingPage> {
                                     ),
                                   ],
                                 ),
-
                                 const SizedBox(height: 8),
                                 Text(
                                   'Start date cannot be before today. End date is optional.',
                                   textAlign: TextAlign.center,
-                                  style: TextStyle(
-                                    color: cs.onSurface.withOpacity(.65),
-                                    fontSize: 12,
-                                  ),
+                                  style: TextStyle(color: cs.onSurface.withOpacity(.65), fontSize: 12),
                                 ),
                               ],
                             ),
@@ -1029,7 +1153,7 @@ class _NewListingPageState extends State<NewListingPage> {
 
                           const SizedBox(height: 16),
 
-                          // ==== Distances (only manual transport; HES auto & hidden) ====
+                          // ==== Distances (manual: public transport; auto: HES) ====
                           _MoonCard(
                             isDark: isDark,
                             child: Column(
@@ -1038,20 +1162,11 @@ class _NewListingPageState extends State<NewListingPage> {
                                 Row(
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
-                                    Icon(
-                                      MoonIcons
-                                          .arrows_diagonals_tlbr_24_regular,
-                                      size: 20,
-                                      color: cs.primary,
-                                    ),
+                                    Icon(MoonIcons.arrows_diagonals_tlbr_24_regular, size: 20, color: cs.primary),
                                     const SizedBox(width: 8),
                                     Text(
                                       'Distances',
-                                      style: TextStyle(
-                                        fontSize: 18,
-                                        fontWeight: FontWeight.w800,
-                                        color: cs.onSurface,
-                                      ),
+                                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: cs.onSurface),
                                     ),
                                   ],
                                 ),
@@ -1060,24 +1175,41 @@ class _NewListingPageState extends State<NewListingPage> {
                                   width: fieldWidth,
                                   child: MoonFormTextInput(
                                     hasFloatingLabel: false,
-                                    hintText:
-                                        'Distance to public transport (km)',
+                                    hintText: 'Distance to public transport (km)',
                                     controller: _distTransportCtrl,
                                     keyboardType: TextInputType.number,
-                                    leading: const Icon(
-                                      Icons.directions_bus_outlined,
-                                    ),
+                                    leading: const Icon(Icons.directions_bus_outlined),
+                                    validator: (v) {
+                                      if (v == null || v.isEmpty) return 'Required';
+                                      final n = double.tryParse(v.replaceAll(',', '.'));
+                                      if (n == null) return 'Invalid number';
+                                      if (n < 0) return 'Must be ≥ 0';
+                                      return null;
+                                    },
                                     textAlign: TextAlign.center,
                                   ),
                                 ),
                                 const SizedBox(height: 8),
-                                Text(
-                                  'HES proximity is computed automatically from your address.',
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(
-                                    color: cs.onSurface.withOpacity(.65),
-                                    fontSize: 12,
-                                  ),
+                                Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    if (_isComputingHes)
+                                      const SizedBox(
+                                        width: 16,
+                                        height: 16,
+                                        child: CircularProgressIndicator(strokeWidth: 2),
+                                      ),
+                                    if (_isComputingHes) const SizedBox(width: 8),
+                                    Text(
+                                      _proximHesKm == null
+                                          ? 'HES proximity: —'
+                                          : 'HES proximity: ${_proximHesKm!.toStringAsFixed(2)} km',
+                                      style: TextStyle(
+                                        color: cs.onSurface.withOpacity(.85),
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ],
                                 ),
                               ],
                             ),
@@ -1099,11 +1231,116 @@ class _NewListingPageState extends State<NewListingPage> {
                               ),
                               Text(
                                 '${_images.length} selected',
-                                style: TextStyle(
-                                  color: cs.onSurface.withOpacity(.65),
-                                ),
+                                style: TextStyle(color: cs.onSurface.withOpacity(.65)),
                               ),
                             ],
+                          ),
+
+                          const SizedBox(height: 16),
+
+                          // ==== Price & Estimation (MOVED HERE, just before Save) ====
+                          _MoonCard(
+                            isDark: isDark,
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.center,
+                              children: [
+                                Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(Icons.attach_money, size: 20, color: cs.primary),
+                                    const SizedBox(width: 8),
+                                    Text(
+                                      'Pricing',
+                                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: cs.onSurface),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 12),
+                                LayoutBuilder(
+                                  builder: (context, box) {
+                                    return SizedBox(
+                                      width: (box.maxWidth).clamp(280.0, 600.0),
+                                      child: Row(
+                                        children: [
+                                          Expanded(
+                                            child: _moonInput(
+                                              controller: _priceCtrl,
+                                              hint: 'Price (CHF)',
+                                              keyboardType: TextInputType.number,
+                                              leading: const Icon(MoonIcons.arrows_boost_24_regular),
+                                              validator: (v) {
+                                                if (v == null || v.isEmpty) return 'Required';
+                                                final value = double.tryParse(v.replaceAll(',', '.'));
+                                                if (value == null) return 'Invalid number';
+                                                if (value <= 0) return 'Must be > 0';
+                                                if (!_isOn005Step(value)) return 'Must be multiple of 0.05';
+                                                return null;
+                                              },
+                                              textAlign: TextAlign.center,
+                                              focusNode: _priceFocus,
+                                            ),
+                                          ),
+                                          const SizedBox(width: 8),
+                                          MoonButton(
+                                            onTap: _estimating ? null : _estimatePrice,
+                                            leading: _estimating
+                                                ? const SizedBox(
+                                                    width: 18,
+                                                    height: 18,
+                                                    child: CircularProgressIndicator(strokeWidth: 2),
+                                                  )
+                                                : const Icon(Icons.calculate_outlined),
+                                            label: Text(_estimating ? '...' : 'Estimate'),
+                                          ),
+                                        ],
+                                      ),
+                                    );
+                                  },
+                                ),
+                                if (_estimatedPrice != null || _estimationError != null) ...[
+                                  const SizedBox(height: 8),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                                    decoration: BoxDecoration(
+                                      color: Theme.of(context).cardColor.withOpacity(.95),
+                                      border: Border.all(color: cs.primary.withOpacity(.15)),
+                                      borderRadius: BorderRadius.circular(12),
+                                    ),
+                                    child: _estimationError != null
+                                        ? Text(
+                                            _estimationError!,
+                                            textAlign: TextAlign.center,
+                                            style: const TextStyle(
+                                              color: Colors.redAccent,
+                                              fontWeight: FontWeight.w700,
+                                            ),
+                                          )
+                                        : Row(
+                                            children: [
+                                              const Icon(Icons.trending_up),
+                                              const SizedBox(width: 8),
+                                              Expanded(
+                                                child: Text(
+                                                  'Estimated price: CHF ${_estimatedPrice!.toStringAsFixed(2)}',
+                                                  softWrap: true,
+                                                  overflow: TextOverflow.fade,
+                                                  style: TextStyle(
+                                                    fontWeight: FontWeight.w700,
+                                                    color: cs.onSurface,
+                                                  ),
+                                                ),
+                                              ),
+                                              MoonButton(
+                                                onTap: _applyEstimateToPriceField,
+                                                label: const Text('Apply'),
+                                                leading: const Icon(Icons.check_circle_outline),
+                                              ),
+                                            ],
+                                          ),
+                                  ),
+                                ],
+                              ],
+                            ),
                           ),
 
                           const SizedBox(height: 16),
@@ -1127,9 +1364,7 @@ class _NewListingPageState extends State<NewListingPage> {
                                 ? const SizedBox(
                                     width: 18,
                                     height: 18,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                    ),
+                                    child: CircularProgressIndicator(strokeWidth: 2),
                                   )
                                 : const Icon(MoonIcons.arrows_boost_24_regular),
                             label: Text(_saving ? 'Saving…' : 'Save listing'),
