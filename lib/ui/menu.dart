@@ -1,6 +1,8 @@
 // lib/ui/menu.dart
 import 'package:flutter/material.dart';
 import 'package:moon_design/moon_design.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 
 // Your pages
 import 'property_list.dart';
@@ -10,24 +12,20 @@ import 'about_page.dart';
 import 'home.dart'; // DashboardPage lives here
 import 'owner_property_list.dart';
 
-/// Pages add this mixin to provide menu metadata while staying Stateless/Stateful.
 mixin MenuPageMeta {
   String get menuLabel;
   IconData get menuIcon;
   IconData? get menuSelectedIcon => null;
 }
 
-/// Moon-flavored menu container:
-/// - Phone & Tablet: AppBar + Drawer + Bottom NavigationBar
-/// - Desktop: AppBar + Drawer only (no bottom bar)
 class MoonMenuShell extends StatefulWidget {
-  final List<Widget> pages; // Widgets that also mix in MenuPageMeta
-  final int initialIndex; // starting tab
-  final String? title; // null => current tab label
-  final List<Widget>? actions; // extra AppBar actions
+  final List<Widget> pages;
+  final int initialIndex;
+  final String? title;
+  final List<Widget>? actions;
   final FloatingActionButton? fab;
-  final double desktopBreakpoint; // >= => desktop
-  final VoidCallback? onToggleTheme; // top-right theme toggle
+  final double desktopBreakpoint;
+  final VoidCallback? onToggleTheme;
 
   const MoonMenuShell({
     super.key,
@@ -47,14 +45,10 @@ class MoonMenuShell extends StatefulWidget {
 class _MoonMenuShellState extends State<MoonMenuShell> {
   late int _index = widget.initialIndex;
 
-  List<MenuPageMeta> get _meta => widget.pages
-      .map((w) {
+  List<MenuPageMeta> get _meta => widget.pages.map((w) {
         if (w is MenuPageMeta) return w as MenuPageMeta;
-        throw ArgumentError(
-          'All pages passed to MoonMenuShell must mix in MenuPageMeta.',
-        );
-      })
-      .toList(growable: false);
+        throw ArgumentError('All pages passed to MoonMenuShell must mix in MenuPageMeta.');
+      }).toList(growable: false);
 
   List<Widget> _buildActions(BuildContext context, MoonTokens tokens) {
     return [
@@ -64,9 +58,7 @@ class _MoonMenuShellState extends State<MoonMenuShell> {
           tooltip: 'Toggle theme',
           onPressed: widget.onToggleTheme,
           icon: Icon(
-            Theme.of(context).brightness == Brightness.dark
-                ? Icons.dark_mode
-                : Icons.light_mode,
+            Theme.of(context).brightness == Brightness.dark ? Icons.dark_mode : Icons.light_mode,
             color: tokens.colors.bulma,
           ),
         ),
@@ -78,16 +70,12 @@ class _MoonMenuShellState extends State<MoonMenuShell> {
     final width = MediaQuery.sizeOf(context).width;
     final isDesktop = width >= widget.desktopBreakpoint;
 
-    // Get Moon tokens via ThemeExtension (fallback to light tokens)
     final moon = Theme.of(context).extension<MoonTheme>();
     final tokens = moon?.tokens ?? MoonTokens.light;
 
     final meta = _meta;
     final current = meta[_index];
-    final page = KeyedSubtree(
-      key: ValueKey(_index),
-      child: widget.pages[_index],
-    );
+    final page = KeyedSubtree(key: ValueKey(_index), child: widget.pages[_index]);
 
     return Scaffold(
       appBar: AppBar(
@@ -107,9 +95,7 @@ class _MoonMenuShellState extends State<MoonMenuShell> {
               for (int i = 0; i < meta.length; i++)
                 ListTile(
                   leading: Icon(
-                    i == _index
-                        ? (meta[i].menuSelectedIcon ?? meta[i].menuIcon)
-                        : meta[i].menuIcon,
+                    i == _index ? (meta[i].menuSelectedIcon ?? meta[i].menuIcon) : meta[i].menuIcon,
                     color: tokens.colors.bulma,
                   ),
                   title: Text(meta[i].menuLabel),
@@ -130,7 +116,6 @@ class _MoonMenuShellState extends State<MoonMenuShell> {
         child: page,
       ),
       floatingActionButton: widget.fab,
-      // Bottom nav only if not desktop
       bottomNavigationBar: isDesktop
           ? null
           : NavigationBar(
@@ -143,10 +128,7 @@ class _MoonMenuShellState extends State<MoonMenuShell> {
                 for (final m in meta)
                   NavigationDestination(
                     icon: Icon(m.menuIcon, color: tokens.colors.bulma),
-                    selectedIcon: Icon(
-                      m.menuSelectedIcon ?? m.menuIcon,
-                      color: tokens.colors.bulma,
-                    ),
+                    selectedIcon: Icon(m.menuSelectedIcon ?? m.menuIcon, color: tokens.colors.bulma),
                     label: m.menuLabel,
                   ),
               ],
@@ -155,34 +137,55 @@ class _MoonMenuShellState extends State<MoonMenuShell> {
   }
 }
 
-/// Convenience: a ready-made “menu home” page using the sections below.
+/// HomeMenuPage : construit la liste d’onglets en fonction du rôle lu en live.
 class HomeMenuPage extends StatelessWidget {
   final VoidCallback onToggleTheme;
-  const HomeMenuPage({super.key, required this.onToggleTheme});
+
+  const HomeMenuPage({
+    super.key,
+    required this.onToggleTheme,
+  });
+
+  Future<bool> _fetchIsHomeowner() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return false;
+    final snap = await FirebaseFirestore.instance.collection('users').doc(user.uid).get();
+    final role = (snap.data()?['role'] as String?)?.toLowerCase();
+    return role == 'homeowner';
+  }
 
   @override
   Widget build(BuildContext context) {
-    // If an int is passed as route arguments, use it as the initial tab index.
     final maybeIndex = ModalRoute.of(context)?.settings.arguments as int?;
-    return MoonMenuShell(
-      title: 'HEStimate',
-      initialIndex: maybeIndex ?? 0,
-      onToggleTheme: onToggleTheme,
-      desktopBreakpoint: 1100, // phones & tablets below, desktop above
-      pages: const [
-        DashboardPage(),
-        ListingsSection(),
-        MyListingsSection(),
-        NewListingSection(),
-        ProfileSection(),
-        AboutSection(),
-      ],
+
+    return FutureBuilder<bool>(
+      future: _fetchIsHomeowner(),
+      builder: (context, snap) {
+        final isHomeowner = snap.data ?? false;
+
+        final pages = <Widget>[
+          const DashboardPage(),
+          const ListingsSection(),           // visible à tous (catalogue global)
+          if (isHomeowner) const NewListingSection(),   // homeowner only
+          if (isHomeowner) const MyListingsSection(),   // homeowner only (mes biens)
+          const ProfileSection(),
+          const AboutSection(),
+        ];
+
+        return MoonMenuShell(
+          title: 'HEStimate',
+          initialIndex: maybeIndex ?? 0,
+          onToggleTheme: onToggleTheme,
+          desktopBreakpoint: 1100,
+          pages: pages,
+        );
+      },
     );
   }
 }
 
 /// ----------------------
-/// Other sections
+/// Sections
 /// ----------------------
 class ListingsSection extends StatelessWidget with MenuPageMeta {
   const ListingsSection({super.key});
@@ -208,6 +211,18 @@ class NewListingSection extends StatelessWidget with MenuPageMeta {
   Widget build(BuildContext context) => const NewListingPage();
 }
 
+class MyListingsSection extends StatelessWidget with MenuPageMeta {
+  const MyListingsSection({super.key});
+  @override
+  String get menuLabel => 'My Properties';
+  @override
+  IconData get menuIcon => Icons.home_outlined;
+  @override
+  IconData? get menuSelectedIcon => Icons.home;
+  @override
+  Widget build(BuildContext context) => const OwnerListingsPage();
+}
+
 class ProfileSection extends StatelessWidget with MenuPageMeta {
   const ProfileSection({super.key});
   @override
@@ -230,23 +245,4 @@ class AboutSection extends StatelessWidget with MenuPageMeta {
   IconData? get menuSelectedIcon => Icons.info;
   @override
   Widget build(BuildContext context) => const AboutPage();
-}
-
-class MyListingsSection extends StatelessWidget with MenuPageMeta {
-  const MyListingsSection({super.key});
-
-  @override
-  String get menuLabel => 'My Properties';
-
-  @override
-  IconData get menuIcon => Icons.home_outlined;
-
-  @override
-  IconData? get menuSelectedIcon => Icons.home;
-
-  @override
-  Widget build(BuildContext context) {
-    // You can reuse ListingsPage but pass a flag that it should show only current user's listings
-    return const OwnerListingsPage();
-  }
 }
