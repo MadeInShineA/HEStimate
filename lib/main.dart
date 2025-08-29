@@ -1,257 +1,256 @@
-import 'dart:io';
-import 'package:flutter/material.dart';
-import 'package:firebase_core/firebase_core.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:path_provider/path_provider.dart';
+  import 'dart:io';
+  import 'package:flutter/material.dart';
+  import 'package:firebase_core/firebase_core.dart';
+  import 'package:firebase_auth/firebase_auth.dart';
+  import 'package:cloud_firestore/cloud_firestore.dart';
+  import 'package:path_provider/path_provider.dart';
 
-// Moon Design
-import 'package:moon_design/moon_design.dart';
+  // Moon Design
+  import 'package:moon_design/moon_design.dart';
 
-// Your UI pages
-import 'ui/property_list.dart';
-import 'ui/new_listing_page.dart';
-import 'ui/register.dart';
-import 'ui/login.dart';
-import 'ui/profile.dart';
-import 'ui/about_page.dart';
-import 'ui/faceIdLogin.dart';
-import 'ui/faceIdSetup.dart';
-import 'ui/menu.dart'; // HomeMenuPage lives here
+  // Your UI pages
+  import 'ui/new_listing_page.dart';
+  import 'ui/register.dart';
+  import 'ui/login.dart';
+  import 'ui/profile.dart';
+  import 'ui/about_page.dart';
+  import 'ui/faceIdLogin.dart';
+  import 'ui/faceIdSetup.dart';
+  import 'ui/menu.dart'; // HomeMenuPage lives here
 
-import 'firebase_options.dart';
+  import 'firebase_options.dart';
 
-Future<void> main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+  Future<void> main() async {
+    WidgetsFlutterBinding.ensureInitialized();
+    await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
 
-  final currentUser = FirebaseAuth.instance.currentUser;
+    final currentUser = FirebaseAuth.instance.currentUser;
 
-  bool faceIdEnabled = false;
-  File? faceImage;
+    bool faceIdEnabled = false;
+    File? faceImage;
 
-  if (currentUser != null) {
-    final doc = await FirebaseFirestore.instance
-        .collection('users')
-        .doc(currentUser.uid)
-        .get();
-    if (doc.exists) {
-      faceIdEnabled = doc.data()?['faceIdEnabled'] ?? false;
-      if (faceIdEnabled) {
-        final dir = await getApplicationDocumentsDirectory();
-        final file = File('${dir.path}/face_id.png');
-        if (await file.exists()) {
-          faceImage = file;
-        } else {
-          faceIdEnabled = false;
+    if (currentUser != null) {
+      final doc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(currentUser.uid)
+          .get();
+      if (doc.exists) {
+        faceIdEnabled = doc.data()?['faceIdEnabled'] ?? false;
+        if (faceIdEnabled) {
+          final dir = await getApplicationDocumentsDirectory();
+          final file = File('${dir.path}/face_id.png');
+          if (await file.exists()) {
+            faceImage = file;
+          } else {
+            faceIdEnabled = false;
+          }
         }
       }
     }
-  }
 
-  runApp(
-    MyApp(
-      initialUser: currentUser,
-      faceIdEnabled: faceIdEnabled,
-      faceImage: faceImage,
-    ),
-  );
-}
-
-class MyApp extends StatefulWidget {
-  final User? initialUser;
-  final bool faceIdEnabled;
-  final File? faceImage;
-
-  const MyApp({
-    super.key,
-    this.initialUser,
-    required this.faceIdEnabled,
-    this.faceImage,
-  });
-
-  @override
-  State<MyApp> createState() => _MyAppState();
-}
-
-class _MyAppState extends State<MyApp> {
-  ThemeMode _themeMode = ThemeMode.system;
-
-  void _toggleTheme() {
-    setState(() {
-      _themeMode = _themeMode == ThemeMode.dark
-          ? ThemeMode.light
-          : ThemeMode.dark;
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final lightTokens = MoonTokens.light;
-    final darkTokens = MoonTokens.dark;
-
-    final baseLight = ThemeData(
-      colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
-      useMaterial3: true,
-    );
-    final baseDark = ThemeData(
-      colorScheme: const ColorScheme.dark().copyWith(
-        primary: Colors.deepPurple,
-        secondary: Colors.deepPurpleAccent,
+    runApp(
+      MyApp(
+        initialUser: currentUser,
+        faceIdEnabled: faceIdEnabled,
+        faceImage: faceImage,
       ),
-      useMaterial3: true,
-    );
-
-    return MaterialApp(
-      title: 'HEStimate App',
-      themeMode: _themeMode,
-      theme: baseLight.copyWith(extensions: [MoonTheme(tokens: lightTokens)]),
-      darkTheme: baseDark.copyWith(extensions: [MoonTheme(tokens: darkTokens)]),
-      initialRoute: widget.initialUser == null
-          ? '/login'
-          : (widget.faceIdEnabled ? '/faceLogin' : '/home'),
-      routes: {
-        '/login': (context) => const LoginPage(),
-        '/register': (context) => const RegisterPage(),
-        '/faceIdSetup': (context) => const FaceIdSetupPage(),
-        '/home': (context) => HomeMenuPage(onToggleTheme: _toggleTheme),
-        '/profile': (context) => const ProfilePage(),
-        '/faceLogin': (context) => FaceIdLoginPage(
-          faceImage: widget.faceImage,
-          user: widget.initialUser,
-        ),
-        // Convenience routes to your other screens (still usable outside menu)
-        '/listings': (context) => const ListingsPage(),
-        '/newListing': (context) => const NewListingPage(),
-        '/about': (context) => const AboutPage(),
-      },
-      debugShowCheckedModeBanner: false,
     );
   }
-}
 
-class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key, required this.title});
-  final String title;
+  class MyApp extends StatefulWidget {
+    final User? initialUser;
+    final bool faceIdEnabled;
+    final File? faceImage;
 
-  @override
-  State<MyHomePage> createState() => _MyHomePageState();
-}
+    const MyApp({
+      super.key,
+      this.initialUser,
+      required this.faceIdEnabled,
+      this.faceImage,
+    });
 
-class _MyHomePageState extends State<MyHomePage> {
-  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-  int _counter = 0;
+    @override
+    State<MyApp> createState() => _MyAppState();
+  }
 
-  Future<void> _addValue() async {
-    try {
-      await _firestore.collection('test_collection').doc('counter_doc').set({
-        'counter': _counter,
+  class _MyAppState extends State<MyApp> {
+    ThemeMode _themeMode = ThemeMode.system;
+
+    void _toggleTheme() {
+      setState(() {
+        _themeMode = _themeMode == ThemeMode.dark
+            ? ThemeMode.light
+            : ThemeMode.dark;
       });
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Valeur ajoutée à Firebase !')),
-      );
-    } catch (e) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Erreur: $e')));
     }
-  }
 
-  Future<void> _removeValue() async {
-    try {
-      await _firestore
-          .collection('test_collection')
-          .doc('counter_doc')
-          .delete();
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Valeur supprimée de Firebase !')),
+    @override
+    Widget build(BuildContext context) {
+      final lightTokens = MoonTokens.light;
+      final darkTokens = MoonTokens.dark;
+
+      final baseLight = ThemeData(
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
+        useMaterial3: true,
       );
-    } catch (e) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Erreur: $e')));
-    }
-  }
+      final baseDark = ThemeData(
+        colorScheme: const ColorScheme.dark().copyWith(
+          primary: Colors.deepPurple,
+          secondary: Colors.deepPurpleAccent,
+        ),
+        useMaterial3: true,
+      );
 
-  void _incrementCounter() {
-    setState(() {
-      _counter++;
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        title: Text(widget.title),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.person),
-            onPressed: () {
-              Navigator.of(context).pushNamed('/profile');
-            },
+      return MaterialApp(
+        title: 'HEStimate App',
+        themeMode: _themeMode,
+        theme: baseLight.copyWith(extensions: [MoonTheme(tokens: lightTokens)]),
+        darkTheme: baseDark.copyWith(extensions: [MoonTheme(tokens: darkTokens)]),
+        initialRoute: widget.initialUser == null
+            ? '/login'
+            : (widget.faceIdEnabled ? '/faceLogin' : '/home'),
+        routes: {
+          '/login': (context) => const LoginPage(),
+          '/register': (context) => const RegisterPage(),
+          '/faceIdSetup': (context) => const FaceIdSetupPage(),
+          '/home': (context) => HomeMenuPage(onToggleTheme: _toggleTheme),
+          '/profile': (context) => const ProfilePage(),
+          '/faceLogin': (context) => FaceIdLoginPage(
+            faceImage: widget.faceImage,
+            user: widget.initialUser,
           ),
-        ],
-      ),
-      body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: <Widget>[
-            ElevatedButton.icon(
-              icon: const Icon(Icons.add_business),
+          // Convenience routes to your other screens (still usable outside menu)
+          '/listings': (context) => const ListingsSection(),
+          '/newListing': (context) => const NewListingPage(),
+          '/about': (context) => const AboutPage(),
+        },
+        debugShowCheckedModeBanner: false,
+      );
+    }
+  }
 
-              label: const Text("Go to Property List"),
-              onPressed: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => const ListingsPage()),
-                );
-              },
-            ),
-            ElevatedButton.icon(
-              icon: const Icon(Icons.add_business),
-              label: const Text("Go to New Listing"),
-              onPressed: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => const NewListingPage()),
-                );
-              },
-            ),
+  class MyHomePage extends StatefulWidget {
+    const MyHomePage({super.key, required this.title});
+    final String title;
 
-            const Text('Counter:'),
-            Text(
-              '$_counter',
-              style: Theme.of(context).textTheme.headlineMedium,
-            ),
-            const SizedBox(height: 20),
-            MoonButton(
-              onTap: () => Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const AboutPage()),
-              ),
-              leading: const Icon(MoonIcons.arrows_forward_24_regular),
-              label: const Text('About'),
-            ),
-            ElevatedButton(
-              onPressed: _addValue,
-              child: const Text('Ajouter à Firebase'),
-            ),
-            const SizedBox(height: 10),
-            ElevatedButton(
-              onPressed: _removeValue,
-              child: const Text('Supprimer de Firebase'),
+    @override
+    State<MyHomePage> createState() => _MyHomePageState();
+  }
+
+  class _MyHomePageState extends State<MyHomePage> {
+    final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+    int _counter = 0;
+
+    Future<void> _addValue() async {
+      try {
+        await _firestore.collection('test_collection').doc('counter_doc').set({
+          'counter': _counter,
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Valeur ajoutée à Firebase !')),
+        );
+      } catch (e) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Erreur: $e')));
+      }
+    }
+
+    Future<void> _removeValue() async {
+      try {
+        await _firestore
+            .collection('test_collection')
+            .doc('counter_doc')
+            .delete();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Valeur supprimée de Firebase !')),
+        );
+      } catch (e) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Erreur: $e')));
+      }
+    }
+
+    void _incrementCounter() {
+      setState(() {
+        _counter++;
+      });
+    }
+
+    @override
+    Widget build(BuildContext context) {
+      return Scaffold(
+        appBar: AppBar(
+          backgroundColor: Theme.of(context).colorScheme.inversePrimary,
+          title: Text(widget.title),
+          actions: [
+            IconButton(
+              icon: const Icon(Icons.person),
+              onPressed: () {
+                Navigator.of(context).pushNamed('/profile');
+              },
             ),
           ],
         ),
-      ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _incrementCounter,
-        tooltip: 'Increment',
-        child: const Icon(Icons.add),
-      ),
-    );
+        body: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: <Widget>[
+              ElevatedButton.icon(
+                icon: const Icon(Icons.add_business),
+
+                label: const Text("Go to Property List"),
+                onPressed: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const ListingsSection()),
+                  );
+                },
+              ),
+              ElevatedButton.icon(
+                icon: const Icon(Icons.add_business),
+                label: const Text("Go to New Listing"),
+                onPressed: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const NewListingPage()),
+                  );
+                },
+              ),
+
+              const Text('Counter:'),
+              Text(
+                '$_counter',
+                style: Theme.of(context).textTheme.headlineMedium,
+              ),
+              const SizedBox(height: 20),
+              MoonButton(
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const AboutPage()),
+                ),
+                leading: const Icon(MoonIcons.arrows_forward_24_regular),
+                label: const Text('About'),
+              ),
+              ElevatedButton(
+                onPressed: _addValue,
+                child: const Text('Ajouter à Firebase'),
+              ),
+              const SizedBox(height: 10),
+              ElevatedButton(
+                onPressed: _removeValue,
+                child: const Text('Supprimer de Firebase'),
+              ),
+            ],
+          ),
+        ),
+        floatingActionButton: FloatingActionButton(
+          onPressed: _incrementCounter,
+          tooltip: 'Increment',
+          child: const Icon(Icons.add),
+        ),
+      );
+    }
   }
-}
 
