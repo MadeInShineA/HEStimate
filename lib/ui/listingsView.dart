@@ -3,18 +3,28 @@ import 'package:flutter/material.dart';
 import 'package:moon_design/moon_design.dart';
 import 'package:moon_icons/moon_icons.dart';
 import 'package:intl/intl.dart';
-
-import 'view_listing_page.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
-class OwnerListingsPage extends StatefulWidget {
-  const OwnerListingsPage({super.key});
+import 'view_listing_page.dart';
 
-  @override
-  State<OwnerListingsPage> createState() => _ListingsPageState();
+enum ListingsMode {
+  all,      // Show all listings
+  owner,    // Show only current user's listings
 }
 
-class _ListingsPageState extends State<OwnerListingsPage> {
+class ListingsPage extends StatefulWidget {
+  final ListingsMode mode;
+  
+  const ListingsPage({
+    super.key,
+    this.mode = ListingsMode.all,
+  });
+
+  @override
+  State<ListingsPage> createState() => _ListingsPageState();
+}
+
+class _ListingsPageState extends State<ListingsPage> {
   final _searchCtrl = TextEditingController();
 
   // Filters
@@ -32,21 +42,21 @@ class _ListingsPageState extends State<OwnerListingsPage> {
   }
 
   Query<Map<String, dynamic>> _baseQuery() {
-    final uid = FirebaseAuth.instance.currentUser?.uid;
-    if (uid == null) {
-      // User not logged in: return empty query
-      return FirebaseFirestore.instance
-          .collection('listings')
-          .where('ownerUid', isEqualTo: '__none__');
+    Query<Map<String, dynamic>> q = FirebaseFirestore.instance.collection('listings');
+
+    // Filter by owner if in owner mode
+    if (widget.mode == ListingsMode.owner) {
+      final uid = FirebaseAuth.instance.currentUser?.uid;
+      if (uid == null) {
+        // User not logged in: return empty query
+        return FirebaseFirestore.instance
+            .collection('listings')
+            .where('ownerUid', isEqualTo: '__none__');
+      }
+      q = q.where('ownerUid', isEqualTo: uid);
     }
 
-    Query<Map<String, dynamic>> q = FirebaseFirestore.instance
-        .collection('listings')
-        .where(
-          'ownerUid',
-          isEqualTo: uid,
-        ); // <-- filter to only user's listings
-
+    // Apply sorting
     switch (_sortIndex) {
       case 1:
         q = q.orderBy('price');
@@ -102,34 +112,21 @@ class _ListingsPageState extends State<OwnerListingsPage> {
       filtered = filtered.where((d) => d.data()['wifi_incl'] == true).toList();
     }
     if (_chargesInclOnly) {
-      filtered = filtered
-          .where((d) => d.data()['charges_incl'] == true)
-          .toList();
+      filtered = filtered.where((d) => d.data()['charges_incl'] == true).toList();
     }
     if (_carParkOnly) {
       filtered = filtered.where((d) => d.data()['car_park'] == true).toList();
     }
 
     // Client-side sorting si on a des filtres qui ont pu changer l'ordre
-    bool hasFilters =
-        _typeIndex >= 0 ||
-        _furnishedOnly ||
-        _wifiOnly ||
-        _chargesInclOnly ||
-        _carParkOnly;
+    bool hasFilters = _typeIndex >= 0 || _furnishedOnly || _wifiOnly || _chargesInclOnly || _carParkOnly;
     if (hasFilters) {
       switch (_sortIndex) {
         case 1:
-          filtered.sort(
-            (a, b) =>
-                (a.data()['price'] ?? 0).compareTo(b.data()['price'] ?? 0),
-          );
+          filtered.sort((a, b) => (a.data()['price'] ?? 0).compareTo(b.data()['price'] ?? 0));
           break;
         case 2:
-          filtered.sort(
-            (a, b) =>
-                (b.data()['price'] ?? 0).compareTo(a.data()['price'] ?? 0),
-          );
+          filtered.sort((a, b) => (b.data()['price'] ?? 0).compareTo(a.data()['price'] ?? 0));
           break;
         case 0:
         default:
@@ -160,9 +157,7 @@ class _ListingsPageState extends State<OwnerListingsPage> {
       if (rooms == '1' || rooms == '1.0') {
         title = furnished ? 'Furnished Studio' : 'Studio';
       } else {
-        title = furnished
-            ? 'Furnished ${rooms}-Room Apartment'
-            : '${rooms}-Room Apartment';
+        title = furnished ? 'Furnished ${rooms}-Room Apartment' : '${rooms}-Room Apartment';
       }
     } else {
       title = furnished ? 'Furnished Property' : 'Property';
@@ -179,6 +174,33 @@ class _ListingsPageState extends State<OwnerListingsPage> {
     return title;
   }
 
+  String get _pageTitle {
+    switch (widget.mode) {
+      case ListingsMode.all:
+        return 'All Properties';
+      case ListingsMode.owner:
+        return 'My Properties';
+    }
+  }
+
+  String get _emptyStateMessage {
+    switch (widget.mode) {
+      case ListingsMode.all:
+        return 'No listings match your filters';
+      case ListingsMode.owner:
+        return 'You have no listings yet';
+    }
+  }
+
+  String get _emptyStateSubMessage {
+    switch (widget.mode) {
+      case ListingsMode.all:
+        return 'Try adjusting filters or clearing the search.';
+      case ListingsMode.owner:
+        return 'Create your first listing to get started.';
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
@@ -186,13 +208,12 @@ class _ListingsPageState extends State<OwnerListingsPage> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Listings'),
+        title: Text(_pageTitle),
         actions: [
           IconButton(
             tooltip: 'Clear search',
             onPressed: () {
-              if (_searchCtrl.text.isNotEmpty)
-                setState(() => _searchCtrl.clear());
+              if (_searchCtrl.text.isNotEmpty) setState(() => _searchCtrl.clear());
             },
             icon: const Icon(Icons.refresh),
           ),
@@ -224,9 +245,7 @@ class _ListingsPageState extends State<OwnerListingsPage> {
                 SliverToBoxAdapter(
                   child: Padding(
                     padding: EdgeInsets.symmetric(
-                      horizontal: isXL
-                          ? (constraints.maxWidth - 1200) / 2 + 16
-                          : 16,
+                      horizontal: isXL ? (constraints.maxWidth - 1200) / 2 + 16 : 16,
                       vertical: 16,
                     ),
                     child: _FilterBar(
@@ -270,16 +289,19 @@ class _ListingsPageState extends State<OwnerListingsPage> {
                     final filtered = _applyClientSideFilters(docs);
 
                     if (filtered.isEmpty) {
-                      return const SliverFillRemaining(
+                      return SliverFillRemaining(
                         hasScrollBody: false,
-                        child: _EmptyState(),
+                        child: _EmptyState(
+                          message: _emptyStateMessage,
+                          subMessage: _emptyStateSubMessage,
+                          mode: widget.mode,
+                        ),
                       );
                     }
 
                     // Responsive grid avec aspect ratio ajusté
                     int crossAxisCount = 1;
-                    double childAspectRatio =
-                        1.1; // Augmenté pour plus de hauteur
+                    double childAspectRatio = 1.1; // Augmenté pour plus de hauteur
                     final w = constraints.maxWidth;
                     if (w >= 1400) {
                       crossAxisCount = 4;
@@ -294,9 +316,7 @@ class _ListingsPageState extends State<OwnerListingsPage> {
 
                     return SliverPadding(
                       padding: EdgeInsets.symmetric(
-                        horizontal: isXL
-                            ? (constraints.maxWidth - 1200) / 2 + 16
-                            : 16,
+                        horizontal: isXL ? (constraints.maxWidth - 1200) / 2 + 16 : 16,
                         vertical: 8,
                       ),
                       sliver: SliverGrid(
@@ -306,16 +326,19 @@ class _ListingsPageState extends State<OwnerListingsPage> {
                           mainAxisSpacing: 16,
                           childAspectRatio: childAspectRatio,
                         ),
-                        delegate: SliverChildBuilderDelegate((context, i) {
-                          final doc = filtered[i];
-                          final data = doc.data();
-                          final title = _generateTitle(data);
-                          return _ListingCard(
-                            listingId: doc.id, // <-- on passe l'id ici
-                            data: data,
-                            title: title,
-                          );
-                        }, childCount: filtered.length),
+                        delegate: SliverChildBuilderDelegate(
+                          (context, i) {
+                            final doc = filtered[i];
+                            final data = doc.data();
+                            final title = _generateTitle(data);
+                            return _ListingCard(
+                              listingId: doc.id,
+                              data: data,
+                              title: title,
+                            );
+                          },
+                          childCount: filtered.length,
+                        ),
                       ),
                     );
                   },
@@ -393,9 +416,7 @@ class _FilterBar extends StatelessWidget {
             ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 480),
               child: MoonSegmentedControl(
-                initialIndex: typeIndex < 0
-                    ? 2
-                    : typeIndex, // hack to allow All
+                initialIndex: typeIndex < 0 ? 2 : typeIndex, // hack to allow All
                 segments: const [
                   Segment(label: Text('Entire home')),
                   Segment(label: Text('Single room')),
@@ -526,9 +547,7 @@ class _BoolChip extends StatelessWidget {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         decoration: BoxDecoration(
-          color: value
-              ? cs.primary.withOpacity(.15)
-              : Theme.of(context).cardColor.withOpacity(.9),
+          color: value ? cs.primary.withOpacity(.15) : Theme.of(context).cardColor.withOpacity(.9),
           borderRadius: BorderRadius.circular(999),
           border: Border.all(color: cs.primary.withOpacity(value ? .4 : .2)),
         ),
@@ -556,7 +575,15 @@ class _BoolChip extends StatelessWidget {
 }
 
 class _EmptyState extends StatelessWidget {
-  const _EmptyState();
+  final String message;
+  final String subMessage;
+  final ListingsMode mode;
+  
+  const _EmptyState({
+    required this.message,
+    required this.subMessage,
+    required this.mode,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -564,10 +591,14 @@ class _EmptyState extends StatelessWidget {
     return Column(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
-        Icon(Icons.search, size: 56, color: cs.primary.withOpacity(.7)),
+        Icon(
+          mode == ListingsMode.owner ? Icons.home_outlined : Icons.search,
+          size: 56, 
+          color: cs.primary.withOpacity(.7),
+        ),
         const SizedBox(height: 12),
         Text(
-          'No listings match your filters',
+          message,
           style: TextStyle(
             fontSize: 18,
             fontWeight: FontWeight.bold,
@@ -576,16 +607,27 @@ class _EmptyState extends StatelessWidget {
         ),
         const SizedBox(height: 8),
         Text(
-          'Try adjusting filters or clearing the search.',
+          subMessage,
           style: TextStyle(color: cs.onSurface.withOpacity(.7)),
         ),
+        if (mode == ListingsMode.owner) ...[
+          const SizedBox(height: 16),
+          ElevatedButton.icon(
+            onPressed: () {
+              // Navigate to new listing page
+              Navigator.of(context).pushNamed('/newListing');
+            },
+            icon: const Icon(Icons.add),
+            label: const Text('Create your first listing'),
+          ),
+        ],
       ],
     );
   }
 }
 
 class _ListingCard extends StatelessWidget {
-  final String listingId; // <-- on reçoit l'id
+  final String listingId;
   final Map<String, dynamic> data;
   final String title;
   const _ListingCard({
@@ -608,8 +650,7 @@ class _ListingCard extends StatelessWidget {
     final rooms = (data['num_rooms'] ?? '').toString();
     final type = (data['type'] ?? '').toString();
 
-    final photos =
-        (data['photos'] as List?)?.cast<String>() ?? const <String>[];
+    final photos = (data['photos'] as List?)?.cast<String>() ?? const <String>[];
     final imageUrl = photos.isNotEmpty ? photos.first : null;
 
     final amenities = <String>[
@@ -711,9 +752,7 @@ class _ListingCard extends StatelessWidget {
                             decoration: BoxDecoration(
                               color: cs.primary.withOpacity(.12),
                               borderRadius: BorderRadius.circular(6),
-                              border: Border.all(
-                                color: cs.primary.withOpacity(.25),
-                              ),
+                              border: Border.all(color: cs.primary.withOpacity(.25)),
                             ),
                             child: Text(
                               type,
@@ -744,7 +783,7 @@ class _ListingCard extends StatelessWidget {
                             '$city${npa.isNotEmpty ? ' · $npa' : ''}',
                             style: TextStyle(
                               fontSize: 12,
-                              color: cs.onSurface.withOpacity(.8),
+                              color: cs.onSurface.withOpacity(.8)
                             ),
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
@@ -753,12 +792,12 @@ class _ListingCard extends StatelessWidget {
                       ],
                     ),
                     const SizedBox(height: 3),
-
+                    
                     Row(
                       children: [
                         Icon(
                           Icons.square_foot,
-                          size: 13,
+                          size: 13, 
                           color: cs.onSurface.withOpacity(.7),
                         ),
                         const SizedBox(width: 4),
@@ -766,13 +805,13 @@ class _ListingCard extends StatelessWidget {
                           surface.isNotEmpty ? '$surface m²' : '—',
                           style: TextStyle(
                             fontSize: 12,
-                            color: cs.onSurface.withOpacity(.8),
+                            color: cs.onSurface.withOpacity(.8)
                           ),
                         ),
                         const SizedBox(width: 12),
                         Icon(
                           Icons.meeting_room,
-                          size: 13,
+                          size: 13, 
                           color: cs.onSurface.withOpacity(.7),
                         ),
                         const SizedBox(width: 4),
@@ -780,7 +819,7 @@ class _ListingCard extends StatelessWidget {
                           rooms.isNotEmpty ? '$rooms rooms' : '—',
                           style: TextStyle(
                             fontSize: 12,
-                            color: cs.onSurface.withOpacity(.8),
+                            color: cs.onSurface.withOpacity(.8)
                           ),
                         ),
                       ],
@@ -803,9 +842,7 @@ class _ListingCard extends StatelessWidget {
                                       ),
                                       decoration: BoxDecoration(
                                         color: cs.primary.withOpacity(.08),
-                                        borderRadius: BorderRadius.circular(
-                                          999,
-                                        ),
+                                        borderRadius: BorderRadius.circular(999),
                                         border: Border.all(
                                           color: cs.primary.withOpacity(.18),
                                         ),
