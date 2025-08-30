@@ -511,7 +511,6 @@ class _NewListingPageState extends State<NewListingPage> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('New Listing'),
         actions: [
           Padding(
             padding: const EdgeInsets.only(right: 12),

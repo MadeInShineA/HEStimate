@@ -36,7 +36,6 @@ Future<void> main() async {
         .collection('users')
         .doc(currentUser.uid)
         .get();
-
     if (doc.exists) {
       faceIdEnabled = doc.data()?['faceIdEnabled'] ?? false;
       if (faceIdEnabled) {
@@ -148,24 +147,31 @@ class _MyAppState extends State<MyApp> {
       debugShowCheckedModeBanner: false,
     );
   }
-}
 
-class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key, required this.title});
-  final String title;
+  class MyApp extends StatefulWidget {
+    final User? initialUser;
+    final bool faceIdEnabled;
+    final File? faceImage;
 
-  @override
-  State<MyHomePage> createState() => _MyHomePageState();
-}
+    const MyApp({
+      super.key,
+      this.initialUser,
+      required this.faceIdEnabled,
+      this.faceImage,
+    });
 
-class _MyHomePageState extends State<MyHomePage> {
-  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-  int _counter = 0;
+    @override
+    State<MyApp> createState() => _MyAppState();
+  }
 
-  Future<void> _addValue() async {
-    try {
-      await _firestore.collection('test_collection').doc('counter_doc').set({
-        'counter': _counter,
+  class _MyAppState extends State<MyApp> {
+    ThemeMode _themeMode = ThemeMode.system;
+
+    void _toggleTheme() {
+      setState(() {
+        _themeMode = _themeMode == ThemeMode.dark
+            ? ThemeMode.light
+            : ThemeMode.dark;
       });
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Valeur ajoutée à Firebase !')),
@@ -175,7 +181,6 @@ class _MyHomePageState extends State<MyHomePage> {
         SnackBar(content: Text('Erreur: $e')),
       );
     }
-  }
 
   Future<void> _removeValue() async {
     try {
