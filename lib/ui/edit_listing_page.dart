@@ -38,6 +38,7 @@ class _EditListingPageState extends State<EditListingPage> {
 
   // Address suggestions
   final FocusNode _addressFocus = FocusNode();
+  final FocusNode _priceFocus = FocusNode();
   Timer? _addrDebounce;
   List<_AddressSuggestion> _addressSuggestions = [];
   bool _isLoadingAddr = false;
@@ -73,12 +74,12 @@ class _EditListingPageState extends State<EditListingPage> {
   double? _geoLng;
 
   // HES
-  double? _proximHesKm;        // auto
-  String? _nearestHesId;       // auto (doc id)
-  String? _nearestHesName;     // auto (name)
+  double? _proximHesKm; // auto
+  String? _nearestHesId; // auto (doc id)
+  String? _nearestHesName; // auto (name)
 
   // Transit
-  double? _distTransitKm;      // auto
+  double? _distTransitKm; // auto
   String? _nearestTransitName; // auto
 
   bool _loading = true;
@@ -88,12 +89,34 @@ class _EditListingPageState extends State<EditListingPage> {
   // To decide if we must re-geocode / recompute proximity
   String _initialAddrKey = ''; // "$address|$npa|$city"
 
+  // ===== HEStimate API integration (same as New) =====
+  static const _apiBase = 'https://hestimate-api-production.up.railway.app';
+  static const _estimatePath = '/estimate-price';
+
+  bool _estimating = false;
+  double? _estimatedPrice;
+  String? _estimationError;
+
   @override
   void initState() {
     super.initState();
     _addressCtrl.addListener(_onAddressChanged);
     _cityCtrl.addListener(_onAddressPiecesChanged);
     _npaCtrl.addListener(_onAddressPiecesChanged);
+
+    // Round price to nearest 0.05 on blur (ONLY if > 0), identical to NewListingPage
+    _priceFocus.addListener(() {
+      if (!_priceFocus.hasFocus) {
+        final raw = _priceCtrl.text.replaceAll(',', '.').trim();
+        final v = double.tryParse(raw);
+        if (v != null && v > 0) {
+          final rounded = _roundToNearest005(v);
+          _priceCtrl.text = rounded.toStringAsFixed(2);
+          setState(() {}); // refresh UI/validators
+        }
+      }
+    });
+
     _loadListing();
   }
 
@@ -106,6 +129,7 @@ class _EditListingPageState extends State<EditListingPage> {
       ..removeListener(_onAddressChanged)
       ..dispose();
     _addressFocus.dispose();
+    _priceFocus.dispose();
 
     _cityCtrl.removeListener(_onAddressPiecesChanged);
     _npaCtrl.removeListener(_onAddressPiecesChanged);
@@ -119,6 +143,10 @@ class _EditListingPageState extends State<EditListingPage> {
 
     super.dispose();
   }
+
+  // ---------- rounding helpers (nearest 0.05) ----------
+  double _roundToNearest005(double v) => (v * 20).round() / 20.0;
+  bool _isOn005Step(double v) => ((v * 20).roundToDouble() == v * 20);
 
   // ─────────────────────────────────────────────────────────────────────────────
   // Load existing listing
@@ -179,14 +207,17 @@ class _EditListingPageState extends State<EditListingPage> {
       final List photos = (m['photos'] as List?) ?? const [];
       _existingPhotos = photos.map((e) => e.toString()).toList();
 
-      _initialAddrKey = '${_addressCtrl.text.trim()}|${_npaCtrl.text.trim()}|${_cityCtrl.text.trim()}';
+      _initialAddrKey =
+          '${_addressCtrl.text.trim()}|${_npaCtrl.text.trim()}|${_cityCtrl.text.trim()}';
 
       setState(() => _loading = false);
 
       // If we have coords but missing any distance/name, recompute them
-      if (_geoLat != null && _geoLng != null &&
-          (_proximHesKm == null || _distTransitKm == null || (_nearestHesName == null || _nearestHesName!.isEmpty))) {
-        // fire and forget; UI spinners will show if quick
+      if (_geoLat != null &&
+          _geoLng != null &&
+          (_proximHesKm == null ||
+              _distTransitKm == null ||
+              (_nearestHesName == null || _nearestHesName!.isEmpty))) {
         // ignore: unawaited_futures
         _recomputeDistancesIfPossible();
       }
@@ -215,7 +246,10 @@ class _EditListingPageState extends State<EditListingPage> {
 
   void _onAddressPiecesChanged() {
     _hesDebounce?.cancel();
-    _hesDebounce = Timer(const Duration(milliseconds: 500), _recomputeDistancesIfPossible);
+    _hesDebounce = Timer(
+      const Duration(milliseconds: 500),
+      _recomputeDistancesIfPossible,
+    );
   }
 
   Future<void> _fetchAddressSuggestions(String query) async {
@@ -273,7 +307,7 @@ class _EditListingPageState extends State<EditListingPage> {
   }
 
   void _applySuggestion(_AddressSuggestion s) {
-    _addressCtrl.text = s.displayName.split(',').first; // street + number (best effort)
+    _addressCtrl.text = s.displayName.split(',').first;
     if (s.city.isNotEmpty) _cityCtrl.text = s.city;
     if (s.postcode.isNotEmpty) _npaCtrl.text = s.postcode;
     _geoLat = s.lat!;
@@ -356,7 +390,8 @@ class _EditListingPageState extends State<EditListingPage> {
     const earthRadius = 6371.0; // km
     final dLat = _toRad(lat2 - lat1);
     final dLon = _toRad(lon2 - lon1);
-    final a = math.sin(dLat / 2) * math.sin(dLat / 2) +
+    final a =
+        math.sin(dLat / 2) * math.sin(dLat / 2) +
         math.cos(_toRad(lat1)) *
             math.cos(_toRad(lat2)) *
             math.sin(dLon / 2) *
@@ -387,7 +422,11 @@ class _EditListingPageState extends State<EditListingPage> {
       }
     }
 
-    return (km: bestKm ?? double.nan, id: best?.id ?? '', name: best?.name ?? '');
+    return (
+      km: bestKm ?? double.nan,
+      id: best?.id ?? '',
+      name: best?.name ?? '',
+    );
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -399,7 +438,8 @@ class _EditListingPageState extends State<EditListingPage> {
   }) async {
     final radii = [500, 1000, 1500, 2500]; // meters
     for (final r in radii) {
-      final query = """
+      final query =
+          """
 [out:json][timeout:15];
 (
   node(around:$r,$lat,$lng)[highway=bus_stop];
@@ -421,7 +461,9 @@ out body;
       );
 
       if (resp.statusCode != 200) {
-        if (r == radii.last) throw Exception('Overpass error (HTTP ${resp.statusCode}).');
+        if (r == radii.last) {
+          throw Exception('Overpass error (HTTP ${resp.statusCode}).');
+        }
         continue;
       }
 
@@ -440,12 +482,13 @@ out body;
         if (bestKm == null || d < bestKm) {
           bestKm = d;
           final tags = (m['tags'] as Map?) ?? const {};
-          bestName = (tags['name'] ??
-                  tags['ref'] ??
-                  tags['uic_name'] ??
-                  tags['uic_ref'] ??
-                  'Stop')
-              .toString();
+          bestName =
+              (tags?['name'] ??
+                      tags?['ref'] ??
+                      tags?['uic_name'] ??
+                      tags?['uic_ref'] ??
+                      'Stop')
+                  .toString();
         }
       }
       if (bestKm != null) return (km: bestKm, name: bestName);
@@ -468,7 +511,11 @@ out body;
     });
     try {
       // Always refresh coords from current address fields
-      final coords = await _geocodeAddress(address: address, city: city, npa: npa);
+      final coords = await _geocodeAddress(
+        address: address,
+        city: city,
+        npa: npa,
+      );
       _geoLat = coords.lat;
       _geoLng = coords.lng;
 
@@ -482,7 +529,10 @@ out body;
 
       // Transit
       try {
-        final t = await _computeNearestTransitStop(lat: _geoLat!, lng: _geoLng!);
+        final t = await _computeNearestTransitStop(
+          lat: _geoLat!,
+          lng: _geoLng!,
+        );
         setState(() {
           _distTransitKm = t.km;
           _nearestTransitName = t.name;
@@ -558,6 +608,167 @@ out body;
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
+  // Estimate helpers (same contract as New)
+  // ─────────────────────────────────────────────────────────────────────────────
+  Future<void> _ensureGeoAndNearestSchool() async {
+    if (_geoLat == null || _geoLng == null) {
+      final coords = await _geocodeAddress(
+        address: _addressCtrl.text.trim(),
+        city: _cityCtrl.text.trim(),
+        npa: _npaCtrl.text.trim(),
+      );
+      _geoLat = coords.lat;
+      _geoLng = coords.lng;
+    }
+    if (_proximHesKm == null ||
+        _nearestHesId == null ||
+        (_nearestHesId?.isEmpty ?? true)) {
+      final nearest = await _computeNearestSchool(lat: _geoLat!, lng: _geoLng!);
+      _proximHesKm = nearest.km;
+      _nearestHesId = nearest.id;
+      _nearestHesName = nearest.name;
+    }
+    if (_distTransitKm == null) {
+      final t = await _computeNearestTransitStop(lat: _geoLat!, lng: _geoLng!);
+      _distTransitKm = t.km;
+      _nearestTransitName = t.name;
+    }
+  }
+
+  Map<String, dynamic> _buildExactEstimatePayload() {
+    double reqNum(String label, String s, {double? min}) {
+      final raw = s.trim();
+      if (raw.isEmpty) throw '$label is required';
+      final v = double.tryParse(raw.replaceAll(',', '.'));
+      if (v == null) throw '$label must be a number';
+      if (min != null && v < min)
+        throw '$label must be ≥ ${min.toStringAsFixed(0)}';
+      return v;
+    }
+
+    int reqInt(String label, String s, {int? min}) {
+      final raw = s.trim();
+      if (raw.isEmpty) throw '$label is required';
+      final v = int.tryParse(raw);
+      if (v == null) throw '$label must be an integer';
+      if (min != null && v < min) throw '$label must be ≥ $min';
+      return v;
+    }
+
+    if (_geoLat == null || _geoLng == null) {
+      throw 'Latitude/Longitude missing; please provide a valid address.';
+    }
+    if (_proximHesKm == null) {
+      throw 'HES proximity could not be computed from the address.';
+    }
+    if (_distTransitKm == null) {
+      throw 'Nearest public transport distance is not available yet; try again.';
+    }
+
+    return {
+      "latitude": _geoLat!,
+      "longitude": _geoLng!,
+      "surface_m2": reqNum('Surface (m²)', _surfaceCtrl.text, min: 1),
+      "num_rooms": reqInt('Number of rooms', _roomsCtrl.text, min: 1),
+      "type": _typeOptions[_typeIndex] == 'Single room'
+          ? "room"
+          : "entire_home",
+      "is_furnished": _isFurnish,
+      "floor": reqInt('Floor', _floorCtrl.text),
+      "wifi_incl": _wifiIncl,
+      "charges_incl": _chargesIncl,
+      "car_park": _carPark,
+      "dist_public_transport_km": _distTransitKm!,
+      "proxim_hesso_km": _proximHesKm!,
+    };
+  }
+
+  String? _validateForEstimate() {
+    if (_addressCtrl.text.trim().isEmpty) return 'Address is required.';
+    if (_cityCtrl.text.trim().isEmpty) return 'City is required.';
+    if (_npaCtrl.text.trim().isEmpty) return 'Postal code (NPA) is required.';
+    if (_surfaceCtrl.text.trim().isEmpty) return 'Surface (m²) is required.';
+    if (_roomsCtrl.text.trim().isEmpty) return 'Number of rooms is required.';
+    if (_floorCtrl.text.trim().isEmpty) return 'Floor is required.';
+    return null;
+  }
+
+  Future<void> _estimatePrice() async {
+    final quickErr = _validateForEstimate();
+    if (quickErr != null) {
+      setState(() {
+        _estimationError = quickErr;
+        _estimatedPrice = null;
+      });
+      return;
+    }
+
+    setState(() {
+      _estimating = true;
+      _estimationError = null;
+      _estimatedPrice = null;
+    });
+
+    try {
+      await _ensureGeoAndNearestSchool();
+
+      final payload = _buildExactEstimatePayload();
+
+      final uri = Uri.parse('$_apiBase$_estimatePath');
+      final resp = await http.post(
+        uri,
+        headers: const {
+          'Content-Type': 'application/json',
+          'User-Agent': 'HEStimate/1.0 (student project; contact: none)',
+        },
+        body: jsonEncode(payload),
+      );
+
+      if (resp.statusCode < 200 || resp.statusCode >= 300) {
+        throw Exception('Estimate failed (HTTP ${resp.statusCode}).');
+      }
+
+      final Map<String, dynamic> data =
+          jsonDecode(resp.body) as Map<String, dynamic>;
+      final raw = data['predicted_price_chf'];
+      final parsed = (raw is num)
+          ? raw.toDouble()
+          : double.tryParse(raw?.toString() ?? '');
+      if (parsed == null) {
+        throw Exception('No valid predicted_price_chf in response.');
+      }
+
+      final rounded = _roundToNearest005(parsed);
+      if (rounded.isNaN || rounded.isInfinite || rounded < 0) {
+        throw Exception('Invalid predicted price: $parsed');
+      }
+
+      setState(() => _estimatedPrice = rounded);
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Estimated price: CHF ${rounded.toStringAsFixed(2)}'),
+          ),
+        );
+      }
+    } catch (e) {
+      setState(() {
+        _estimationError = e.toString();
+        _estimatedPrice = null;
+      });
+    } finally {
+      if (mounted) setState(() => _estimating = false);
+    }
+  }
+
+  void _applyEstimateToPriceField() {
+    if (_estimatedPrice == null) return;
+    _priceCtrl.text = _estimatedPrice!.toStringAsFixed(2);
+    setState(() {}); // refresh validators
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
   // Save flow
   // ─────────────────────────────────────────────────────────────────────────────
   Future<void> _save() async {
@@ -592,18 +803,30 @@ out body;
       double parseD(String s) => double.parse(s.replaceAll(',', '.'));
       int parseI(String s) => int.parse(s);
 
+      // Price must be > 0 and on 0.05 step (align with NewListingPage)
       final price = parseD(_priceCtrl.text);
-      if (price < 0) {
+      if (price <= 0) {
         setState(() {
           _saving = false;
-          _error = 'Price cannot be negative';
+          _error = 'Price must be > 0.';
+        });
+        return;
+      }
+      if (!_isOn005Step(price)) {
+        setState(() {
+          _saving = false;
+          _error = 'Price must be multiple of 0.05.';
         });
         return;
       }
 
       // Re-geocode / recompute distances if address|npa|city changed or coords are null
-      final currentAddrKey = '${_addressCtrl.text.trim()}|${_npaCtrl.text.trim()}|${_cityCtrl.text.trim()}';
-      final needGeocode = _geoLat == null || _geoLng == null || currentAddrKey != _initialAddrKey;
+      final currentAddrKey =
+          '${_addressCtrl.text.trim()}|${_npaCtrl.text.trim()}|${_cityCtrl.text.trim()}';
+      final needGeocode =
+          _geoLat == null ||
+          _geoLng == null ||
+          currentAddrKey != _initialAddrKey;
 
       if (needGeocode) {
         final coords = await _geocodeAddress(
@@ -614,24 +837,38 @@ out body;
         _geoLat = coords.lat;
         _geoLng = coords.lng;
 
-        final nearest = await _computeNearestSchool(lat: _geoLat!, lng: _geoLng!);
+        final nearest = await _computeNearestSchool(
+          lat: _geoLat!,
+          lng: _geoLng!,
+        );
         _proximHesKm = nearest.km;
         _nearestHesId = nearest.id;
         _nearestHesName = nearest.name;
 
-        final t = await _computeNearestTransitStop(lat: _geoLat!, lng: _geoLng!);
+        final t = await _computeNearestTransitStop(
+          lat: _geoLat!,
+          lng: _geoLng!,
+        );
         _distTransitKm = t.km;
         _nearestTransitName = t.name;
       } else {
         // If distances are still missing for any reason, compute them now
-        if (_proximHesKm == null || _nearestHesId == null || (_nearestHesName == null || _nearestHesName!.isEmpty)) {
-          final nearest = await _computeNearestSchool(lat: _geoLat!, lng: _geoLng!);
+        if (_proximHesKm == null ||
+            _nearestHesId == null ||
+            (_nearestHesName == null || _nearestHesName!.isEmpty)) {
+          final nearest = await _computeNearestSchool(
+            lat: _geoLat!,
+            lng: _geoLng!,
+          );
           _proximHesKm = nearest.km;
           _nearestHesId = nearest.id;
           _nearestHesName = nearest.name;
         }
         if (_distTransitKm == null) {
-          final t = await _computeNearestTransitStop(lat: _geoLat!, lng: _geoLng!);
+          final t = await _computeNearestTransitStop(
+            lat: _geoLat!,
+            lng: _geoLng!,
+          );
           _distTransitKm = t.km;
           _nearestTransitName = t.name;
         }
@@ -645,11 +882,19 @@ out body;
         'npa': _npaCtrl.text.trim(),
         'latitude': _geoLat,
         'longitude': _geoLng,
-        'surface': _surfaceCtrl.text.trim().isEmpty ? null : parseD(_surfaceCtrl.text),
-        'num_rooms': _roomsCtrl.text.trim().isEmpty ? null : parseI(_roomsCtrl.text),
-        'type': _typeOptions[_typeIndex] == "Entire home" ? "entire_home" : "room",
+        'surface': _surfaceCtrl.text.trim().isEmpty
+            ? null
+            : parseD(_surfaceCtrl.text),
+        'num_rooms': _roomsCtrl.text.trim().isEmpty
+            ? null
+            : parseI(_roomsCtrl.text),
+        'type': _typeOptions[_typeIndex] == "Entire home"
+            ? "entire_home"
+            : "room",
         'is_furnish': _isFurnish,
-        'floor': _floorCtrl.text.trim().isEmpty ? null : parseI(_floorCtrl.text),
+        'floor': _floorCtrl.text.trim().isEmpty
+            ? null
+            : parseI(_floorCtrl.text),
         'wifi_incl': _wifiIncl,
         'charges_incl': _chargesIncl,
         'car_park': _carPark,
@@ -663,7 +908,9 @@ out body;
 
         // Availability:
         'availability_start': Timestamp.fromDate(_availStart!),
-        'availability_end': _noEndDate || _availEnd == null ? null : Timestamp.fromDate(_availEnd!),
+        'availability_end': _noEndDate || _availEnd == null
+            ? null
+            : Timestamp.fromDate(_availEnd!),
 
         'updatedAt': Timestamp.now(),
       };
@@ -699,9 +946,9 @@ out body;
           .update({'photos': finalPhotos});
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Listing updated.')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Listing updated.')));
         Navigator.of(context).pop();
       }
     } catch (e) {
@@ -816,12 +1063,18 @@ out body;
 
                 final gap = 12.0;
                 final double contentMax = 900;
-                final double gridWidth = (constraints.maxWidth.clamp(360, contentMax)).toDouble();
-                final double fieldWidth = isWide ? ((gridWidth - gap) / 2) : gridWidth;
+                final double gridWidth = (constraints.maxWidth.clamp(
+                  360,
+                  contentMax,
+                )).toDouble();
+                final double fieldWidth = isWide
+                    ? ((gridWidth - gap) / 2)
+                    : gridWidth;
 
                 // Image grid sizes
                 final thumbsPerRow = isWide ? 4 : 2;
-                final thumbSize = (gridWidth - (thumbsPerRow - 1) * 8) / thumbsPerRow;
+                final thumbSize =
+                    (gridWidth - (thumbsPerRow - 1) * 8) / thumbsPerRow;
 
                 return Container(
                   decoration: bg,
@@ -829,7 +1082,9 @@ out body;
                     absorbing: _saving,
                     child: SingleChildScrollView(
                       padding: EdgeInsets.symmetric(
-                        horizontal: isXL ? (constraints.maxWidth - contentMax) / 2 + 16 : 16,
+                        horizontal: isXL
+                            ? (constraints.maxWidth - contentMax) / 2 + 16
+                            : 16,
                         vertical: 16,
                       ),
                       child: Center(
@@ -839,20 +1094,29 @@ out body;
                             key: _formKey,
                             child: Column(
                               children: [
-                                // SINGLE unified card (Basics + Amenities + Availability + Distances + Photos)
+                                // SINGLE unified card (Basics + Amenities + Availability + Distances + Photos + Pricing)
                                 _MoonCard(
                                   isDark: isDark,
                                   child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.center,
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.center,
                                     children: [
                                       Row(
                                         mainAxisSize: MainAxisSize.min,
                                         children: [
-                                          Icon(MoonIcons.arrows_boost_24_regular, size: 20, color: cs.primary),
+                                          Icon(
+                                            MoonIcons.arrows_boost_24_regular,
+                                            size: 20,
+                                            color: cs.primary,
+                                          ),
                                           const SizedBox(width: 8),
                                           Text(
                                             'Listing details',
-                                            style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: cs.onSurface),
+                                            style: TextStyle(
+                                              fontSize: 18,
+                                              fontWeight: FontWeight.w800,
+                                              color: cs.onSurface,
+                                            ),
                                           ),
                                         ],
                                       ),
@@ -862,11 +1126,13 @@ out body;
                                       // --- BASICS ---
                                       Align(
                                         alignment: Alignment.centerLeft,
-                                        child: Text('Basics',
-                                            style: TextStyle(
-                                              color: cs.onSurface.withOpacity(.8),
-                                              fontWeight: FontWeight.w700,
-                                            )),
+                                        child: Text(
+                                          'Basics',
+                                          style: TextStyle(
+                                            color: cs.onSurface.withOpacity(.8),
+                                            fontWeight: FontWeight.w700,
+                                          ),
+                                        ),
                                       ),
                                       const SizedBox(height: 8),
 
@@ -875,25 +1141,6 @@ out body;
                                         spacing: gap,
                                         runSpacing: gap,
                                         children: [
-                                          // Price (same width as others)
-                                          SizedBox(
-                                            width: fieldWidth,
-                                            child: _moonInput(
-                                              controller: _priceCtrl,
-                                              hint: 'Price (CHF)',
-                                              keyboardType: TextInputType.number,
-                                              leading: const Icon(MoonIcons.arrows_boost_24_regular),
-                                              validator: (v) {
-                                                if (v == null || v.isEmpty) return 'Required';
-                                                final value = double.tryParse(v.replaceAll(',', '.'));
-                                                if (value == null) return 'Invalid number';
-                                                if (value < 0) return 'Price cannot be negative';
-                                                return null;
-                                              },
-                                              textAlign: TextAlign.center,
-                                            ),
-                                          ),
-
                                           // Address + suggestions
                                           SizedBox(
                                             width: fieldWidth,
@@ -901,36 +1148,80 @@ out body;
                                               children: [
                                                 _moonInput(
                                                   controller: _addressCtrl,
-                                                  hint: 'Address (street & number)',
-                                                  keyboardType: TextInputType.streetAddress,
-                                                  leading: const Icon(Icons.place_outlined),
-                                                  validator: (v) => (v == null || v.isEmpty) ? 'Required' : null,
+                                                  hint:
+                                                      'Address (street & number)',
+                                                  keyboardType: TextInputType
+                                                      .streetAddress,
+                                                  leading: const Icon(
+                                                    Icons.place_outlined,
+                                                  ),
+                                                  validator: (v) =>
+                                                      (v == null || v.isEmpty)
+                                                      ? 'Required'
+                                                      : null,
                                                   textAlign: TextAlign.center,
                                                   focusNode: _addressFocus,
                                                 ),
-                                                if (_addressFocus.hasFocus || _isLoadingAddr || _addressSuggestions.isNotEmpty)
+                                                if (_addressFocus.hasFocus ||
+                                                    _isLoadingAddr ||
+                                                    _addressSuggestions
+                                                        .isNotEmpty)
                                                   const SizedBox(height: 6),
-                                                if (_isLoadingAddr) const LinearProgressIndicator(minHeight: 2),
-                                                if (_addressSuggestions.isNotEmpty)
+                                                if (_isLoadingAddr)
+                                                  const LinearProgressIndicator(
+                                                    minHeight: 2,
+                                                  ),
+                                                if (_addressSuggestions
+                                                    .isNotEmpty)
                                                   Container(
                                                     decoration: BoxDecoration(
-                                                      color: Theme.of(context).cardColor,
-                                                      borderRadius: BorderRadius.circular(12),
-                                                      border: Border.all(color: cs.primary.withOpacity(.15)),
+                                                      color: Theme.of(
+                                                        context,
+                                                      ).cardColor,
+                                                      borderRadius:
+                                                          BorderRadius.circular(
+                                                            12,
+                                                          ),
+                                                      border: Border.all(
+                                                        color: cs.primary
+                                                            .withOpacity(.15),
+                                                      ),
                                                     ),
                                                     child: ListView.separated(
                                                       shrinkWrap: true,
-                                                      physics: const NeverScrollableScrollPhysics(),
-                                                      itemCount: _addressSuggestions.length,
-                                                      separatorBuilder: (_, __) =>
-                                                          Divider(height: 1, color: cs.primary.withOpacity(.08)),
+                                                      physics:
+                                                          const NeverScrollableScrollPhysics(),
+                                                      itemCount:
+                                                          _addressSuggestions
+                                                              .length,
+                                                      separatorBuilder:
+                                                          (_, __) => Divider(
+                                                            height: 1,
+                                                            color: cs.primary
+                                                                .withOpacity(
+                                                                  .08,
+                                                                ),
+                                                          ),
                                                       itemBuilder: (ctx, i) {
-                                                        final s = _addressSuggestions[i];
+                                                        final s =
+                                                            _addressSuggestions[i];
                                                         return ListTile(
                                                           dense: true,
-                                                          leading: const Icon(Icons.location_on_outlined),
-                                                          title: Text(s.displayName, maxLines: 2, overflow: TextOverflow.ellipsis),
-                                                          onTap: () => _applySuggestion(s),
+                                                          leading: const Icon(
+                                                            Icons
+                                                                .location_on_outlined,
+                                                          ),
+                                                          title: Text(
+                                                            s.displayName,
+                                                            maxLines: 2,
+                                                            overflow:
+                                                                TextOverflow
+                                                                    .ellipsis,
+                                                          ),
+                                                          onTap: () =>
+                                                              _applySuggestion(
+                                                                s,
+                                                              ),
                                                         );
                                                       },
                                                     ),
@@ -944,8 +1235,13 @@ out body;
                                             child: _moonInput(
                                               controller: _cityCtrl,
                                               hint: 'City',
-                                              leading: const Icon(Icons.location_city_outlined),
-                                              validator: (v) => (v == null || v.isEmpty) ? 'Required' : null,
+                                              leading: const Icon(
+                                                Icons.location_city_outlined,
+                                              ),
+                                              validator: (v) =>
+                                                  (v == null || v.isEmpty)
+                                                  ? 'Required'
+                                                  : null,
                                               textAlign: TextAlign.center,
                                             ),
                                           ),
@@ -954,9 +1250,16 @@ out body;
                                             child: _moonInput(
                                               controller: _npaCtrl,
                                               hint: 'Postal code (NPA)',
-                                              keyboardType: TextInputType.number,
-                                              leading: const Icon(Icons.local_post_office_outlined),
-                                              validator: (v) => (v == null || v.isEmpty) ? 'Required' : null,
+                                              keyboardType:
+                                                  TextInputType.number,
+                                              leading: const Icon(
+                                                Icons
+                                                    .local_post_office_outlined,
+                                              ),
+                                              validator: (v) =>
+                                                  (v == null || v.isEmpty)
+                                                  ? 'Required'
+                                                  : null,
                                               textAlign: TextAlign.center,
                                             ),
                                           ),
@@ -965,8 +1268,11 @@ out body;
                                             child: _moonInput(
                                               controller: _surfaceCtrl,
                                               hint: 'Surface (m²)',
-                                              keyboardType: TextInputType.number,
-                                              leading: const Icon(Icons.square_foot_outlined),
+                                              keyboardType:
+                                                  TextInputType.number,
+                                              leading: const Icon(
+                                                Icons.square_foot_outlined,
+                                              ),
                                               textAlign: TextAlign.center,
                                             ),
                                           ),
@@ -975,8 +1281,11 @@ out body;
                                             child: _moonInput(
                                               controller: _roomsCtrl,
                                               hint: 'Number of rooms',
-                                              keyboardType: TextInputType.number,
-                                              leading: const Icon(Icons.meeting_room_outlined),
+                                              keyboardType:
+                                                  TextInputType.number,
+                                              leading: const Icon(
+                                                Icons.meeting_room_outlined,
+                                              ),
                                               textAlign: TextAlign.center,
                                             ),
                                           ),
@@ -985,8 +1294,11 @@ out body;
                                             child: _moonInput(
                                               controller: _floorCtrl,
                                               hint: 'Floor',
-                                              keyboardType: TextInputType.number,
-                                              leading: const Icon(Icons.unfold_more_outlined),
+                                              keyboardType:
+                                                  TextInputType.number,
+                                              leading: const Icon(
+                                                Icons.unfold_more_outlined,
+                                              ),
                                               textAlign: TextAlign.center,
                                             ),
                                           ),
@@ -995,41 +1307,77 @@ out body;
                                           SizedBox(
                                             width: gridWidth,
                                             child: Column(
-                                              crossAxisAlignment: CrossAxisAlignment.center,
+                                              crossAxisAlignment:
+                                                  CrossAxisAlignment.center,
                                               children: [
                                                 Text(
                                                   'Type',
                                                   style: TextStyle(
-                                                    color: cs.onSurface.withOpacity(.8),
+                                                    color: cs.onSurface
+                                                        .withOpacity(.8),
                                                     fontWeight: FontWeight.w600,
                                                   ),
                                                 ),
                                                 const SizedBox(height: 8),
                                                 LayoutBuilder(
                                                   builder: (context, box) {
-                                                    final isNarrow = box.maxWidth < 300;
+                                                    final isNarrow =
+                                                        box.maxWidth < 300;
                                                     if (isNarrow) {
                                                       return Wrap(
                                                         spacing: 8,
                                                         runSpacing: 8,
-                                                        alignment: WrapAlignment.center,
-                                                        children: List.generate(_typeOptions.length, (i) {
-                                                          return SizedBox(
-                                                            width: box.maxWidth,
-                                                            child: MoonSegmentedControl(
-                                                              initialIndex: _typeIndex == i ? 0 : -1,
-                                                              segments: [Segment(label: Text(_typeOptions[i]))],
-                                                              onSegmentChanged: (_) => setState(() => _typeIndex = i),
-                                                              isExpanded: true,
-                                                            ),
-                                                          );
-                                                        }),
+                                                        alignment: WrapAlignment
+                                                            .center,
+                                                        children: List.generate(
+                                                          _typeOptions.length,
+                                                          (i) {
+                                                            return SizedBox(
+                                                              width:
+                                                                  box.maxWidth,
+                                                              child: MoonSegmentedControl(
+                                                                initialIndex:
+                                                                    _typeIndex ==
+                                                                        i
+                                                                    ? 0
+                                                                    : -1,
+                                                                segments: [
+                                                                  Segment(
+                                                                    label: Text(
+                                                                      _typeOptions[i],
+                                                                    ),
+                                                                  ),
+                                                                ],
+                                                                onSegmentChanged:
+                                                                    (
+                                                                      _,
+                                                                    ) => setState(
+                                                                      () =>
+                                                                          _typeIndex =
+                                                                              i,
+                                                                    ),
+                                                                isExpanded:
+                                                                    true,
+                                                              ),
+                                                            );
+                                                          },
+                                                        ),
                                                       );
                                                     }
                                                     return MoonSegmentedControl(
                                                       initialIndex: _typeIndex,
-                                                      segments: _typeOptions.map((t) => Segment(label: Text(t))).toList(),
-                                                      onSegmentChanged: (i) => setState(() => _typeIndex = i),
+                                                      segments: _typeOptions
+                                                          .map(
+                                                            (t) => Segment(
+                                                              label: Text(t),
+                                                            ),
+                                                          )
+                                                          .toList(),
+                                                      onSegmentChanged: (i) =>
+                                                          setState(
+                                                            () =>
+                                                                _typeIndex = i,
+                                                          ),
                                                       isExpanded: true,
                                                     );
                                                   },
@@ -1041,17 +1389,21 @@ out body;
                                       ),
 
                                       const SizedBox(height: 16),
-                                      Divider(color: cs.primary.withOpacity(.1)),
+                                      Divider(
+                                        color: cs.primary.withOpacity(.1),
+                                      ),
                                       const SizedBox(height: 8),
 
                                       // --- AMENITIES ---
                                       Align(
                                         alignment: Alignment.centerLeft,
-                                        child: Text('Amenities',
-                                            style: TextStyle(
-                                              color: cs.onSurface.withOpacity(.8),
-                                              fontWeight: FontWeight.w700,
-                                            )),
+                                        child: Text(
+                                          'Amenities',
+                                          style: TextStyle(
+                                            color: cs.onSurface.withOpacity(.8),
+                                            fontWeight: FontWeight.w700,
+                                          ),
+                                        ),
                                       ),
                                       const SizedBox(height: 8),
                                       Wrap(
@@ -1064,7 +1416,9 @@ out body;
                                             child: _AmenitySwitch(
                                               title: 'Have furniture?',
                                               value: _isFurnish,
-                                              onChanged: (v) => setState(() => _isFurnish = v),
+                                              onChanged: (v) => setState(
+                                                () => _isFurnish = v,
+                                              ),
                                             ),
                                           ),
                                           SizedBox(
@@ -1072,7 +1426,8 @@ out body;
                                             child: _AmenitySwitch(
                                               title: 'Wifi included?',
                                               value: _wifiIncl,
-                                              onChanged: (v) => setState(() => _wifiIncl = v),
+                                              onChanged: (v) =>
+                                                  setState(() => _wifiIncl = v),
                                             ),
                                           ),
                                           SizedBox(
@@ -1080,7 +1435,9 @@ out body;
                                             child: _AmenitySwitch(
                                               title: 'Charges included?',
                                               value: _chargesIncl,
-                                              onChanged: (v) => setState(() => _chargesIncl = v),
+                                              onChanged: (v) => setState(
+                                                () => _chargesIncl = v,
+                                              ),
                                             ),
                                           ),
                                           SizedBox(
@@ -1088,24 +1445,29 @@ out body;
                                             child: _AmenitySwitch(
                                               title: 'Car park?',
                                               value: _carPark,
-                                              onChanged: (v) => setState(() => _carPark = v),
+                                              onChanged: (v) =>
+                                                  setState(() => _carPark = v),
                                             ),
                                           ),
                                         ],
                                       ),
 
                                       const SizedBox(height: 16),
-                                      Divider(color: cs.primary.withOpacity(.1)),
+                                      Divider(
+                                        color: cs.primary.withOpacity(.1),
+                                      ),
                                       const SizedBox(height: 8),
 
                                       // --- AVAILABILITY ---
                                       Align(
                                         alignment: Alignment.centerLeft,
-                                        child: Text('Availability',
-                                            style: TextStyle(
-                                              color: cs.onSurface.withOpacity(.8),
-                                              fontWeight: FontWeight.w700,
-                                            )),
+                                        child: Text(
+                                          'Availability',
+                                          style: TextStyle(
+                                            color: cs.onSurface.withOpacity(.8),
+                                            fontWeight: FontWeight.w700,
+                                          ),
+                                        ),
                                       ),
                                       const SizedBox(height: 8),
                                       Wrap(
@@ -1118,8 +1480,12 @@ out body;
                                             child: MoonFilledButton(
                                               isFullWidth: true,
                                               onTap: _pickStartDate,
-                                              leading: const Icon(Icons.event_available_outlined),
-                                              label: Text('Start: ${_formatDate(_availStart)}'),
+                                              leading: const Icon(
+                                                Icons.event_available_outlined,
+                                              ),
+                                              label: Text(
+                                                'Start: ${_formatDate(_availStart)}',
+                                              ),
                                             ),
                                           ),
                                           SizedBox(
@@ -1130,25 +1496,40 @@ out body;
                                                 Expanded(
                                                   child: MoonFilledButton(
                                                     isFullWidth: true,
-                                                    onTap: _noEndDate ? null : _pickEndDate,
-                                                    leading: const Icon(Icons.event_note_outlined),
+                                                    onTap: _noEndDate
+                                                        ? null
+                                                        : _pickEndDate,
+                                                    leading: const Icon(
+                                                      Icons.event_note_outlined,
+                                                    ),
                                                     label: Text(
-                                                      _noEndDate ? 'End: None' : 'End: ${_formatDate(_availEnd)}',
+                                                      _noEndDate
+                                                          ? 'End: None'
+                                                          : 'End: ${_formatDate(_availEnd)}',
                                                     ),
                                                   ),
                                                 ),
                                                 const SizedBox(width: 8),
                                                 Row(
-                                                  mainAxisSize: MainAxisSize.min,
+                                                  mainAxisSize:
+                                                      MainAxisSize.min,
                                                   children: [
-                                                    Text('No end', style: TextStyle(color: cs.onSurface.withOpacity(.8))),
+                                                    Text(
+                                                      'No end',
+                                                      style: TextStyle(
+                                                        color: cs.onSurface
+                                                            .withOpacity(.8),
+                                                      ),
+                                                    ),
                                                     const SizedBox(width: 6),
                                                     MoonSwitch(
                                                       value: _noEndDate,
-                                                      onChanged: (v) => setState(() {
-                                                        _noEndDate = v;
-                                                        if (v) _availEnd = null;
-                                                      }),
+                                                      onChanged: (v) =>
+                                                          setState(() {
+                                                            _noEndDate = v;
+                                                            if (v)
+                                                              _availEnd = null;
+                                                          }),
                                                     ),
                                                   ],
                                                 ),
@@ -1161,35 +1542,45 @@ out body;
                                       Text(
                                         'Start date cannot be before today. End date is optional.',
                                         textAlign: TextAlign.center,
-                                        style: TextStyle(color: cs.onSurface.withOpacity(.65), fontSize: 12),
+                                        style: TextStyle(
+                                          color: cs.onSurface.withOpacity(.65),
+                                          fontSize: 12,
+                                        ),
                                       ),
 
                                       const SizedBox(height: 16),
-                                      Divider(color: cs.primary.withOpacity(.1)),
+                                      Divider(
+                                        color: cs.primary.withOpacity(.1),
+                                      ),
                                       const SizedBox(height: 8),
 
                                       // --- DISTANCES (two separate lines, no input field) ---
                                       Align(
                                         alignment: Alignment.centerLeft,
-                                        child: Text('Distances',
-                                            style: TextStyle(
-                                              color: cs.onSurface.withOpacity(.8),
-                                              fontWeight: FontWeight.w700,
-                                            )),
+                                        child: Text(
+                                          'Distances',
+                                          style: TextStyle(
+                                            color: cs.onSurface.withOpacity(.8),
+                                            fontWeight: FontWeight.w700,
+                                          ),
+                                        ),
                                       ),
                                       const SizedBox(height: 8),
-
                                       // Line 1: Nearest transit
                                       Row(
-                                        mainAxisAlignment: MainAxisAlignment.center,
+                                        mainAxisAlignment:
+                                            MainAxisAlignment.center,
                                         children: [
                                           if (_isComputingTransit)
                                             const SizedBox(
                                               width: 16,
                                               height: 16,
-                                              child: CircularProgressIndicator(strokeWidth: 2),
+                                              child: CircularProgressIndicator(
+                                                strokeWidth: 2,
+                                              ),
                                             ),
-                                          if (_isComputingTransit) const SizedBox(width: 8),
+                                          if (_isComputingTransit)
+                                            const SizedBox(width: 8),
                                           Flexible(
                                             child: Text(
                                               _distTransitKm == null
@@ -1197,7 +1588,9 @@ out body;
                                                   : 'Nearest transit: ${_nearestTransitName?.isNotEmpty == true ? _nearestTransitName : 'Stop'} • ${_distTransitKm!.toStringAsFixed(2)} km',
                                               textAlign: TextAlign.center,
                                               style: TextStyle(
-                                                color: cs.onSurface.withOpacity(.85),
+                                                color: cs.onSurface.withOpacity(
+                                                  .85,
+                                                ),
                                                 fontWeight: FontWeight.w600,
                                               ),
                                             ),
@@ -1205,28 +1598,35 @@ out body;
                                         ],
                                       ),
                                       const SizedBox(height: 6),
-
                                       // Line 2: HES proximity
                                       Row(
-                                        mainAxisAlignment: MainAxisAlignment.center,
+                                        mainAxisAlignment:
+                                            MainAxisAlignment.center,
                                         children: [
                                           if (_isComputingHes)
                                             const SizedBox(
                                               width: 16,
                                               height: 16,
-                                              child: CircularProgressIndicator(strokeWidth: 2),
+                                              child: CircularProgressIndicator(
+                                                strokeWidth: 2,
+                                              ),
                                             ),
-                                          if (_isComputingHes) const SizedBox(width: 8),
+                                          if (_isComputingHes)
+                                            const SizedBox(width: 8),
                                           Flexible(
                                             child: Text(
                                               _proximHesKm == null
                                                   ? 'HES proximity: —'
-                                                  : (_nearestHesName == null || _nearestHesName!.isEmpty)
-                                                      ? 'HES proximity: ${_proximHesKm!.toStringAsFixed(2)} km'
-                                                      : 'HES proximity: ${_nearestHesName!} • ${_proximHesKm!.toStringAsFixed(2)} km',
+                                                  : (_nearestHesName == null ||
+                                                        _nearestHesName!
+                                                            .isEmpty)
+                                                  ? 'HES proximity: ${_proximHesKm!.toStringAsFixed(2)} km'
+                                                  : 'HES proximity: ${_nearestHesName!} • ${_proximHesKm!.toStringAsFixed(2)} km',
                                               textAlign: TextAlign.center,
                                               style: TextStyle(
-                                                color: cs.onSurface.withOpacity(.85),
+                                                color: cs.onSurface.withOpacity(
+                                                  .85,
+                                                ),
                                                 fontWeight: FontWeight.w600,
                                               ),
                                             ),
@@ -1235,37 +1635,55 @@ out body;
                                       ),
 
                                       const SizedBox(height: 16),
-                                      Divider(color: cs.primary.withOpacity(.1)),
+                                      Divider(
+                                        color: cs.primary.withOpacity(.1),
+                                      ),
                                       const SizedBox(height: 8),
 
                                       // --- PHOTOS (existing + add/remove + new previews) ---
                                       Align(
                                         alignment: Alignment.centerLeft,
-                                        child: Text('Photos',
-                                            style: TextStyle(
-                                              color: cs.onSurface.withOpacity(.8),
-                                              fontWeight: FontWeight.w700,
-                                            )),
+                                        child: Text(
+                                          'Photos',
+                                          style: TextStyle(
+                                            color: cs.onSurface.withOpacity(.8),
+                                            fontWeight: FontWeight.w700,
+                                          ),
+                                        ),
                                       ),
                                       const SizedBox(height: 8),
 
                                       if (_existingPhotos.isEmpty)
-                                        Text('No existing photos', style: TextStyle(color: cs.onSurface.withOpacity(.7))),
+                                        Text(
+                                          'No existing photos',
+                                          style: TextStyle(
+                                            color: cs.onSurface.withOpacity(.7),
+                                          ),
+                                        ),
                                       if (_existingPhotos.isNotEmpty)
                                         Wrap(
                                           spacing: 8,
                                           runSpacing: 8,
                                           children: _existingPhotos.map((url) {
-                                            final selected = _photosToRemove.contains(url);
+                                            final selected = _photosToRemove
+                                                .contains(url);
                                             return Stack(
                                               children: [
                                                 Container(
                                                   width: thumbSize,
                                                   height: thumbSize,
                                                   decoration: BoxDecoration(
-                                                    borderRadius: BorderRadius.circular(10),
+                                                    borderRadius:
+                                                        BorderRadius.circular(
+                                                          10,
+                                                        ),
                                                     border: Border.all(
-                                                      color: selected ? Colors.redAccent : cs.primary.withOpacity(.15),
+                                                      color: selected
+                                                          ? Colors.redAccent
+                                                          : cs.primary
+                                                                .withOpacity(
+                                                                  .15,
+                                                                ),
                                                       width: selected ? 2 : 1,
                                                     ),
                                                     image: DecorationImage(
@@ -1281,20 +1699,30 @@ out body;
                                                     onTap: () {
                                                       setState(() {
                                                         if (selected) {
-                                                          _photosToRemove.remove(url);
+                                                          _photosToRemove
+                                                              .remove(url);
                                                         } else {
-                                                          _photosToRemove.add(url);
+                                                          _photosToRemove.add(
+                                                            url,
+                                                          );
                                                         }
                                                       });
                                                     },
                                                     child: Container(
-                                                      padding: const EdgeInsets.all(4),
+                                                      padding:
+                                                          const EdgeInsets.all(
+                                                            4,
+                                                          ),
                                                       decoration: BoxDecoration(
-                                                        color: selected ? Colors.redAccent : Colors.black45,
+                                                        color: selected
+                                                            ? Colors.redAccent
+                                                            : Colors.black45,
                                                         shape: BoxShape.circle,
                                                       ),
                                                       child: Icon(
-                                                        selected ? Icons.check : Icons.close,
+                                                        selected
+                                                            ? Icons.check
+                                                            : Icons.close,
                                                         size: 14,
                                                         color: Colors.white,
                                                       ),
@@ -1313,30 +1741,188 @@ out body;
                                           spacing: 8,
                                           runSpacing: 8,
                                           children: _newImages
-                                              .map((f) => SizedBox(
-                                                    width: thumbSize,
-                                                    height: thumbSize,
-                                                    child: _imageThumb(f, cs),
-                                                  ))
+                                              .map(
+                                                (f) => SizedBox(
+                                                  width: thumbSize,
+                                                  height: thumbSize,
+                                                  child: _imageThumb(f, cs),
+                                                ),
+                                              )
                                               .toList(),
                                         ),
 
                                       const SizedBox(height: 12),
                                       Row(
-                                        mainAxisAlignment: MainAxisAlignment.center,
+                                        mainAxisAlignment:
+                                            MainAxisAlignment.center,
                                         children: [
                                           MoonButton(
                                             onTap: _pickImages,
-                                            leading: const Icon(Icons.add_photo_alternate_outlined),
+                                            leading: const Icon(
+                                              Icons
+                                                  .add_photo_alternate_outlined,
+                                            ),
                                             label: const Text('Add images'),
                                           ),
                                           const SizedBox(width: 12),
                                           Text(
                                             '${_existingPhotos.length} existing • ${_newImages.length} new',
-                                            style: TextStyle(color: cs.onSurface.withOpacity(.7)),
+                                            style: TextStyle(
+                                              color: cs.onSurface.withOpacity(
+                                                .7,
+                                              ),
+                                            ),
                                           ),
                                         ],
                                       ),
+
+                                      const SizedBox(height: 16),
+                                      Divider(
+                                        color: cs.primary.withOpacity(.1),
+                                      ),
+                                      const SizedBox(height: 8),
+
+                                      // --- PRICING (identical to NewListingPage) ---
+                                      Align(
+                                        alignment: Alignment.centerLeft,
+                                        child: Text(
+                                          'Pricing',
+                                          style: TextStyle(
+                                            color: cs.onSurface.withOpacity(.8),
+                                            fontWeight: FontWeight.w700,
+                                          ),
+                                        ),
+                                      ),
+                                      const SizedBox(height: 8),
+
+                                      // Price field same width as others + Estimate button
+                                      SizedBox(
+                                        width: fieldWidth,
+                                        child: Row(
+                                          children: [
+                                            Expanded(
+                                              child: _moonInput(
+                                                controller: _priceCtrl,
+                                                hint: 'Price (CHF)',
+                                                keyboardType:
+                                                    TextInputType.number,
+                                                leading: const Icon(
+                                                  MoonIcons
+                                                      .arrows_boost_24_regular,
+                                                ),
+                                                validator: (v) {
+                                                  if (v == null || v.isEmpty) {
+                                                    return 'Required';
+                                                  }
+                                                  final value = double.tryParse(
+                                                    v.replaceAll(',', '.'),
+                                                  );
+                                                  if (value == null) {
+                                                    return 'Invalid number';
+                                                  }
+                                                  if (value <= 0) {
+                                                    return 'Must be > 0';
+                                                  }
+                                                  if (!_isOn005Step(value)) {
+                                                    return 'Must be multiple of 0.05';
+                                                  }
+                                                  return null;
+                                                },
+                                                textAlign: TextAlign.center,
+                                                focusNode: _priceFocus,
+                                              ),
+                                            ),
+                                            const SizedBox(width: 8),
+                                            MoonButton(
+                                              onTap: _estimating
+                                                  ? null
+                                                  : _estimatePrice,
+                                              leading: _estimating
+                                                  ? const SizedBox(
+                                                      width: 18,
+                                                      height: 18,
+                                                      child:
+                                                          CircularProgressIndicator(
+                                                            strokeWidth: 2,
+                                                          ),
+                                                    )
+                                                  : const Icon(
+                                                      Icons.calculate_outlined,
+                                                    ),
+                                              label: Text(
+                                                _estimating
+                                                    ? '...'
+                                                    : 'Estimate',
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+
+                                      if (_estimatedPrice != null ||
+                                          _estimationError != null) ...[
+                                        const SizedBox(height: 8),
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 12,
+                                            vertical: 10,
+                                          ),
+                                          decoration: BoxDecoration(
+                                            color: Theme.of(
+                                              context,
+                                            ).cardColor.withOpacity(.95),
+                                            border: Border.all(
+                                              color: cs.primary.withOpacity(
+                                                .15,
+                                              ),
+                                            ),
+                                            borderRadius: BorderRadius.circular(
+                                              12,
+                                            ),
+                                          ),
+                                          child: _estimationError != null
+                                              ? Text(
+                                                  _estimationError!,
+                                                  textAlign: TextAlign.center,
+                                                  style: const TextStyle(
+                                                    color: Colors.redAccent,
+                                                    fontWeight: FontWeight.w700,
+                                                  ),
+                                                )
+                                              : Row(
+                                                  children: [
+                                                    const Icon(
+                                                      Icons.trending_up,
+                                                    ),
+                                                    const SizedBox(width: 8),
+                                                    Expanded(
+                                                      child: Text(
+                                                        'Estimated price: CHF ${_estimatedPrice!.toStringAsFixed(2)}',
+                                                        softWrap: true,
+                                                        overflow:
+                                                            TextOverflow.fade,
+                                                        style: TextStyle(
+                                                          fontWeight:
+                                                              FontWeight.w700,
+                                                          color: cs.onSurface,
+                                                        ),
+                                                      ),
+                                                    ),
+                                                    MoonButton(
+                                                      onTap:
+                                                          _applyEstimateToPriceField,
+                                                      label: const Text(
+                                                        'Apply',
+                                                      ),
+                                                      leading: const Icon(
+                                                        Icons
+                                                            .check_circle_outline,
+                                                      ),
+                                                    ),
+                                                  ],
+                                                ),
+                                        ),
+                                      ],
                                     ],
                                   ),
                                 ),
@@ -1347,7 +1933,10 @@ out body;
                                   Text(
                                     _error!,
                                     textAlign: TextAlign.center,
-                                    style: const TextStyle(color: Colors.redAccent, fontWeight: FontWeight.w700),
+                                    style: const TextStyle(
+                                      color: Colors.redAccent,
+                                      fontWeight: FontWeight.w700,
+                                    ),
                                   ),
 
                                 const SizedBox(height: 4),
@@ -1356,9 +1945,19 @@ out body;
                                   isFullWidth: true,
                                   onTap: _saving ? null : _save,
                                   leading: _saving
-                                      ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
-                                      : const Icon(MoonIcons.arrows_boost_24_regular),
-                                  label: Text(_saving ? 'Saving…' : 'Save changes'),
+                                      ? const SizedBox(
+                                          width: 18,
+                                          height: 18,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 2,
+                                          ),
+                                        )
+                                      : const Icon(
+                                          MoonIcons.arrows_boost_24_regular,
+                                        ),
+                                  label: Text(
+                                    _saving ? 'Saving…' : 'Save changes',
+                                  ),
                                 ),
 
                                 const SizedBox(height: 24),
@@ -1376,7 +1975,7 @@ out body;
   }
 }
 
-// Card container Moon-like (opacité en dark)
+// Card container Moon-like (opacity in dark)
 class _MoonCard extends StatelessWidget {
   final Widget child;
   final bool isDark;
@@ -1425,7 +2024,10 @@ class _AmenitySwitch extends StatelessWidget {
             child: Text(
               title,
               textAlign: TextAlign.center,
-              style: TextStyle(color: cs.onSurface, fontWeight: FontWeight.w600),
+              style: TextStyle(
+                color: cs.onSurface,
+                fontWeight: FontWeight.w600,
+              ),
             ),
           ),
           MoonSwitch(value: value, onChanged: onChanged),
