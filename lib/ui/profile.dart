@@ -195,7 +195,7 @@ class _ProfilePageState extends State<ProfilePage> {
     }
 
     return BasePage(
-      title: 'Profile',
+      title: '',
       child: SafeArea(
         child: Center(
           child: ConstrainedBox(
