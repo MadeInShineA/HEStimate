@@ -1,3 +1,4 @@
+// lib/ui/edit_listing_page.dart
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -34,13 +35,17 @@ class _EditListingPageState extends State<EditListingPage> {
   final _surfaceCtrl = TextEditingController();
   final _roomsCtrl = TextEditingController();
   final _floorCtrl = TextEditingController();
-  final _distTransportCtrl = TextEditingController();
 
   // Address suggestions
   final FocusNode _addressFocus = FocusNode();
   Timer? _addrDebounce;
   List<_AddressSuggestion> _addressSuggestions = [];
   bool _isLoadingAddr = false;
+
+  // Debounce for recomputing distances (HES + transit)
+  Timer? _hesDebounce;
+  bool _isComputingHes = false;
+  bool _isComputingTransit = false;
 
   // Type: Entire home / Single room  -> segmented control
   final _typeOptions = const ['Entire home', 'Single room'];
@@ -66,8 +71,15 @@ class _EditListingPageState extends State<EditListingPage> {
   // Derived / auto-computed state
   double? _geoLat;
   double? _geoLng;
-  double? _proximHesKm;   // auto
-  String? _nearestHesId;  // auto (doc id)
+
+  // HES
+  double? _proximHesKm;        // auto
+  String? _nearestHesId;       // auto (doc id)
+  String? _nearestHesName;     // auto (name)
+
+  // Transit
+  double? _distTransitKm;      // auto
+  String? _nearestTransitName; // auto
 
   bool _loading = true;
   bool _saving = false;
@@ -80,16 +92,23 @@ class _EditListingPageState extends State<EditListingPage> {
   void initState() {
     super.initState();
     _addressCtrl.addListener(_onAddressChanged);
+    _cityCtrl.addListener(_onAddressPiecesChanged);
+    _npaCtrl.addListener(_onAddressPiecesChanged);
     _loadListing();
   }
 
   @override
   void dispose() {
     _addrDebounce?.cancel();
+    _hesDebounce?.cancel();
+
     _addressCtrl
       ..removeListener(_onAddressChanged)
       ..dispose();
     _addressFocus.dispose();
+
+    _cityCtrl.removeListener(_onAddressPiecesChanged);
+    _npaCtrl.removeListener(_onAddressPiecesChanged);
 
     _cityCtrl.dispose();
     _npaCtrl.dispose();
@@ -97,7 +116,7 @@ class _EditListingPageState extends State<EditListingPage> {
     _surfaceCtrl.dispose();
     _roomsCtrl.dispose();
     _floorCtrl.dispose();
-    _distTransportCtrl.dispose();
+
     super.dispose();
   }
 
@@ -128,7 +147,6 @@ class _EditListingPageState extends State<EditListingPage> {
       _surfaceCtrl.text = (m['surface']?.toString() ?? '');
       _roomsCtrl.text = (m['num_rooms']?.toString() ?? '');
       _floorCtrl.text = (m['floor']?.toString() ?? '');
-      _distTransportCtrl.text = (m['dist_public_transport_km']?.toString() ?? '');
 
       // Flags / enums
       final type = (m['type'] ?? 'room').toString();
@@ -149,8 +167,13 @@ class _EditListingPageState extends State<EditListingPage> {
       // Geo + auto computed
       _geoLat = (m['latitude'] as num?)?.toDouble();
       _geoLng = (m['longitude'] as num?)?.toDouble();
+
+      // Distances
       _proximHesKm = (m['proxim_hesso_km'] as num?)?.toDouble();
       _nearestHesId = (m['nearest_hesso_id'] ?? '').toString();
+      _nearestHesName = (m['nearest_hesso_name'] ?? '').toString();
+      _distTransitKm = (m['dist_public_transport_km'] as num?)?.toDouble();
+      _nearestTransitName = (m['nearest_transit_name'] ?? '').toString();
 
       // Photos
       final List photos = (m['photos'] as List?) ?? const [];
@@ -159,6 +182,14 @@ class _EditListingPageState extends State<EditListingPage> {
       _initialAddrKey = '${_addressCtrl.text.trim()}|${_npaCtrl.text.trim()}|${_cityCtrl.text.trim()}';
 
       setState(() => _loading = false);
+
+      // If we have coords but missing any distance/name, recompute them
+      if (_geoLat != null && _geoLng != null &&
+          (_proximHesKm == null || _distTransitKm == null || (_nearestHesName == null || _nearestHesName!.isEmpty))) {
+        // fire and forget; UI spinners will show if quick
+        // ignore: unawaited_futures
+        _recomputeDistancesIfPossible();
+      }
     } catch (e) {
       setState(() {
         _error = 'Failed to load listing: $e';
@@ -182,6 +213,11 @@ class _EditListingPageState extends State<EditListingPage> {
     });
   }
 
+  void _onAddressPiecesChanged() {
+    _hesDebounce?.cancel();
+    _hesDebounce = Timer(const Duration(milliseconds: 500), _recomputeDistancesIfPossible);
+  }
+
   Future<void> _fetchAddressSuggestions(String query) async {
     try {
       setState(() => _isLoadingAddr = true);
@@ -197,23 +233,26 @@ class _EditListingPageState extends State<EditListingPage> {
         throw Exception('Address search failed (${res.statusCode}).');
       }
       final List data = jsonDecode(res.body) as List;
-      final suggestions = data.map((e) {
-        final m = e as Map<String, dynamic>;
-        return _AddressSuggestion(
-          displayName: (m['display_name'] ?? '').toString(),
-          lat: double.tryParse(m['lat']?.toString() ?? ''),
-          lon: double.tryParse(m['lon']?.toString() ?? ''),
-          city: _tryAddrPiece(m, ['address', 'city']) ??
-              _tryAddrPiece(m, ['address', 'town']) ??
-              _tryAddrPiece(m, ['address', 'village']) ??
-              '',
-          postcode: _tryAddrPiece(m, ['address', 'postcode']) ?? '',
-        );
-      }).where((s) => s.lat != null && s.lon != null).take(6).toList();
+      final suggestions = data
+          .map((e) {
+            final m = e as Map<String, dynamic>;
+            return _AddressSuggestion(
+              displayName: (m['display_name'] ?? '').toString(),
+              lat: double.tryParse(m['lat']?.toString() ?? ''),
+              lon: double.tryParse(m['lon']?.toString() ?? ''),
+              city:
+                  _tryAddrPiece(m, ['address', 'city']) ??
+                  _tryAddrPiece(m, ['address', 'town']) ??
+                  _tryAddrPiece(m, ['address', 'village']) ??
+                  '',
+              postcode: _tryAddrPiece(m, ['address', 'postcode']) ?? '',
+            );
+          })
+          .where((s) => s.lat != null && s.lon != null)
+          .take(6)
+          .toList();
 
-      if (mounted) {
-        setState(() => _addressSuggestions = suggestions);
-      }
+      if (mounted) setState(() => _addressSuggestions = suggestions);
     } catch (_) {
       if (mounted) setState(() => _addressSuggestions = []);
     } finally {
@@ -240,6 +279,9 @@ class _EditListingPageState extends State<EditListingPage> {
     _geoLat = s.lat!;
     _geoLng = s.lon!;
     setState(() => _addressSuggestions = []);
+    // recompute with the new coordinates
+    // ignore: unawaited_futures
+    _recomputeDistancesIfPossible();
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -325,7 +367,7 @@ class _EditListingPageState extends State<EditListingPage> {
 
   double _toRad(double degrees) => degrees * math.pi / 180.0;
 
-  Future<({double km, String id})> _computeNearestSchool({
+  Future<({double km, String id, String name})> _computeNearestSchool({
     required double lat,
     required double lng,
   }) async {
@@ -345,7 +387,128 @@ class _EditListingPageState extends State<EditListingPage> {
       }
     }
 
-    return (km: bestKm ?? double.nan, id: best?.id ?? '');
+    return (km: bestKm ?? double.nan, id: best?.id ?? '', name: best?.name ?? '');
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Nearest public transport stop using Overpass API
+  // ─────────────────────────────────────────────────────────────────────────────
+  Future<({double km, String name})> _computeNearestTransitStop({
+    required double lat,
+    required double lng,
+  }) async {
+    final radii = [500, 1000, 1500, 2500]; // meters
+    for (final r in radii) {
+      final query = """
+[out:json][timeout:15];
+(
+  node(around:$r,$lat,$lng)[highway=bus_stop];
+  node(around:$r,$lat,$lng)[public_transport=platform];
+  node(around:$r,$lat,$lng)[public_transport=stop_position];
+  node(around:$r,$lat,$lng)[railway=station];
+  node(around:$r,$lat,$lng)[railway=halt];
+  node(around:$r,$lat,$lng)[railway=tram_stop];
+);
+out body;
+""";
+      final resp = await http.post(
+        Uri.parse('https://overpass-api.de/api/interpreter'),
+        headers: const {
+          'Content-Type': 'text/plain; charset=utf-8',
+          'User-Agent': 'HEStimate/1.0 (student project; contact: none)',
+        },
+        body: query,
+      );
+
+      if (resp.statusCode != 200) {
+        if (r == radii.last) throw Exception('Overpass error (HTTP ${resp.statusCode}).');
+        continue;
+      }
+
+      final data = jsonDecode(resp.body) as Map<String, dynamic>;
+      final elements = (data['elements'] as List?) ?? const [];
+      if (elements.isEmpty) continue;
+
+      double? bestKm;
+      String bestName = 'Stop';
+      for (final e in elements) {
+        final m = e as Map<String, dynamic>;
+        final slat = (m['lat'] as num?)?.toDouble();
+        final slon = (m['lon'] as num?)?.toDouble();
+        if (slat == null || slon == null) continue;
+        final d = _haversineKm(lat, lng, slat, slon);
+        if (bestKm == null || d < bestKm) {
+          bestKm = d;
+          final tags = (m['tags'] as Map?) ?? const {};
+          bestName = (tags['name'] ??
+                  tags['ref'] ??
+                  tags['uic_name'] ??
+                  tags['uic_ref'] ??
+                  'Stop')
+              .toString();
+        }
+      }
+      if (bestKm != null) return (km: bestKm, name: bestName);
+    }
+    throw Exception('No public transport stops found within 2.5 km.');
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Distances recompute
+  // ─────────────────────────────────────────────────────────────────────────────
+  Future<void> _recomputeDistancesIfPossible() async {
+    final address = _addressCtrl.text.trim();
+    final city = _cityCtrl.text.trim();
+    final npa = _npaCtrl.text.trim();
+    if (address.isEmpty || city.isEmpty || npa.isEmpty) return;
+
+    setState(() {
+      _isComputingHes = true;
+      _isComputingTransit = true;
+    });
+    try {
+      // Always refresh coords from current address fields
+      final coords = await _geocodeAddress(address: address, city: city, npa: npa);
+      _geoLat = coords.lat;
+      _geoLng = coords.lng;
+
+      // HES
+      final nearest = await _computeNearestSchool(lat: _geoLat!, lng: _geoLng!);
+      setState(() {
+        _proximHesKm = nearest.km;
+        _nearestHesId = nearest.id;
+        _nearestHesName = nearest.name;
+      });
+
+      // Transit
+      try {
+        final t = await _computeNearestTransitStop(lat: _geoLat!, lng: _geoLng!);
+        setState(() {
+          _distTransitKm = t.km;
+          _nearestTransitName = t.name;
+        });
+      } catch (_) {
+        setState(() {
+          _distTransitKm = null;
+          _nearestTransitName = null;
+        });
+      }
+    } catch (_) {
+      setState(() {
+        _proximHesKm = null;
+        _nearestHesId = null;
+        _nearestHesName = null;
+        _distTransitKm = null;
+        _nearestTransitName = null;
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isComputingHes = false;
+          _isComputingTransit = false;
+        });
+      }
+    }
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -425,7 +588,7 @@ class _EditListingPageState extends State<EditListingPage> {
         throw Exception('User not authenticated');
       }
 
-      // Parse & validate price (no negative)
+      // Parse numbers
       double parseD(String s) => double.parse(s.replaceAll(',', '.'));
       int parseI(String s) => int.parse(s);
 
@@ -438,11 +601,9 @@ class _EditListingPageState extends State<EditListingPage> {
         return;
       }
 
-      // Re-geocode only if address|npa|city changed or coords are null
+      // Re-geocode / recompute distances if address|npa|city changed or coords are null
       final currentAddrKey = '${_addressCtrl.text.trim()}|${_npaCtrl.text.trim()}|${_cityCtrl.text.trim()}';
-      final needGeocode = _geoLat == null ||
-          _geoLng == null ||
-          currentAddrKey != _initialAddrKey;
+      final needGeocode = _geoLat == null || _geoLng == null || currentAddrKey != _initialAddrKey;
 
       if (needGeocode) {
         final coords = await _geocodeAddress(
@@ -453,10 +614,27 @@ class _EditListingPageState extends State<EditListingPage> {
         _geoLat = coords.lat;
         _geoLng = coords.lng;
 
-        // Recompute nearest school
         final nearest = await _computeNearestSchool(lat: _geoLat!, lng: _geoLng!);
         _proximHesKm = nearest.km;
         _nearestHesId = nearest.id;
+        _nearestHesName = nearest.name;
+
+        final t = await _computeNearestTransitStop(lat: _geoLat!, lng: _geoLng!);
+        _distTransitKm = t.km;
+        _nearestTransitName = t.name;
+      } else {
+        // If distances are still missing for any reason, compute them now
+        if (_proximHesKm == null || _nearestHesId == null || (_nearestHesName == null || _nearestHesName!.isEmpty)) {
+          final nearest = await _computeNearestSchool(lat: _geoLat!, lng: _geoLng!);
+          _proximHesKm = nearest.km;
+          _nearestHesId = nearest.id;
+          _nearestHesName = nearest.name;
+        }
+        if (_distTransitKm == null) {
+          final t = await _computeNearestTransitStop(lat: _geoLat!, lng: _geoLng!);
+          _distTransitKm = t.km;
+          _nearestTransitName = t.name;
+        }
       }
 
       // Build update data
@@ -475,11 +653,13 @@ class _EditListingPageState extends State<EditListingPage> {
         'wifi_incl': _wifiIncl,
         'charges_incl': _chargesIncl,
         'car_park': _carPark,
-        'dist_public_transport_km': _distTransportCtrl.text.trim().isEmpty ? null : parseD(_distTransportCtrl.text),
 
-        // Auto-computed on address change
+        // Auto-computed distances
+        'dist_public_transport_km': _distTransitKm,
+        'nearest_transit_name': _nearestTransitName,
         'proxim_hesso_km': _proximHesKm,
         'nearest_hesso_id': _nearestHesId,
+        'nearest_hesso_name': _nearestHesName,
 
         // Availability:
         'availability_start': Timestamp.fromDate(_availStart!),
@@ -497,11 +677,10 @@ class _EditListingPageState extends State<EditListingPage> {
       // 2) Handle images: remove selected, then upload new, then save final photos array
       List<String> finalPhotos = List.of(_existingPhotos);
 
-      // Remove chosen existing photos from storage if ton repo le supporte, sinon juste du doc
       if (_photosToRemove.isNotEmpty) {
         finalPhotos.removeWhere((url) => _photosToRemove.contains(url));
-        // Si ton ListingRepository expose un delete, tu peux le faire ici.
-        // await _repo.deleteListingImages(urls: _photosToRemove.toList()); // (exemple)
+        // If your repository supports deletion in storage, call it here.
+        // await _repo.deleteListingImages(urls: _photosToRemove.toList());
       }
 
       if (_newImages.isNotEmpty) {
@@ -558,6 +737,41 @@ class _EditListingPageState extends State<EditListingPage> {
     );
   }
 
+  // Small helper: image thumb for picked files
+  Widget _imageThumb(File f, ColorScheme cs) {
+    return Stack(
+      children: [
+        ClipRRect(
+          borderRadius: BorderRadius.circular(12),
+          child: AspectRatio(
+            aspectRatio: 1,
+            child: Image.file(f, fit: BoxFit.cover),
+          ),
+        ),
+        Positioned(
+          top: 6,
+          right: 6,
+          child: InkWell(
+            onTap: () {
+              setState(() {
+                _newImages.remove(f);
+              });
+            },
+            child: Container(
+              decoration: BoxDecoration(
+                color: cs.surface.withOpacity(0.85),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(color: cs.primary.withOpacity(.2)),
+              ),
+              padding: const EdgeInsets.all(4),
+              child: const Icon(Icons.close, size: 16),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
@@ -602,10 +816,12 @@ class _EditListingPageState extends State<EditListingPage> {
 
                 final gap = 12.0;
                 final double contentMax = 900;
-                final double gridWidth =
-                    (constraints.maxWidth.clamp(360, contentMax)).toDouble();
-                final double fieldWidth =
-                    isWide ? ((gridWidth - gap) / 2) : gridWidth;
+                final double gridWidth = (constraints.maxWidth.clamp(360, contentMax)).toDouble();
+                final double fieldWidth = isWide ? ((gridWidth - gap) / 2) : gridWidth;
+
+                // Image grid sizes
+                final thumbsPerRow = isWide ? 4 : 2;
+                final thumbSize = (gridWidth - (thumbsPerRow - 1) * 8) / thumbsPerRow;
 
                 return Container(
                   decoration: bg,
@@ -613,8 +829,7 @@ class _EditListingPageState extends State<EditListingPage> {
                     absorbing: _saving,
                     child: SingleChildScrollView(
                       padding: EdgeInsets.symmetric(
-                        horizontal:
-                            isXL ? (constraints.maxWidth - contentMax) / 2 + 16 : 16,
+                        horizontal: isXL ? (constraints.maxWidth - contentMax) / 2 + 16 : 16,
                         vertical: 16,
                       ),
                       child: Center(
@@ -624,7 +839,7 @@ class _EditListingPageState extends State<EditListingPage> {
                             key: _formKey,
                             child: Column(
                               children: [
-                                // ==== Basics ====
+                                // SINGLE unified card (Basics + Amenities + Availability + Distances + Photos)
                                 _MoonCard(
                                   isDark: isDark,
                                   child: Column(
@@ -633,26 +848,34 @@ class _EditListingPageState extends State<EditListingPage> {
                                       Row(
                                         mainAxisSize: MainAxisSize.min,
                                         children: [
-                                          Icon(MoonIcons.arrows_boost_24_regular,
-                                              size: 20, color: cs.primary),
+                                          Icon(MoonIcons.arrows_boost_24_regular, size: 20, color: cs.primary),
                                           const SizedBox(width: 8),
                                           Text(
-                                            'Basics',
-                                            style: TextStyle(
-                                              fontSize: 18,
-                                              fontWeight: FontWeight.w800,
-                                              color: cs.onSurface,
-                                            ),
+                                            'Listing details',
+                                            style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: cs.onSurface),
                                           ),
                                         ],
                                       ),
+
                                       const SizedBox(height: 12),
+
+                                      // --- BASICS ---
+                                      Align(
+                                        alignment: Alignment.centerLeft,
+                                        child: Text('Basics',
+                                            style: TextStyle(
+                                              color: cs.onSurface.withOpacity(.8),
+                                              fontWeight: FontWeight.w700,
+                                            )),
+                                      ),
+                                      const SizedBox(height: 8),
 
                                       Wrap(
                                         alignment: WrapAlignment.center,
                                         spacing: gap,
                                         runSpacing: gap,
                                         children: [
+                                          // Price (same width as others)
                                           SizedBox(
                                             width: fieldWidth,
                                             child: _moonInput(
@@ -671,7 +894,7 @@ class _EditListingPageState extends State<EditListingPage> {
                                             ),
                                           ),
 
-                                          // Address + suggestions panel
+                                          // Address + suggestions
                                           SizedBox(
                                             width: fieldWidth,
                                             child: Column(
@@ -687,8 +910,7 @@ class _EditListingPageState extends State<EditListingPage> {
                                                 ),
                                                 if (_addressFocus.hasFocus || _isLoadingAddr || _addressSuggestions.isNotEmpty)
                                                   const SizedBox(height: 6),
-                                                if (_isLoadingAddr)
-                                                  const LinearProgressIndicator(minHeight: 2),
+                                                if (_isLoadingAddr) const LinearProgressIndicator(minHeight: 2),
                                                 if (_addressSuggestions.isNotEmpty)
                                                   Container(
                                                     decoration: BoxDecoration(
@@ -700,17 +922,14 @@ class _EditListingPageState extends State<EditListingPage> {
                                                       shrinkWrap: true,
                                                       physics: const NeverScrollableScrollPhysics(),
                                                       itemCount: _addressSuggestions.length,
-                                                      separatorBuilder: (_, __) => Divider(height: 1, color: cs.primary.withOpacity(.08)),
+                                                      separatorBuilder: (_, __) =>
+                                                          Divider(height: 1, color: cs.primary.withOpacity(.08)),
                                                       itemBuilder: (ctx, i) {
                                                         final s = _addressSuggestions[i];
                                                         return ListTile(
                                                           dense: true,
                                                           leading: const Icon(Icons.location_on_outlined),
-                                                          title: Text(
-                                                            s.displayName,
-                                                            maxLines: 2,
-                                                            overflow: TextOverflow.ellipsis,
-                                                          ),
+                                                          title: Text(s.displayName, maxLines: 2, overflow: TextOverflow.ellipsis),
                                                           onTap: () => _applySuggestion(s),
                                                         );
                                                       },
@@ -771,6 +990,8 @@ class _EditListingPageState extends State<EditListingPage> {
                                               textAlign: TextAlign.center,
                                             ),
                                           ),
+
+                                          // Type
                                           SizedBox(
                                             width: gridWidth,
                                             child: Column(
@@ -818,28 +1039,21 @@ class _EditListingPageState extends State<EditListingPage> {
                                           ),
                                         ],
                                       ),
-                                    ],
-                                  ),
-                                ),
 
-                                const SizedBox(height: 16),
-
-                                // ==== Amenities ====
-                                _MoonCard(
-                                  isDark: isDark,
-                                  child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.center,
-                                    children: [
-                                      Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          Icon(MoonIcons.arrows_cross_lines_24_regular, size: 20, color: cs.primary),
-                                          const SizedBox(width: 8),
-                                          Text('Amenities', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: cs.onSurface)),
-                                        ],
-                                      ),
+                                      const SizedBox(height: 16),
+                                      Divider(color: cs.primary.withOpacity(.1)),
                                       const SizedBox(height: 8),
 
+                                      // --- AMENITIES ---
+                                      Align(
+                                        alignment: Alignment.centerLeft,
+                                        child: Text('Amenities',
+                                            style: TextStyle(
+                                              color: cs.onSurface.withOpacity(.8),
+                                              fontWeight: FontWeight.w700,
+                                            )),
+                                      ),
+                                      const SizedBox(height: 8),
                                       Wrap(
                                         alignment: WrapAlignment.center,
                                         spacing: 12,
@@ -879,28 +1093,21 @@ class _EditListingPageState extends State<EditListingPage> {
                                           ),
                                         ],
                                       ),
-                                    ],
-                                  ),
-                                ),
 
-                                const SizedBox(height: 16),
+                                      const SizedBox(height: 16),
+                                      Divider(color: cs.primary.withOpacity(.1)),
+                                      const SizedBox(height: 8),
 
-                                // ==== Availability ====
-                                _MoonCard(
-                                  isDark: isDark,
-                                  child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.center,
-                                    children: [
-                                      Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          Icon(MoonIcons.time_calendar_24_regular, size: 20, color: cs.primary),
-                                          const SizedBox(width: 8),
-                                          Text('Availability', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: cs.onSurface)),
-                                        ],
+                                      // --- AVAILABILITY ---
+                                      Align(
+                                        alignment: Alignment.centerLeft,
+                                        child: Text('Availability',
+                                            style: TextStyle(
+                                              color: cs.onSurface.withOpacity(.8),
+                                              fontWeight: FontWeight.w700,
+                                            )),
                                       ),
-                                      const SizedBox(height: 12),
-
+                                      const SizedBox(height: 8),
                                       Wrap(
                                         alignment: WrapAlignment.center,
                                         spacing: 12,
@@ -925,9 +1132,9 @@ class _EditListingPageState extends State<EditListingPage> {
                                                     isFullWidth: true,
                                                     onTap: _noEndDate ? null : _pickEndDate,
                                                     leading: const Icon(Icons.event_note_outlined),
-                                                    label: Text(_noEndDate
-                                                        ? 'End: None'
-                                                        : 'End: ${_formatDate(_availEnd)}'),
+                                                    label: Text(
+                                                      _noEndDate ? 'End: None' : 'End: ${_formatDate(_availEnd)}',
+                                                    ),
                                                   ),
                                                 ),
                                                 const SizedBox(width: 8),
@@ -950,72 +1157,98 @@ class _EditListingPageState extends State<EditListingPage> {
                                           ),
                                         ],
                                       ),
-
                                       const SizedBox(height: 8),
                                       Text(
                                         'Start date cannot be before today. End date is optional.',
                                         textAlign: TextAlign.center,
                                         style: TextStyle(color: cs.onSurface.withOpacity(.65), fontSize: 12),
                                       ),
-                                    ],
-                                  ),
-                                ),
 
-                                const SizedBox(height: 16),
+                                      const SizedBox(height: 16),
+                                      Divider(color: cs.primary.withOpacity(.1)),
+                                      const SizedBox(height: 8),
 
-                                // ==== Distances ====
-                                _MoonCard(
-                                  isDark: isDark,
-                                  child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.center,
-                                    children: [
-                                      Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          Icon(MoonIcons.arrows_diagonals_tlbr_24_regular, size: 20, color: cs.primary),
-                                          const SizedBox(width: 8),
-                                          Text('Distances', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: cs.onSurface)),
-                                        ],
-                                      ),
-                                      const SizedBox(height: 12),
-                                      SizedBox(
-                                        width: fieldWidth,
-                                        child: MoonFormTextInput(
-                                          hasFloatingLabel: false,
-                                          hintText: 'Distance to public transport (km)',
-                                          controller: _distTransportCtrl,
-                                          keyboardType: TextInputType.number,
-                                          leading: const Icon(Icons.directions_bus_outlined),
-                                          textAlign: TextAlign.center,
-                                        ),
+                                      // --- DISTANCES (two separate lines, no input field) ---
+                                      Align(
+                                        alignment: Alignment.centerLeft,
+                                        child: Text('Distances',
+                                            style: TextStyle(
+                                              color: cs.onSurface.withOpacity(.8),
+                                              fontWeight: FontWeight.w700,
+                                            )),
                                       ),
                                       const SizedBox(height: 8),
-                                      Text(
-                                        'HES proximity is computed automatically from your address.',
-                                        textAlign: TextAlign.center,
-                                        style: TextStyle(color: cs.onSurface.withOpacity(.65), fontSize: 12),
-                                      ),
-                                    ],
-                                  ),
-                                ),
 
-                                const SizedBox(height: 16),
-
-                                // ==== Photos (existing + add/remove) ====
-                                _MoonCard(
-                                  isDark: isDark,
-                                  child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
+                                      // Line 1: Nearest transit
                                       Row(
-                                        mainAxisSize: MainAxisSize.min,
+                                        mainAxisAlignment: MainAxisAlignment.center,
                                         children: [
-                                          const Icon(Icons.photo_library_outlined, size: 20),
-                                          const SizedBox(width: 8),
-                                          Text('Photos', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: cs.onSurface)),
+                                          if (_isComputingTransit)
+                                            const SizedBox(
+                                              width: 16,
+                                              height: 16,
+                                              child: CircularProgressIndicator(strokeWidth: 2),
+                                            ),
+                                          if (_isComputingTransit) const SizedBox(width: 8),
+                                          Flexible(
+                                            child: Text(
+                                              _distTransitKm == null
+                                                  ? 'Nearest transit: —'
+                                                  : 'Nearest transit: ${_nearestTransitName?.isNotEmpty == true ? _nearestTransitName : 'Stop'} • ${_distTransitKm!.toStringAsFixed(2)} km',
+                                              textAlign: TextAlign.center,
+                                              style: TextStyle(
+                                                color: cs.onSurface.withOpacity(.85),
+                                                fontWeight: FontWeight.w600,
+                                              ),
+                                            ),
+                                          ),
                                         ],
                                       ),
-                                      const SizedBox(height: 12),
+                                      const SizedBox(height: 6),
+
+                                      // Line 2: HES proximity
+                                      Row(
+                                        mainAxisAlignment: MainAxisAlignment.center,
+                                        children: [
+                                          if (_isComputingHes)
+                                            const SizedBox(
+                                              width: 16,
+                                              height: 16,
+                                              child: CircularProgressIndicator(strokeWidth: 2),
+                                            ),
+                                          if (_isComputingHes) const SizedBox(width: 8),
+                                          Flexible(
+                                            child: Text(
+                                              _proximHesKm == null
+                                                  ? 'HES proximity: —'
+                                                  : (_nearestHesName == null || _nearestHesName!.isEmpty)
+                                                      ? 'HES proximity: ${_proximHesKm!.toStringAsFixed(2)} km'
+                                                      : 'HES proximity: ${_nearestHesName!} • ${_proximHesKm!.toStringAsFixed(2)} km',
+                                              textAlign: TextAlign.center,
+                                              style: TextStyle(
+                                                color: cs.onSurface.withOpacity(.85),
+                                                fontWeight: FontWeight.w600,
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+
+                                      const SizedBox(height: 16),
+                                      Divider(color: cs.primary.withOpacity(.1)),
+                                      const SizedBox(height: 8),
+
+                                      // --- PHOTOS (existing + add/remove + new previews) ---
+                                      Align(
+                                        alignment: Alignment.centerLeft,
+                                        child: Text('Photos',
+                                            style: TextStyle(
+                                              color: cs.onSurface.withOpacity(.8),
+                                              fontWeight: FontWeight.w700,
+                                            )),
+                                      ),
+                                      const SizedBox(height: 8),
+
                                       if (_existingPhotos.isEmpty)
                                         Text('No existing photos', style: TextStyle(color: cs.onSurface.withOpacity(.7))),
                                       if (_existingPhotos.isNotEmpty)
@@ -1027,8 +1260,8 @@ class _EditListingPageState extends State<EditListingPage> {
                                             return Stack(
                                               children: [
                                                 Container(
-                                                  width: 110,
-                                                  height: 110,
+                                                  width: thumbSize,
+                                                  height: thumbSize,
                                                   decoration: BoxDecoration(
                                                     borderRadius: BorderRadius.circular(10),
                                                     border: Border.all(
@@ -1072,8 +1305,25 @@ class _EditListingPageState extends State<EditListingPage> {
                                             );
                                           }).toList(),
                                         ),
+
+                                      const SizedBox(height: 12),
+
+                                      if (_newImages.isNotEmpty)
+                                        Wrap(
+                                          spacing: 8,
+                                          runSpacing: 8,
+                                          children: _newImages
+                                              .map((f) => SizedBox(
+                                                    width: thumbSize,
+                                                    height: thumbSize,
+                                                    child: _imageThumb(f, cs),
+                                                  ))
+                                              .toList(),
+                                        ),
+
                                       const SizedBox(height: 12),
                                       Row(
+                                        mainAxisAlignment: MainAxisAlignment.center,
                                         children: [
                                           MoonButton(
                                             onTap: _pickImages,
@@ -1081,9 +1331,10 @@ class _EditListingPageState extends State<EditListingPage> {
                                             label: const Text('Add images'),
                                           ),
                                           const SizedBox(width: 12),
-                                          if (_newImages.isNotEmpty)
-                                            Text('${_newImages.length} new selected',
-                                                style: TextStyle(color: cs.onSurface.withOpacity(.7))),
+                                          Text(
+                                            '${_existingPhotos.length} existing • ${_newImages.length} new',
+                                            style: TextStyle(color: cs.onSurface.withOpacity(.7)),
+                                          ),
                                         ],
                                       ),
                                     ],
