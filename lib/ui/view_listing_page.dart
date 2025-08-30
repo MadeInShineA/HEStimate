@@ -52,9 +52,20 @@ class _ViewListingPageState extends State<ViewListingPage> {
   // Carrousel
   late final PageController _photoCtrl;
 
+  // Booking system
+  Set<DateTime> _selectedDates = {};
+  List<Map<String, dynamic>> _bookingRequests = [];
+  bool _showBookingPanel = false;
+  final TextEditingController _messageController = TextEditingController();
+  final TextEditingController _phoneController = TextEditingController();
+  bool _submittingBooking = false;
+
   bool get _isOwner =>
       FirebaseAuth.instance.currentUser?.uid != null &&
       FirebaseAuth.instance.currentUser!.uid == _ownerUid;
+
+  bool get _isStudent => 
+      FirebaseAuth.instance.currentUser != null && !_isOwner;
 
   @override
   void initState() {
@@ -66,6 +77,8 @@ class _ViewListingPageState extends State<ViewListingPage> {
   @override
   void dispose() {
     _photoCtrl.dispose();
+    _messageController.dispose();
+    _phoneController.dispose();
     super.dispose();
   }
 
@@ -117,6 +130,9 @@ class _ViewListingPageState extends State<ViewListingPage> {
       final List photos = (m['photos'] as List?) ?? const [];
       _photos = photos.map((e) => e.toString()).toList();
 
+      // Charger les demandes de réservation
+      await _loadBookingRequests();
+
       setState(() {
         _loading = false;
         if (_availStart != null) _shownMonth = _monthDate(_availStart!);
@@ -127,6 +143,43 @@ class _ViewListingPageState extends State<ViewListingPage> {
         _loading = false;
       });
     }
+  }
+
+  Future<void> _loadBookingRequests() async {
+    try {
+      final snapshot = await FirebaseFirestore.instance
+          .collection('booking_requests')
+          .where('listingId', isEqualTo: widget.listingId)
+          .where('status', whereIn: ['pending', 'approved'])
+          .get();
+
+      _bookingRequests = snapshot.docs.map((doc) {
+        final data = doc.data();
+        return {
+          'id': doc.id,
+          'startDate': (data['startDate'] as Timestamp).toDate(),
+          'endDate': (data['endDate'] as Timestamp).toDate(),
+          'status': data['status'],
+        };
+      }).toList();
+    } catch (e) {
+      print('Error loading booking requests: $e');
+    }
+  }
+
+  // Vérifier si une date est réservée ou en attente
+  String? _getDateStatus(DateTime day) {
+    final d = _dateOnly(day);
+    
+    for (final booking in _bookingRequests) {
+      final start = _dateOnly(booking['startDate']);
+      final end = _dateOnly(booking['endDate']);
+      
+      if (!d.isBefore(start) && !d.isAfter(end)) {
+        return booking['status']; // 'pending' ou 'approved'
+      }
+    }
+    return null;
   }
 
   // Calendrier
@@ -147,6 +200,29 @@ class _ViewListingPageState extends State<ViewListingPage> {
   void _nextMonth() {
     final d = DateTime(_shownMonth.year, _shownMonth.month + 1);
     setState(() => _shownMonth = _monthDate(d));
+  }
+
+  void _onDateTap(DateTime date) {
+    if (!_isStudent) return;
+    
+    final status = _getDateStatus(date);
+    if (status != null) return; // Date déjà réservée ou en attente
+    
+    if (!_isAvailableOn(date)) return; // Date non disponible
+    
+    setState(() {
+      if (_selectedDates.contains(date)) {
+        _selectedDates.remove(date);
+      } else {
+        _selectedDates.add(date);
+      }
+      
+      _showBookingPanel = _selectedDates.isNotEmpty;
+      
+      if (_selectedDates.isEmpty) {
+        _messageController.clear();
+      }
+    });
   }
 
   List<Widget> _buildCalendar(BuildContext context) {
@@ -184,26 +260,49 @@ class _ViewListingPageState extends State<ViewListingPage> {
     for (var day = 1; day <= daysInMonth; day++) {
       final date = DateTime(_shownMonth.year, _shownMonth.month, day);
       final available = _isAvailableOn(date);
+      final status = _getDateStatus(date);
+      final isSelected = _selectedDates.contains(date);
+      final canSelect = _isStudent && available && status == null;
+
+      Color bgColor = Colors.transparent;
+      Color borderColor = cs.primary.withOpacity(.12);
+      Color textColor = cs.onSurface;
+
+      if (status == 'approved') {
+        bgColor = Colors.red.withOpacity(.2);
+        borderColor = Colors.red.withOpacity(.5);
+        textColor = Colors.red;
+      } else if (status == 'pending') {
+        bgColor = Colors.orange.withOpacity(.2);
+        borderColor = Colors.orange.withOpacity(.5);
+        textColor = Colors.orange;
+      } else if (isSelected) {
+        bgColor = cs.primary.withOpacity(.3);
+        borderColor = cs.primary;
+        textColor = cs.primary;
+      } else if (available) {
+        bgColor = cs.primary.withOpacity(.12);
+        borderColor = cs.primary.withOpacity(.45);
+        textColor = cs.primary;
+      }
 
       items.add(
-        Container(
-          margin: const EdgeInsets.all(4),
-          decoration: BoxDecoration(
-            color: available ? cs.primary.withOpacity(.12) : Colors.transparent,
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(
-              color: available
-                  ? cs.primary.withOpacity(.45)
-                  : cs.primary.withOpacity(.12),
-              width: 1,
+        GestureDetector(
+          onTap: canSelect ? () => _onDateTap(date) : null,
+          child: Container(
+            margin: const EdgeInsets.all(4),
+            decoration: BoxDecoration(
+              color: bgColor,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: borderColor, width: 1),
             ),
-          ),
-          child: Center(
-            child: Text(
-              '$day',
-              style: TextStyle(
-                fontWeight: FontWeight.w600,
-                color: available ? cs.primary : cs.onSurface,
+            child: Center(
+              child: Text(
+                '$day',
+                style: TextStyle(
+                  fontWeight: FontWeight.w600,
+                  color: textColor,
+                ),
               ),
             ),
           ),
@@ -212,6 +311,195 @@ class _ViewListingPageState extends State<ViewListingPage> {
     }
 
     return items;
+  }
+
+  Future<void> _submitBookingRequest() async {
+    if (_selectedDates.isEmpty || _messageController.text.trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please select dates and add a message')),
+      );
+      return;
+    }
+
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    setState(() => _submittingBooking = true);
+
+    try {
+      // Récupérer les infos de l'utilisateur
+      final userDoc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .get();
+      
+      final userData = userDoc.data() ?? {};
+
+      // Trier les dates sélectionnées
+      final sortedDates = _selectedDates.toList()..sort();
+      
+      // Créer la demande de réservation
+      await FirebaseFirestore.instance.collection('booking_requests').add({
+        'listingId': widget.listingId,
+        'studentUid': user.uid,
+        'ownerUid': _ownerUid,
+        'startDate': Timestamp.fromDate(sortedDates.first),
+        'endDate': Timestamp.fromDate(sortedDates.last),
+        'message': _messageController.text.trim(),
+        'studentName': userData['name'] ?? user.email,
+        'studentEmail': user.email,
+        'studentPhone': _phoneController.text.trim().isEmpty 
+            ? null 
+            : _phoneController.text.trim(),
+        'status': 'pending',
+        'createdAt': Timestamp.now(),
+        'updatedAt': Timestamp.now(),
+      });
+
+      // Recharger les données
+      await _loadBookingRequests();
+
+      setState(() {
+        _selectedDates.clear();
+        _showBookingPanel = false;
+        _messageController.clear();
+        _phoneController.clear();
+        _submittingBooking = false;
+      });
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Booking request sent successfully!'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      setState(() => _submittingBooking = false);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error sending request: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  Widget _buildBookingPanel(BuildContext context) {
+    if (!_showBookingPanel) return const SizedBox.shrink();
+
+    final cs = Theme.of(context).colorScheme;
+    final sortedDates = _selectedDates.toList()..sort();
+    
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 300),
+      padding: const EdgeInsets.all(16),
+      margin: const EdgeInsets.only(top: 16),
+      decoration: BoxDecoration(
+        color: Theme.of(context).cardColor,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: cs.primary.withOpacity(0.3)),
+        boxShadow: [
+          BoxShadow(
+            color: cs.primary.withOpacity(0.1),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.event_note, color: cs.primary),
+              const SizedBox(width: 8),
+              Text(
+                'Book this listing',
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w800,
+                  color: cs.onSurface,
+                ),
+              ),
+              const Spacer(),
+              TextButton(
+                onPressed: () {
+                  setState(() {
+                    _selectedDates.clear();
+                    _showBookingPanel = false;
+                    _messageController.clear();
+                  });
+                },
+                child: const Text('Cancel'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: cs.primary.withOpacity(0.1),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Text(
+              'Selected: ${_fmt(sortedDates.first)}${sortedDates.length > 1 ? ' → ${_fmt(sortedDates.last)}' : ''} (${sortedDates.length} day${sortedDates.length > 1 ? 's' : ''})',
+              style: TextStyle(
+                color: cs.primary,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+          TextField(
+            controller: _messageController,
+            maxLines: 3,
+            decoration: InputDecoration(
+              labelText: 'Message to owner *',
+              hintText: 'Tell the owner about yourself...',
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
+              contentPadding: const EdgeInsets.all(12),
+            ),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _phoneController,
+            decoration: InputDecoration(
+              labelText: 'Phone number (optional)',
+              hintText: 'For contact purposes',
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
+              contentPadding: const EdgeInsets.all(12),
+            ),
+          ),
+          const SizedBox(height: 16),
+          MoonFilledButton(
+            isFullWidth: true,
+            onTap: _submittingBooking ? null : _submitBookingRequest,
+            label: _submittingBooking 
+                ? const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                      SizedBox(width: 8),
+                      Text('Sending...'),
+                    ],
+                  )
+                : const Text('Send booking request'),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -246,14 +534,9 @@ class _ViewListingPageState extends State<ViewListingPage> {
                 if (canPop) {
                   Navigator.of(context).pop();
                 } else {
-                  // No back stack (e.g., after pushReplacement) → go Home.
                   Navigator.of(
                     context,
                   ).pushNamedAndRemoveUntil('/home', (route) => false);
-                  // If you want to land on a specific tab inside HomeMenuPage,
-                  // pass an index as arguments, e.g.:
-                  // Navigator.of(context).pushNamedAndRemoveUntil('/home', (route) => false, arguments: 0); // Dashboard
-                  // Navigator.of(context).pushNamedAndRemoveUntil('/home', (route) => false, arguments: 1); // Properties
                 }
               },
             );
@@ -295,7 +578,6 @@ class _ViewListingPageState extends State<ViewListingPage> {
                 final isWide = constraints.maxWidth >= 900;
                 const contentMax = 1000.0;
 
-                // ❗ Fix: ne jamais produire un padding négatif
                 final horizontalPad = math.max(
                   16.0,
                   (constraints.maxWidth - contentMax) / 2 + 16.0,
@@ -559,38 +841,55 @@ class _ViewListingPageState extends State<ViewListingPage> {
                                     mainAxisAlignment:
                                         MainAxisAlignment.spaceBetween,
                                     children: [
-                                      Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          const Icon(
-                                            Icons.calendar_today_outlined,
-                                            size: 20,
-                                          ),
-                                          const SizedBox(width: 8),
-                                          Text(
-                                            'Availability',
-                                            style: TextStyle(
-                                              fontSize: 18,
-                                              fontWeight: FontWeight.w800,
-                                              color: cs.onSurface,
+                                      Expanded(
+                                        child: Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            const Icon(
+                                              Icons.calendar_today_outlined,
+                                              size: 20,
                                             ),
-                                          ),
-                                        ],
+                                            const SizedBox(width: 8),
+                                            Flexible(
+                                              child: Text(
+                                                _isStudent ? 'Select dates to book' : 'Availability',
+                                                style: TextStyle(
+                                                  fontSize: 18,
+                                                  fontWeight: FontWeight.w800,
+                                                  color: cs.onSurface,
+                                                ),
+                                                overflow: TextOverflow.ellipsis,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
                                       ),
                                       Row(
+                                        mainAxisSize: MainAxisSize.min,
                                         children: [
                                           IconButton(
                                             tooltip: 'Previous month',
                                             onPressed: _prevMonth,
                                             icon: const Icon(
                                               Icons.chevron_left,
+                                              size: 20,
+                                            ),
+                                            padding: const EdgeInsets.all(8),
+                                            constraints: const BoxConstraints(
+                                              minWidth: 36,
+                                              minHeight: 36,
                                             ),
                                           ),
-                                          Text(
-                                            '${_shownMonth.year}-${_shownMonth.month.toString().padLeft(2, '0')}',
-                                            style: TextStyle(
-                                              fontWeight: FontWeight.w700,
-                                              color: cs.onSurface,
+                                          Container(
+                                            constraints: const BoxConstraints(minWidth: 80),
+                                            child: Text(
+                                              '${_shownMonth.year}-${_shownMonth.month.toString().padLeft(2, '0')}',
+                                              style: TextStyle(
+                                                fontWeight: FontWeight.w700,
+                                                color: cs.onSurface,
+                                                fontSize: 14,
+                                              ),
+                                              textAlign: TextAlign.center,
                                             ),
                                           ),
                                           IconButton(
@@ -598,6 +897,12 @@ class _ViewListingPageState extends State<ViewListingPage> {
                                             onPressed: _nextMonth,
                                             icon: const Icon(
                                               Icons.chevron_right,
+                                              size: 20,
+                                            ),
+                                            padding: const EdgeInsets.all(8),
+                                            constraints: const BoxConstraints(
+                                              minWidth: 36,
+                                              minHeight: 36,
                                             ),
                                           ),
                                         ],
@@ -621,29 +926,48 @@ class _ViewListingPageState extends State<ViewListingPage> {
                                       children: _buildCalendar(context),
                                     ),
                                     const SizedBox(height: 8),
+                                    // Légende du calendrier
+                                    Wrap(
+                                      spacing: 16,
+                                      runSpacing: 8,
+                                      children: [
+                                        _buildLegendItem(
+                                          context, 
+                                          'Available', 
+                                          cs.primary.withOpacity(.25),
+                                          cs.primary.withOpacity(.6),
+                                        ),
+                                        if (_isStudent) ...[
+                                          _buildLegendItem(
+                                            context, 
+                                            'Selected', 
+                                            cs.primary.withOpacity(.3),
+                                            cs.primary,
+                                          ),
+                                          _buildLegendItem(
+                                            context, 
+                                            'Pending', 
+                                            Colors.orange.withOpacity(.2),
+                                            Colors.orange.withOpacity(.5),
+                                          ),
+                                          _buildLegendItem(
+                                            context, 
+                                            'Booked', 
+                                            Colors.red.withOpacity(.2),
+                                            Colors.red.withOpacity(.5),
+                                          ),
+                                        ] else
+                                          _buildLegendItem(
+                                            context, 
+                                            'Booked/Pending', 
+                                            Colors.red.withOpacity(.2),
+                                            Colors.red.withOpacity(.5),
+                                          ),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 8),
                                     Row(
                                       children: [
-                                        Container(
-                                          width: 16,
-                                          height: 16,
-                                          decoration: BoxDecoration(
-                                            color: cs.primary.withOpacity(.25),
-                                            borderRadius: BorderRadius.circular(
-                                              4,
-                                            ),
-                                            border: Border.all(
-                                              color: cs.primary.withOpacity(.6),
-                                            ),
-                                          ),
-                                        ),
-                                        const SizedBox(width: 8),
-                                        Text(
-                                          'Available days',
-                                          style: TextStyle(
-                                            color: cs.onSurface.withOpacity(.8),
-                                          ),
-                                        ),
-                                        const Spacer(),
                                         Text(
                                           _availEnd == null
                                               ? 'From ${_fmt(_availStart!)} • no end'
@@ -659,6 +983,9 @@ class _ViewListingPageState extends State<ViewListingPage> {
                                 ],
                               ),
                             ),
+
+                            // Panneau de réservation (s'affiche quand des dates sont sélectionnées)
+                            _buildBookingPanel(context),
 
                             const SizedBox(height: 24),
 
@@ -686,6 +1013,31 @@ class _ViewListingPageState extends State<ViewListingPage> {
                 );
               },
             ),
+    );
+  }
+
+  Widget _buildLegendItem(BuildContext context, String label, Color bgColor, Color borderColor) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 16,
+          height: 16,
+          decoration: BoxDecoration(
+            color: bgColor,
+            borderRadius: BorderRadius.circular(4),
+            border: Border.all(color: borderColor),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Text(
+          label,
+          style: TextStyle(
+            color: Theme.of(context).colorScheme.onSurface.withOpacity(.8),
+            fontSize: 12,
+          ),
+        ),
+      ],
     );
   }
 
