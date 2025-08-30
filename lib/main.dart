@@ -18,11 +18,13 @@ import 'ui/about_page.dart';
 import 'ui/faceIdLogin.dart';
 import 'ui/faceIdSetup.dart';
 import 'ui/menu.dart'; // HomeMenuPage lives here
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 
 import 'firebase_options.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await dotenv.load(fileName: ".env");
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
 
   final currentUser = FirebaseAuth.instance.currentUser;
@@ -254,4 +256,3 @@ class _MyHomePageState extends State<MyHomePage> {
     );
   }
 }
-

@@ -12,7 +12,7 @@ import 'package:http/http.dart' as http;
 
 import 'package:moon_design/moon_design.dart';
 import 'package:moon_icons/moon_icons.dart';
-
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import '../data/listing_repository.dart';
 import 'view_listing_page.dart';
 
@@ -683,22 +683,21 @@ out body;
       await _ensureGeoAndNearestSchool();
 
       final payload = <String, dynamic>{
-        'listing_id': listingId,
-        'latitude': _geoLat,
         'longitude': _geoLng,
-        'price': price,
-        'timestamp': DateTime.now().toIso8601String(),
-        'source': 'new_listing_created',
+        'latitude': _geoLat,
+        'price_chf': price,
       };
 
       final uri = Uri.parse('$_apiBase$_observationPath');
+      final apiKey = dotenv.env['API_KEY'];
       final resp = await http.post(
         uri,
-        headers: const {
+        headers: {
           'Content-Type': 'application/json',
           'User-Agent': 'HEStimate/1.0 (student project; contact: none)',
+          if (apiKey != null && apiKey.isNotEmpty) 'API-KEY': apiKey,
         },
-        body: jsonEncode(payload),
+        body: jsonEncode([payload]),
       );
 
       if (!(resp.statusCode >= 200 && resp.statusCode < 300)) {
