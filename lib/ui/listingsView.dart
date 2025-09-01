@@ -48,14 +48,30 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
   late final Stream<QuerySnapshot<Map<String, dynamic>>> _listingsStream;
 
   Future<void> _fetchPriceBounds() async {
-    final minSnap = await FirebaseFirestore.instance
-        .collection('listings')
+    Query<Map<String, dynamic>> baseQuery = FirebaseFirestore.instance.collection('listings');
+    
+    // Si on est en mode "owner", on filtre par l'utilisateur courant
+    if (widget.mode == ListingsMode.owner) {
+      final uid = FirebaseAuth.instance.currentUser?.uid;
+      if (uid == null) {
+        // Pas d'utilisateur connecté, pas de propriétés
+        setState(() {
+          _globalMinPrice = 0;
+          _globalMaxPrice = 10000;
+          _minPrice = 0;
+          _maxPrice = 10000;
+        });
+        return;
+      }
+      baseQuery = baseQuery.where('ownerUid', isEqualTo: uid);
+    }
+
+    final minSnap = await baseQuery
         .orderBy('price', descending: false)
         .limit(1)
         .get();
 
-    final maxSnap = await FirebaseFirestore.instance
-        .collection('listings')
+    final maxSnap = await baseQuery
         .orderBy('price', descending: true)
         .limit(1)
         .get();
