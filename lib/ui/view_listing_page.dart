@@ -1,9 +1,11 @@
 // lib/ui/view_listing_page.dart
 import 'dart:math' as math;
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:moon_design/moon_design.dart';
+import 'package:http/http.dart' as http;
 
 import 'edit_listing_page.dart';
 
@@ -43,6 +45,10 @@ class _ViewListingPageState extends State<ViewListingPage> {
   DateTime? _availStart;
   DateTime? _availEnd;
   List<String> _photos = [];
+
+  bool _estimatingPrice = false;
+  double? _estimatedPrice;
+  String? _estimateError;
 
   // Calendrier
   DateTime _shownMonth = _monthDate(DateTime.now());
@@ -125,6 +131,79 @@ class _ViewListingPageState extends State<ViewListingPage> {
       setState(() {
         _error = 'Failed to load listing: $e';
         _loading = false;
+      });
+    }
+  }
+
+  Future<void> _estimatePrice() async {
+    // Vérifier que nous avons les données nécessaires
+    if (_latitude == null || 
+        _longitude == null || 
+        _surface == null || 
+        _rooms == null || 
+        _floor == null ||
+        _distTransportKm == null ||
+        _proximHesKm == null) {
+      setState(() {
+        _estimateError = 'Missing data for estimation';
+      });
+      return;
+    }
+
+    setState(() {
+      _estimatingPrice = true;
+      _estimateError = null;
+    });
+
+    try {
+      final body = [
+        {
+          "latitude": _latitude!,
+          "longitude": _longitude!,
+          "surface_m2": _surface!,
+          "num_rooms": _rooms!,
+          "type": _type,
+          "is_furnished": _isFurnish,
+          "floor": _floor!,
+          "wifi_incl": _wifiIncl,
+          "charges_incl": _chargesIncl,
+          "car_park": _carPark,
+          "dist_public_transport_km": _distTransportKm!,
+          "proxim_hesso_km": _proximHesKm!,
+        }
+      ];
+
+      final response = await http.post(
+        Uri.parse('https://hestimate-api-production.up.railway.app/estimate-price'),
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode(body),
+      );
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data is List && data.isNotEmpty && data[0]['predicted_price_chf'] != null) {
+          setState(() {
+            _estimatedPrice = (data[0]['predicted_price_chf'] as num).toDouble();
+            _estimatingPrice = false;
+          });
+        } else {
+          setState(() {
+            _estimateError = 'Unexpected response format';
+            _estimatingPrice = false;
+          });
+        }
+      } else {
+        setState(() {
+          _estimateError = 'Erreur ${response.statusCode}: ${response.body}';
+          _estimatingPrice = false;
+        });
+      }
+    } catch (e) {
+      setState(() {
+        _estimateError = 'Erreur de connexion: $e';
+        _estimatingPrice = false;
       });
     }
   }
@@ -542,6 +621,146 @@ class _ViewListingPageState extends State<ViewListingPage> {
                                         _carPark,
                                       ),
                                     ],
+                                  ),
+                                ],
+                              ),
+                            ),
+
+                            const SizedBox(height: 16),
+
+                            _MoonCard(
+                              isDark: isDark,
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      const Icon(Icons.analytics_outlined, size: 20),
+                                      const SizedBox(width: 8),
+                                      Text(
+                                        'Price estimation',
+                                        style: TextStyle(
+                                          fontSize: 18,
+                                          fontWeight: FontWeight.w800,
+                                          color: cs.onSurface,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 12),
+                                  if (_estimatedPrice != null) ...[
+                                    Container(
+                                      padding: const EdgeInsets.all(16),
+                                      decoration: BoxDecoration(
+                                        borderRadius: BorderRadius.circular(12),
+                                        border: Border.all(
+                                          color: cs.primary.withOpacity(0.12),
+                                          width: 1,
+                                        ),
+                                      ),
+                                      child: Row(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Icon(Icons.trending_up, color: cs.primary, size: 24),
+                                        const SizedBox(width: 12),
+                                        Expanded( // ✅ ça permet au texte de se couper si nécessaire
+                                          child: Column(
+                                            crossAxisAlignment: CrossAxisAlignment.start,
+                                            children: [
+                                              Text(
+                                                'Estimated price',
+                                                style: TextStyle(
+                                                  color: cs.onSurface.withOpacity(.8),
+                                                  fontSize: 14,
+                                                ),
+                                              ),
+                                              Text(
+                                                '${((_estimatedPrice! / 0.05).round() * 0.05).toStringAsFixed(2)} CHF/mois',
+                                                style: const TextStyle(
+                                                  fontSize: 18,
+                                                  fontWeight: FontWeight.w800,
+                                                ),
+                                                overflow: TextOverflow.ellipsis, // ✅ coupe si trop long
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                        if (_price != null) ...[
+                                          const SizedBox(width: 12),
+                                          Expanded( // ✅ pareil pour la partie "Actual price"
+                                            child: Column(
+                                              crossAxisAlignment: CrossAxisAlignment.end,
+                                              children: [
+                                                Text(
+                                                  'Actual price',
+                                                  style: TextStyle(
+                                                    color: cs.onSurface.withOpacity(.8),
+                                                    fontSize: 14,
+                                                  ),
+                                                ),
+                                                Text(
+                                                  '${((_price! / 0.05).round() * 0.05).toStringAsFixed(2)} CHF/mois',
+                                                  style: TextStyle(
+                                                    color: cs.onSurface,
+                                                    fontSize: 16,
+                                                    fontWeight: FontWeight.w600,
+                                                  ),
+                                                  overflow: TextOverflow.ellipsis,
+                                                ),
+                                                Text(
+                                                  '${((_price! - _estimatedPrice!) / 0.05).round() * 0.05 >= 0 ? '+' : ''}${(((_price! - _estimatedPrice!) / 0.05).round() * 0.05).toStringAsFixed(2)} CHF/mois',
+                                                  style: TextStyle(
+                                                    color: (_price! > _estimatedPrice!) 
+                                                        ? Colors.red 
+                                                        : Colors.green,
+                                                    fontSize: 12,
+                                                    fontWeight: FontWeight.w600,
+                                                    ),
+                                                  overflow: TextOverflow.ellipsis,
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
+                                          ],
+                                        ],
+                                      ),
+                                    ),
+                                    const SizedBox(height: 12),
+                                  ],
+                                  if (_estimateError != null) ...[
+                                    Container(
+                                      padding: const EdgeInsets.all(12),
+                                      decoration: BoxDecoration(
+                                        color: Colors.red.withOpacity(.1),
+                                        borderRadius: BorderRadius.circular(8),
+                                      ),
+                                      child: Row(
+                                        children: [
+                                          const Icon(Icons.error_outline, color: Colors.red, size: 20),
+                                          const SizedBox(width: 8),
+                                          Expanded(
+                                            child: Text(
+                                              _estimateError!,
+                                              style: const TextStyle(color: Colors.red),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                    const SizedBox(height: 12),
+                                  ],
+                                  MoonFilledButton(
+                                    onTap: _estimatingPrice ? null : _estimatePrice,
+                                    isFullWidth: true,
+                                    leading: _estimatingPrice 
+                                        ? const SizedBox(
+                                            width: 16,
+                                            height: 16,
+                                            child: CircularProgressIndicator(strokeWidth: 2),
+                                          )
+                                        : const Icon(Icons.calculate_outlined),
+                                    label: Text(_estimatingPrice ? 'Estimating...': 'Estimate price'),
                                   ),
                                 ],
                               ),
