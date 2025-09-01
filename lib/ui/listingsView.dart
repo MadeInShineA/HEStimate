@@ -7,6 +7,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 
 import 'view_listing_page.dart';
 
+
 enum ListingsMode {
   all,      // Show all listings
   owner,    // Show only current user's listings
@@ -26,6 +27,7 @@ class ListingsPage extends StatefulWidget {
 
 class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClientMixin {
   final _searchCtrl = TextEditingController();
+  
 
   // Filters
   int _typeIndex = -1; // -1 = all, 0 = entire_home, 1 = room
@@ -34,6 +36,10 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
   bool _wifiOnly = false;
   bool _chargesInclOnly = false;
   bool _carParkOnly = false;
+  double? _globalMinPrice;
+  double? _globalMaxPrice;
+  double? _minPrice;
+  double? _maxPrice;
 
   @override
   // TODO: implement wantKeepAlive
@@ -41,10 +47,52 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
 
   late final Stream<QuerySnapshot<Map<String, dynamic>>> _listingsStream;
 
+  Future<void> _fetchPriceBounds() async {
+    Query<Map<String, dynamic>> baseQuery = FirebaseFirestore.instance.collection('listings');
+    
+    // Si on est en mode "owner", on filtre par l'utilisateur courant
+    if (widget.mode == ListingsMode.owner) {
+      final uid = FirebaseAuth.instance.currentUser?.uid;
+      if (uid == null) {
+        // Pas d'utilisateur connecté, pas de propriétés
+        setState(() {
+          _globalMinPrice = 0;
+          _globalMaxPrice = 10000;
+          _minPrice = 0;
+          _maxPrice = 10000;
+        });
+        return;
+      }
+      baseQuery = baseQuery.where('ownerUid', isEqualTo: uid);
+    }
+
+    final minSnap = await baseQuery
+        .orderBy('price', descending: false)
+        .limit(1)
+        .get();
+
+    final maxSnap = await baseQuery
+        .orderBy('price', descending: true)
+        .limit(1)
+        .get();
+
+    final minPrice = minSnap.docs.isNotEmpty ? (minSnap.docs.first['price'] ?? 0).toDouble() : 0;
+    final maxPrice = maxSnap.docs.isNotEmpty ? (maxSnap.docs.first['price'] ?? 0).toDouble() : 10000;
+
+    setState(() {
+      _globalMinPrice = minPrice;
+      _globalMaxPrice = maxPrice;
+      // initialise la sélection utilisateur
+      _minPrice = minPrice;
+      _maxPrice = maxPrice;
+    });
+  }
+
   @override
   void initState() {
     super.initState();
     _listingsStream = _baseQuery().snapshots();
+    _fetchPriceBounds();
   }
 
   @override
@@ -125,6 +173,13 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
     }
     if (_carParkOnly) {
       filtered = filtered.where((d) => d.data()['car_park'] == true).toList();
+    }
+
+        if (_minPrice != null && _maxPrice != null) {
+      filtered = filtered.where((d) {
+        final price = (d.data()['price'] ?? 0).toDouble();
+        return price >= _minPrice! && price <= _maxPrice!;
+      }).toList();
     }
 
     // Client-side sorting si on a des filtres qui ont pu changer l'ordre
@@ -266,6 +321,10 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
                       wifiOnly: _wifiOnly,
                       chargesInclOnly: _chargesInclOnly,
                       carParkOnly: _carParkOnly,
+                      minPrice: _minPrice ?? (_globalMinPrice ?? 0), // fallback in case null
+                      maxPrice: _maxPrice ?? (_globalMaxPrice ?? 10000),
+                      globalMinPrice: _globalMinPrice,
+                      globalMaxPrice: _globalMaxPrice,
                       onChanged: (f) => setState(() {
                         _typeIndex = f.typeIndex;
                         _sortIndex = f.sortIndex;
@@ -273,6 +332,8 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
                         _wifiOnly = f.wifiOnly;
                         _chargesInclOnly = f.chargesInclOnly;
                         _carParkOnly = f.carParkOnly;
+                        _minPrice = f.minPrice;
+                        _maxPrice = f.maxPrice;
                       }),
                     ),
                   ),
@@ -371,6 +432,10 @@ class _FilterBar extends StatelessWidget {
   final bool wifiOnly;
   final bool chargesInclOnly;
   final bool carParkOnly;
+  final double minPrice;
+  final double maxPrice;
+  final double? globalMinPrice;
+  final double? globalMaxPrice;
   final ValueChanged<_Filters> onChanged;
 
   const _FilterBar({
@@ -381,6 +446,10 @@ class _FilterBar extends StatelessWidget {
     required this.wifiOnly,
     required this.chargesInclOnly,
     required this.carParkOnly,
+    required this.minPrice,
+    required this.maxPrice,
+    required this.globalMinPrice,
+    required this.globalMaxPrice,
     required this.onChanged,
   });
 
@@ -397,7 +466,7 @@ class _FilterBar extends StatelessWidget {
             Expanded(
               child: MoonFormTextInput(
                 hasFloatingLabel: false,
-                hintText: 'Search by city, NPA…',
+                hintText: 'Search by city, NPA',
                 controller: searchCtrl,
                 leading: const Icon(Icons.search),
                 onChanged: (_) => onChanged(
@@ -533,6 +602,38 @@ class _FilterBar extends StatelessWidget {
             ),
           ],
         ),
+
+        if (globalMinPrice != null && globalMaxPrice != null) ...[
+          const SizedBox(height: 16),
+          Text(
+            "Price range (CHF)",
+            style: const TextStyle(fontWeight: FontWeight.bold),
+          ),
+          RangeSlider(
+            values: RangeValues(minPrice, maxPrice),
+            min: globalMinPrice!,
+            max: globalMaxPrice!,
+            divisions: 50,
+            labels: RangeLabels(
+              minPrice.round().toString(),
+              maxPrice.round().toString(),
+            ),
+            onChanged: (values) {
+              onChanged(
+                _Filters(
+                  typeIndex: typeIndex,
+                  sortIndex: sortIndex,
+                  furnishedOnly: furnishedOnly,
+                  wifiOnly: wifiOnly,
+                  chargesInclOnly: chargesInclOnly,
+                  carParkOnly: carParkOnly,
+                  minPrice: values.start,
+                  maxPrice: values.end,
+                ),
+              );
+            },
+          ),
+        ],
       ],
     );
   }
@@ -890,6 +991,9 @@ class _Filters {
   final bool wifiOnly;
   final bool chargesInclOnly;
   final bool carParkOnly;
+  final double? minPrice;
+  final double? maxPrice;
+
   _Filters({
     required this.typeIndex,
     required this.sortIndex,
@@ -897,5 +1001,7 @@ class _Filters {
     required this.wifiOnly,
     required this.chargesInclOnly,
     required this.carParkOnly,
+    this.minPrice,
+    this.maxPrice,
   });
 }
