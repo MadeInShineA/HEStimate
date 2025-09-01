@@ -188,7 +188,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
     }
     return null;
   }
-  
+
   Future<void> _estimatePrice() async {
     // Vérifier que nous avons les données nécessaires
     if (_latitude == null || 
@@ -921,7 +921,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
                                                 ),
                                               ),
                                               Text(
-                                                '${((_estimatedPrice! / 0.05).round() * 0.05).toStringAsFixed(2)} CHF/mois',
+                                                '${((_estimatedPrice! / 0.05).round() * 0.05).toStringAsFixed(2)} CHF/month',
                                                 style: const TextStyle(
                                                   fontSize: 18,
                                                   fontWeight: FontWeight.w800,
@@ -945,7 +945,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
                                                   ),
                                                 ),
                                                 Text(
-                                                  '${((_price! / 0.05).round() * 0.05).toStringAsFixed(2)} CHF/mois',
+                                                  '${((_price! / 0.05).round() * 0.05).toStringAsFixed(2)} CHF/month',
                                                   style: TextStyle(
                                                     color: cs.onSurface,
                                                     fontSize: 16,
@@ -954,7 +954,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
                                                   overflow: TextOverflow.ellipsis,
                                                 ),
                                                 Text(
-                                                  '${((_price! - _estimatedPrice!) / 0.05).round() * 0.05 >= 0 ? '+' : ''}${(((_price! - _estimatedPrice!) / 0.05).round() * 0.05).toStringAsFixed(2)} CHF/mois',
+                                                  '${((_price! - _estimatedPrice!) / 0.05).round() * 0.05 >= 0 ? '+' : ''}${(((_price! - _estimatedPrice!) / 0.05).round() * 0.05).toStringAsFixed(2)} CHF/month',
                                                   style: TextStyle(
                                                     color: (_price! > _estimatedPrice!) 
                                                         ? Colors.red 
