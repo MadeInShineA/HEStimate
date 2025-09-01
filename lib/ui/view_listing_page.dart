@@ -53,11 +53,14 @@ class _ViewListingPageState extends State<ViewListingPage> {
   late final PageController _photoCtrl;
 
   // Booking system
-  Set<DateTime> _selectedDates = {};
   List<Map<String, dynamic>> _bookingRequests = [];
   bool _showBookingPanel = false;
   final TextEditingController _messageController = TextEditingController();
   final TextEditingController _phoneController = TextEditingController();
+  final TextEditingController _startDateController = TextEditingController();
+  final TextEditingController _endDateController = TextEditingController();
+  DateTime? _selectedStart;
+  DateTime? _selectedEnd;
   bool _submittingBooking = false;
 
   bool get _isOwner =>
@@ -202,53 +205,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
     setState(() => _shownMonth = _monthDate(d));
   }
 
-  void _onDateTap(DateTime date) {
-    if (!_isStudent) return;
-    
-    final status = _getDateStatus(date);
-    if (status != null) return;
-    
-    if (!_isAvailableOn(date)) return;
-    
-    setState(() {
-      if (_selectedDates.isEmpty) {
-        _selectedDates.add(date);
-      } else if (_selectedDates.length == 1) {
-        final firstDate = _selectedDates.first;
-        final startDate = date.isBefore(firstDate) ? date : firstDate;
-        final endDate = date.isAfter(firstDate) ? date : firstDate;
-        
-        _selectedDates.clear();
-        
-        DateTime currentDate = startDate;
-        while (!currentDate.isAfter(endDate)) {
-          if (_isAvailableOn(currentDate) && _getDateStatus(currentDate) == null) {
-            _selectedDates.add(currentDate);
-          } else {
-            _selectedDates.clear();
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text('Some dates in the selected range are not available'),
-                backgroundColor: Colors.orange,
-              ),
-            );
-            _showBookingPanel = false;
-            return;
-          }
-          currentDate = currentDate.add(const Duration(days: 1));
-        }
-      } else {
-        _selectedDates.clear();
-        _selectedDates.add(date);
-      }
-      
-      _showBookingPanel = _selectedDates.isNotEmpty;
-      
-      if (_selectedDates.isEmpty) {
-        _messageController.clear();
-      }
-    });
-  }
+  void _onDateTap(DateTime date) {}
 
   List<Widget> _buildCalendar(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
@@ -286,8 +243,6 @@ class _ViewListingPageState extends State<ViewListingPage> {
       final date = DateTime(_shownMonth.year, _shownMonth.month, day);
       final available = _isAvailableOn(date);
       final status = _getDateStatus(date);
-      final isSelected = _selectedDates.contains(date);
-      final canSelect = _isStudent && available && status == null;
 
       Color bgColor = Colors.transparent;
       Color borderColor = cs.primary.withOpacity(.12);
@@ -301,10 +256,6 @@ class _ViewListingPageState extends State<ViewListingPage> {
         bgColor = Colors.orange.withOpacity(.2);
         borderColor = Colors.orange.withOpacity(.5);
         textColor = Colors.orange;
-      } else if (isSelected) {
-        bgColor = cs.primary.withOpacity(.3);
-        borderColor = cs.primary;
-        textColor = cs.primary;
       } else if (available) {
         bgColor = cs.primary.withOpacity(.12);
         borderColor = cs.primary.withOpacity(.45);
@@ -313,7 +264,6 @@ class _ViewListingPageState extends State<ViewListingPage> {
 
       items.add(
         GestureDetector(
-          onTap: canSelect ? () => _onDateTap(date) : null,
           child: Container(
             margin: const EdgeInsets.all(4),
             decoration: BoxDecoration(
@@ -338,54 +288,164 @@ class _ViewListingPageState extends State<ViewListingPage> {
     return items;
   }
 
-  Future<void> _submitBookingRequest() async {
-    if (_selectedDates.isEmpty || _messageController.text.trim().isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please select dates and add a message')),
-      );
-      return;
-    }
+  Widget _buildBookingPanel(BuildContext context) {
+    return StatefulBuilder(
+    builder: (context, setState) {
+      return AnimatedContainer(
+        duration: const Duration(milliseconds: 300),
+        padding: const EdgeInsets.all(16),
+        margin: const EdgeInsets.only(top: 16),
+        decoration: BoxDecoration(
+          color: Theme.of(context).cardColor,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: Theme.of(context).colorScheme.primary.withOpacity(0.3)),
+          boxShadow: [
+            BoxShadow(
+              color: Theme.of(context).colorScheme.primary.withOpacity(0.1),
+              blurRadius: 10,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // Start Date Picker
+            TextField(
+              readOnly: true,
+              controller: _startDateController,
+              decoration: InputDecoration(
+                labelText: 'Start Date',
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                contentPadding: const EdgeInsets.all(12),
+                suffixIcon: const Icon(Icons.calendar_today),
+              ),
+              onTap: () async {
+                final picked = await showDatePicker(
+                  context: context,
+                  initialDate: _selectedStart ?? DateTime.now(),
+                  firstDate: _availStart ?? DateTime.now(),
+                  lastDate: _availEnd ?? DateTime.now().add(const Duration(days: 365)),
+                );
+                if (picked != null) {
+                  setState(() {
+                    _selectedStart = picked;
+                    _startDateController.text = _fmt(picked);
+                    // Reset end date si elle est avant start
+                    if (_selectedEnd != null && _selectedEnd!.isBefore(picked)) {
+                      _selectedEnd = null;
+                      _endDateController.text = '';
+                    }
+                  });
+                }
+              },
+            ),
+            const SizedBox(height: 12),
 
+            // End Date Picker
+            TextField(
+              readOnly: true,
+              controller: _endDateController,
+              decoration: InputDecoration(
+                labelText: 'End Date',
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                contentPadding: const EdgeInsets.all(12),
+                suffixIcon: const Icon(Icons.calendar_today),
+              ),
+              onTap: () async {
+                final picked = await showDatePicker(
+                  context: context,
+                  initialDate: _selectedEnd ?? _selectedStart ?? DateTime.now(),
+                  firstDate: _selectedStart ?? DateTime.now(),
+                  lastDate: _availEnd ?? DateTime.now().add(const Duration(days: 365)),
+                );
+                if (picked != null) {
+                  setState(() {
+                    _selectedEnd = picked;
+                    _endDateController.text = _fmt(picked);
+                  });
+                }
+              },
+            ),
+
+            // Message to owner
+            const SizedBox(height: 12),
+            TextField(
+              controller: _messageController,
+              maxLines: 3,
+              decoration: InputDecoration(
+                labelText: 'Message to owner *',
+                hintText: 'Tell the owner about yourself...',
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                contentPadding: const EdgeInsets.all(12),
+              ),
+            ),
+
+            // Phone number
+            const SizedBox(height: 12),
+            TextField(
+              controller: _phoneController,
+              decoration: InputDecoration(
+                labelText: 'Phone number (optional)',
+                hintText: 'For contact purposes',
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                contentPadding: const EdgeInsets.all(12),
+              ),
+            ),
+
+            // Submit button
+            const SizedBox(height: 16),
+            MoonFilledButton(
+              isFullWidth: true,
+              onTap: _selectedStart != null &&
+                      _selectedEnd != null &&
+                      _messageController.text.isNotEmpty
+                  ? () => _submitBookingRequestWithDates(_selectedStart!, _selectedEnd!)
+                  : null,
+              label: const Text('Send booking request'),
+            ),
+          ],
+        ),
+      );
+    },
+  );
+}
+
+  Future<void> _submitBookingRequestWithDates(DateTime start, DateTime end) async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
 
     setState(() => _submittingBooking = true);
 
     try {
-      // Récupérer les infos de l'utilisateur
       final userDoc = await FirebaseFirestore.instance
           .collection('users')
           .doc(user.uid)
           .get();
-      
       final userData = userDoc.data() ?? {};
 
-      // Trier les dates sélectionnées
-      final sortedDates = _selectedDates.toList()..sort();
-      
-      // Créer la demande de réservation
       await FirebaseFirestore.instance.collection('booking_requests').add({
         'listingId': widget.listingId,
         'studentUid': user.uid,
         'ownerUid': _ownerUid,
-        'startDate': Timestamp.fromDate(sortedDates.first),
-        'endDate': Timestamp.fromDate(sortedDates.last),
+        'startDate': Timestamp.fromDate(start),
+        'endDate': Timestamp.fromDate(end),
         'message': _messageController.text.trim(),
         'studentName': userData['name'] ?? user.email,
         'studentEmail': user.email,
-        'studentPhone': _phoneController.text.trim().isEmpty 
-            ? null 
-            : _phoneController.text.trim(),
+        'studentPhone': _phoneController.text.trim().isEmpty ? null : _phoneController.text.trim(),
         'status': 'pending',
         'createdAt': Timestamp.now(),
         'updatedAt': Timestamp.now(),
       });
 
-      // Recharger les données
       await _loadBookingRequests();
 
       setState(() {
-        _selectedDates.clear();
         _showBookingPanel = false;
         _messageController.clear();
         _phoneController.clear();
@@ -394,137 +454,17 @@ class _ViewListingPageState extends State<ViewListingPage> {
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Booking request sent successfully!'),
-            backgroundColor: Colors.green,
-          ),
+          const SnackBar(content: Text('Booking request sent successfully!'), backgroundColor: Colors.green),
         );
       }
     } catch (e) {
       setState(() => _submittingBooking = false);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error sending request: $e'),
-            backgroundColor: Colors.red,
-          ),
+          SnackBar(content: Text('Error sending request: $e'), backgroundColor: Colors.red),
         );
       }
     }
-  }
-
-  Widget _buildBookingPanel(BuildContext context) {
-    if (!_showBookingPanel) return const SizedBox.shrink();
-
-    final cs = Theme.of(context).colorScheme;
-    final sortedDates = _selectedDates.toList()..sort();
-    
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 300),
-      padding: const EdgeInsets.all(16),
-      margin: const EdgeInsets.only(top: 16),
-      decoration: BoxDecoration(
-        color: Theme.of(context).cardColor,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: cs.primary.withOpacity(0.3)),
-        boxShadow: [
-          BoxShadow(
-            color: cs.primary.withOpacity(0.1),
-            blurRadius: 10,
-            offset: const Offset(0, 4),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Row(
-            children: [
-              Icon(Icons.event_note, color: cs.primary),
-              const SizedBox(width: 8),
-              Text(
-                'Book this listing',
-                style: TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.w800,
-                  color: cs.onSurface,
-                ),
-              ),
-              const Spacer(),
-              TextButton(
-                onPressed: () {
-                  setState(() {
-                    _selectedDates.clear();
-                    _showBookingPanel = false;
-                    _messageController.clear();
-                  });
-                },
-                child: const Text('Cancel'),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: cs.primary.withOpacity(0.1),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Text(
-              'Selected: ${_fmt(sortedDates.first)}${sortedDates.length > 1 ? ' → ${_fmt(sortedDates.last)}' : ''} (${sortedDates.length} day${sortedDates.length > 1 ? 's' : ''})',
-              style: TextStyle(
-                color: cs.primary,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ),
-          const SizedBox(height: 16),
-          TextField(
-            controller: _messageController,
-            maxLines: 3,
-            decoration: InputDecoration(
-              labelText: 'Message to owner *',
-              hintText: 'Tell the owner about yourself...',
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(8),
-              ),
-              contentPadding: const EdgeInsets.all(12),
-            ),
-          ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: _phoneController,
-            decoration: InputDecoration(
-              labelText: 'Phone number (optional)',
-              hintText: 'For contact purposes',
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(8),
-              ),
-              contentPadding: const EdgeInsets.all(12),
-            ),
-          ),
-          const SizedBox(height: 16),
-          MoonFilledButton(
-            isFullWidth: true,
-            onTap: _submittingBooking ? null : _submitBookingRequest,
-            label: _submittingBooking 
-                ? const Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      ),
-                      SizedBox(width: 8),
-                      Text('Sending...'),
-                    ],
-                  )
-                : const Text('Send booking request'),
-          ),
-        ],
-      ),
-    );
   }
 
   @override
@@ -963,12 +903,6 @@ class _ViewListingPageState extends State<ViewListingPage> {
                                           cs.primary.withOpacity(.6),
                                         ),
                                         if (_isStudent) ...[
-                                          _buildLegendItem(
-                                            context, 
-                                            'Selected', 
-                                            cs.primary.withOpacity(.3),
-                                            cs.primary,
-                                          ),
                                           _buildLegendItem(
                                             context, 
                                             'Pending', 
