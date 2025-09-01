@@ -74,7 +74,23 @@ class RequestsTab extends StatefulWidget {
   State<RequestsTab> createState() => _RequestsTabState();
 }
 
-class _RequestsTabState extends State<RequestsTab> {
+class _RequestsTabState extends State<RequestsTab> with AutomaticKeepAliveClientMixin {
+  late final Stream<QuerySnapshot> _requestsStream;
+
+  @override
+  bool get wantKeepAlive => true; // garde l'état du tab
+
+  @override
+  void initState() {
+    super.initState();
+    _requestsStream = FirebaseFirestore.instance
+        .collection('booking_requests')
+        .where('ownerUid', isEqualTo: widget.ownerUid)
+        .where('status', isEqualTo: 'pending')
+        .orderBy('createdAt', descending: true)
+        .snapshots();
+  }
+
   Future<void> _updateBookingStatus(String bookingId, String status) async {
     try {
       await FirebaseFirestore.instance
@@ -107,12 +123,7 @@ class _RequestsTabState extends State<RequestsTab> {
     final cs = Theme.of(context).colorScheme;
     
     return StreamBuilder<QuerySnapshot>(
-      stream: FirebaseFirestore.instance
-          .collection('booking_requests')
-          .where('ownerUid', isEqualTo: widget.ownerUid)
-          .where('status', isEqualTo: 'pending')
-          .orderBy('createdAt', descending: true)
-          .snapshots(),
+      stream: _requestsStream,
       builder: (context, snapshot) {
         if (snapshot.hasError) {
           return Center(child: Text('Error: ${snapshot.error}'));
@@ -282,7 +293,23 @@ class ReviewsTab extends StatefulWidget {
   State<ReviewsTab> createState() => _ReviewsTabState();
 }
 
-class _ReviewsTabState extends State<ReviewsTab> {
+class _ReviewsTabState extends State<ReviewsTab> with AutomaticKeepAliveClientMixin {
+  late final Stream<QuerySnapshot> _requestsStream;
+
+  @override
+  bool get wantKeepAlive => true; // garde l'état du tab
+
+  @override
+  void initState() {
+    super.initState();
+    _requestsStream = FirebaseFirestore.instance
+        .collection('booking_requests')
+        .where('ownerUid', isEqualTo: widget.ownerUid)
+        .where('status', isEqualTo: 'approved')
+        .orderBy('endDate', descending: true)
+        .snapshots();
+  }
+
   Future<void> _showReviewDialog(Map<String, dynamic> bookingData, String bookingId) async {
     final TextEditingController reviewController = TextEditingController();
     int rating = 5;
@@ -397,12 +424,7 @@ class _ReviewsTabState extends State<ReviewsTab> {
     final cs = Theme.of(context).colorScheme;
     
     return StreamBuilder<QuerySnapshot>(
-      stream: FirebaseFirestore.instance
-          .collection('booking_requests')
-          .where('ownerUid', isEqualTo: widget.ownerUid)
-          .where('status', isEqualTo: 'approved')
-          .orderBy('endDate', descending: true)
-          .snapshots(),
+      stream: _requestsStream,
       builder: (context, snapshot) {
         if (snapshot.hasError) {
           return Center(child: Text('Error: ${snapshot.error}'));
@@ -534,7 +556,22 @@ class StudentsTab extends StatefulWidget {
   State<StudentsTab> createState() => _StudentsTabState();
 }
 
-class _StudentsTabState extends State<StudentsTab> {
+class _StudentsTabState extends State<StudentsTab> with AutomaticKeepAliveClientMixin {
+  late final Stream<QuerySnapshot> _requestsStream;
+
+  @override
+  bool get wantKeepAlive => true; // garde l'état du tab
+
+  @override
+  void initState() {
+    super.initState();
+    _requestsStream = FirebaseFirestore.instance
+          .collection('booking_requests')
+          .where('ownerUid', isEqualTo: widget.ownerUid)
+          .where('status', isEqualTo: 'approved')
+          .snapshots();
+  }
+
   Future<void> _showContactOptions(Map<String, dynamic> studentData) async {
     return showModalBottomSheet(
       context: context,
@@ -602,11 +639,7 @@ class _StudentsTabState extends State<StudentsTab> {
     final cs = Theme.of(context).colorScheme;
     
     return StreamBuilder<QuerySnapshot>(
-      stream: FirebaseFirestore.instance
-          .collection('booking_requests')
-          .where('ownerUid', isEqualTo: widget.ownerUid)
-          .where('status', isEqualTo: 'approved')
-          .snapshots(),
+      stream: _requestsStream,
       builder: (context, snapshot) {
         if (snapshot.hasError) {
           return Center(child: Text('Error: ${snapshot.error}'));
