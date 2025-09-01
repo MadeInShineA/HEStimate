@@ -8,6 +8,7 @@ import 'package:moon_design/moon_design.dart';
 import 'package:http/http.dart' as http;
 
 import 'edit_listing_page.dart';
+import 'rate_listing_page.dart'; // ✅ Ajout : pour ouvrir la page d'avis en lecture seule
 
 class ViewListingPage extends StatefulWidget {
   final String listingId;
@@ -136,11 +137,10 @@ class _ViewListingPageState extends State<ViewListingPage> {
   }
 
   Future<void> _estimatePrice() async {
-    // Vérifier que nous avons les données nécessaires
-    if (_latitude == null || 
-        _longitude == null || 
-        _surface == null || 
-        _rooms == null || 
+    if (_latitude == null ||
+        _longitude == null ||
+        _surface == null ||
+        _rooms == null ||
         _floor == null ||
         _distTransportKm == null ||
         _proximHesKm == null) {
@@ -175,9 +175,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
 
       final response = await http.post(
         Uri.parse('https://hestimate-api-production.up.railway.app/estimate-price'),
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: {'Content-Type': 'application/json'},
         body: jsonEncode(body),
       );
 
@@ -206,6 +204,103 @@ class _ViewListingPageState extends State<ViewListingPage> {
         _estimatingPrice = false;
       });
     }
+  }
+
+  // ⭐️ Bloc résumé des notes (lecture seule, cliquable)
+  Widget _buildRatingSummary() {
+    final cs = Theme.of(context).colorScheme;
+
+    Widget starsRow(double avg, int count) {
+      final full = avg.round().clamp(0, 5);
+      return Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ...List.generate(5, (i) {
+            final filled = i < full;
+            return Padding(
+              padding: const EdgeInsets.only(right: 2),
+              child: Icon(
+                filled ? Icons.star_rounded : Icons.star_border_rounded,
+                size: 18,
+                color: filled ? cs.primary : cs.onSurface.withOpacity(.35),
+              ),
+            );
+          }),
+          const SizedBox(width: 8),
+          Text(
+            count == 0 ? 'No ratings yet' : '${avg.toStringAsFixed(1)} ($count)',
+            style: TextStyle(
+              fontSize: 13,
+              color: cs.onSurface.withOpacity(.85),
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      );
+    }
+
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: FirebaseFirestore.instance
+          .collection('ratings')
+          .where('listingId', isEqualTo: widget.listingId)
+          .snapshots(),
+      builder: (context, snap) {
+        double avg = 0;
+        int count = 0;
+        if (snap.hasData) {
+          final docs = snap.data!.docs;
+          count = docs.length;
+          if (count > 0) {
+            final sum = docs.fold<double>(
+              0.0,
+              (acc, d) => acc + ((d.data()['stars'] as num?)?.toDouble() ?? 0.0),
+            );
+            avg = sum / count;
+          }
+        }
+
+        return InkWell(
+          onTap: () {
+            Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => RateListingPage(
+                  listingId: widget.listingId,
+                  allowAdd: false, // ✅ lecture seule
+                ),
+              ),
+            );
+          },
+          borderRadius: BorderRadius.circular(10),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            decoration: BoxDecoration(
+              color: Theme.of(context).cardColor.withOpacity(.9),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: cs.primary.withOpacity(0.12)),
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                starsRow(avg, count),
+                Row(
+                  children: [
+                    Text(
+                      'See reviews',
+                      style: TextStyle(
+                        color: cs.primary,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(width: 4),
+                    Icon(Icons.chevron_right, color: cs.primary),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
   }
 
   // Calendrier
@@ -325,14 +420,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
                 if (canPop) {
                   Navigator.of(context).pop();
                 } else {
-                  // No back stack (e.g., after pushReplacement) → go Home.
-                  Navigator.of(
-                    context,
-                  ).pushNamedAndRemoveUntil('/home', (route) => false);
-                  // If you want to land on a specific tab inside HomeMenuPage,
-                  // pass an index as arguments, e.g.:
-                  // Navigator.of(context).pushNamedAndRemoveUntil('/home', (route) => false, arguments: 0); // Dashboard
-                  // Navigator.of(context).pushNamedAndRemoveUntil('/home', (route) => false, arguments: 1); // Properties
+                  Navigator.of(context).pushNamedAndRemoveUntil('/home', (route) => false);
                 }
               },
             );
@@ -346,8 +434,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
                 Navigator.of(context)
                     .push(
                       MaterialPageRoute(
-                        builder: (_) =>
-                            EditListingPage(listingId: widget.listingId),
+                        builder: (_) => EditListingPage(listingId: widget.listingId),
                       ),
                     )
                     .then((_) => _load());
@@ -359,435 +446,204 @@ class _ViewListingPageState extends State<ViewListingPage> {
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : _error != null
-          ? Center(
-              child: Text(
-                _error!,
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                  color: Colors.redAccent,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-            )
-          : LayoutBuilder(
-              builder: (context, constraints) {
-                final isWide = constraints.maxWidth >= 900;
-                const contentMax = 1000.0;
-
-                // ❗ Fix: ne jamais produire un padding négatif
-                final horizontalPad = math.max(
-                  16.0,
-                  (constraints.maxWidth - contentMax) / 2 + 16.0,
-                );
-
-                return Container(
-                  decoration: bg,
-                  child: SingleChildScrollView(
-                    padding: EdgeInsets.symmetric(
-                      horizontal: isWide ? horizontalPad : 16.0,
-                      vertical: 16.0,
+              ? Center(
+                  child: Text(
+                    _error!,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      color: Colors.redAccent,
+                      fontWeight: FontWeight.w700,
                     ),
-                    child: Center(
-                      child: ConstrainedBox(
-                        constraints: const BoxConstraints(maxWidth: contentMax),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            // Photos
-                            _MoonCard(
-                              isDark: isDark,
-                              child: _photos.isEmpty
-                                  ? Container(
-                                      height: 180,
-                                      alignment: Alignment.center,
-                                      child: Text(
-                                        'No photos',
-                                        style: TextStyle(
-                                          color: cs.onSurface.withOpacity(.7),
-                                        ),
-                                      ),
-                                    )
-                                  : SizedBox(
-                                      height: 220,
-                                      child: PageView.builder(
-                                        controller: _photoCtrl,
-                                        padEnds: false,
-                                        itemCount: _photos.length,
-                                        itemBuilder: (_, i) {
-                                          return Padding(
-                                            padding: const EdgeInsets.symmetric(
-                                              horizontal: 6,
+                  ),
+                )
+              : LayoutBuilder(
+                  builder: (context, constraints) {
+                    final isWide = constraints.maxWidth >= 900;
+                    const contentMax = 1000.0;
+
+                    // Pas de padding négatif
+                    final horizontalPad = math.max(
+                      16.0,
+                      (constraints.maxWidth - contentMax) / 2 + 16.0,
+                    );
+
+                    return Container(
+                      decoration: bg,
+                      child: SingleChildScrollView(
+                        padding: EdgeInsets.symmetric(
+                          horizontal: isWide ? horizontalPad : 16.0,
+                          vertical: 16.0,
+                        ),
+                        child: Center(
+                          child: ConstrainedBox(
+                            constraints: const BoxConstraints(maxWidth: contentMax),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: [
+                                // Photos
+                                _MoonCard(
+                                  isDark: isDark,
+                                  child: _photos.isEmpty
+                                      ? Container(
+                                          height: 180,
+                                          alignment: Alignment.center,
+                                          child: Text(
+                                            'No photos',
+                                            style: TextStyle(
+                                              color: cs.onSurface.withOpacity(.7),
                                             ),
-                                            child: ClipRRect(
-                                              borderRadius:
-                                                  BorderRadius.circular(14),
-                                              child: Stack(
-                                                fit: StackFit.expand,
-                                                children: [
-                                                  Image.network(
-                                                    _photos[i],
-                                                    fit: BoxFit.cover,
-                                                  ),
-                                                  Positioned(
-                                                    right: 8,
-                                                    bottom: 8,
-                                                    child: Container(
-                                                      padding:
-                                                          const EdgeInsets.symmetric(
-                                                            horizontal: 8,
-                                                            vertical: 4,
-                                                          ),
-                                                      decoration: BoxDecoration(
-                                                        color: Colors.black54,
-                                                        borderRadius:
-                                                            BorderRadius.circular(
-                                                              12,
-                                                            ),
+                                          ),
+                                        )
+                                      : SizedBox(
+                                          height: 220,
+                                          child: PageView.builder(
+                                            controller: _photoCtrl,
+                                            padEnds: false,
+                                            itemCount: _photos.length,
+                                            itemBuilder: (_, i) {
+                                              return Padding(
+                                                padding: const EdgeInsets.symmetric(horizontal: 6),
+                                                child: ClipRRect(
+                                                  borderRadius: BorderRadius.circular(14),
+                                                  child: Stack(
+                                                    fit: StackFit.expand,
+                                                    children: [
+                                                      Image.network(
+                                                        _photos[i],
+                                                        fit: BoxFit.cover,
                                                       ),
-                                                      child: Text(
-                                                        '${i + 1}/${_photos.length}',
-                                                        style: const TextStyle(
-                                                          color: Colors.white,
-                                                          fontSize: 12,
+                                                      Positioned(
+                                                        right: 8,
+                                                        bottom: 8,
+                                                        child: Container(
+                                                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                                          decoration: BoxDecoration(
+                                                            color: Colors.black54,
+                                                            borderRadius: BorderRadius.circular(12),
+                                                          ),
+                                                          child: Text(
+                                                            '${i + 1}/${_photos.length}',
+                                                            style: const TextStyle(
+                                                              color: Colors.white,
+                                                              fontSize: 12,
+                                                            ),
+                                                          ),
                                                         ),
                                                       ),
-                                                    ),
+                                                    ],
                                                   ),
-                                                ],
-                                              ),
-                                            ),
-                                          );
-                                        },
-                                      ),
-                                    ),
-                            ),
-
-                            const SizedBox(height: 16),
-
-                            // Header + bouton Edit (si propriétaire)
-                            _MoonCard(
-                              isDark: isDark,
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Row(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Expanded(
-                                        child: Column(
-                                          crossAxisAlignment:
-                                              CrossAxisAlignment.start,
-                                          children: [
-                                            Text(
-                                              _type == 'entire_home'
-                                                  ? 'Entire home'
-                                                  : 'Single room',
-                                              style: TextStyle(
-                                                fontSize: 18,
-                                                fontWeight: FontWeight.w800,
-                                                color: cs.onSurface,
-                                              ),
-                                            ),
-                                            const SizedBox(height: 4),
-                                            Text(
-                                              '$_address, $_npa $_city',
-                                              style: TextStyle(
-                                                fontSize: 14,
-                                                color: cs.onSurface.withOpacity(
-                                                  .8,
                                                 ),
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                      if (_isOwner)
-                                        MoonButton(
-                                          onTap: () async {
-                                            await Navigator.of(context).push(
-                                              MaterialPageRoute(
-                                                builder: (_) => EditListingPage(
-                                                  listingId: widget.listingId,
-                                                ),
-                                              ),
-                                            );
-                                            _load();
-                                          },
-                                          leading: const Icon(Icons.edit),
-                                          label: const Text('Edit'),
-                                        ),
-                                    ],
-                                  ),
-                                  const SizedBox(height: 12),
-                                  Wrap(
-                                    spacing: 16,
-                                    runSpacing: 8,
-                                    children: [
-                                      _chip(
-                                        context,
-                                        icon: Icons.price_change_outlined,
-                                        text: _price != null
-                                            ? '${_price!.toStringAsFixed(0)} CHF/mo'
-                                            : '—',
-                                      ),
-                                      _chip(
-                                        context,
-                                        icon: Icons.square_foot_outlined,
-                                        text: _surface != null
-                                            ? '${_surface!.toStringAsFixed(0)} m²'
-                                            : '—',
-                                      ),
-                                      _chip(
-                                        context,
-                                        icon: Icons.meeting_room_outlined,
-                                        text: _rooms != null
-                                            ? '$_rooms rooms'
-                                            : '—',
-                                      ),
-                                      _chip(
-                                        context,
-                                        icon: Icons.unfold_more_outlined,
-                                        text: _floor != null
-                                            ? 'Floor $_floor'
-                                            : '—',
-                                      ),
-                                      _chip(
-                                        context,
-                                        icon: Icons.directions_bus_outlined,
-                                        text: _distTransportKm != null
-                                            ? '${_distTransportKm!.toStringAsFixed(1)} km PT'
-                                            : '—',
-                                      ),
-                                      _chip(
-                                        context,
-                                        icon: Icons.school_outlined,
-                                        text: _proximHesKm != null
-                                            ? '${_proximHesKm!.toStringAsFixed(1)} km HES'
-                                            : '—',
-                                      ),
-                                    ],
-                                  ),
-                                ],
-                              ),
-                            ),
-
-                            const SizedBox(height: 16),
-
-                            // Amenities
-                            _MoonCard(
-                              isDark: isDark,
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      const Icon(Icons.tune, size: 20),
-                                      const SizedBox(width: 8),
-                                      Text(
-                                        'Amenities',
-                                        style: TextStyle(
-                                          fontSize: 18,
-                                          fontWeight: FontWeight.w800,
-                                          color: cs.onSurface,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                  const SizedBox(height: 10),
-                                  Wrap(
-                                    spacing: 8,
-                                    runSpacing: 8,
-                                    children: [
-                                      _amenityPill(
-                                        context,
-                                        'Furnished',
-                                        _isFurnish,
-                                      ),
-                                      _amenityPill(
-                                        context,
-                                        'Wifi included',
-                                        _wifiIncl,
-                                      ),
-                                      _amenityPill(
-                                        context,
-                                        'Charges included',
-                                        _chargesIncl,
-                                      ),
-                                      _amenityPill(
-                                        context,
-                                        'Car park',
-                                        _carPark,
-                                      ),
-                                    ],
-                                  ),
-                                ],
-                              ),
-                            ),
-
-                            const SizedBox(height: 16),
-
-                            _MoonCard(
-                              isDark: isDark,
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      const Icon(Icons.analytics_outlined, size: 20),
-                                      const SizedBox(width: 8),
-                                      Text(
-                                        'Price estimation',
-                                        style: TextStyle(
-                                          fontSize: 18,
-                                          fontWeight: FontWeight.w800,
-                                          color: cs.onSurface,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                  const SizedBox(height: 12),
-                                  if (_estimatedPrice != null) ...[
-                                    Container(
-                                      padding: const EdgeInsets.all(16),
-                                      decoration: BoxDecoration(
-                                        borderRadius: BorderRadius.circular(12),
-                                        border: Border.all(
-                                          color: cs.primary.withOpacity(0.12),
-                                          width: 1,
-                                        ),
-                                      ),
-                                      child: Row(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      children: [
-                                        Icon(Icons.trending_up, color: cs.primary, size: 24),
-                                        const SizedBox(width: 12),
-                                        Expanded( // ✅ ça permet au texte de se couper si nécessaire
-                                          child: Column(
-                                            crossAxisAlignment: CrossAxisAlignment.start,
-                                            children: [
-                                              Text(
-                                                'Estimated price',
-                                                style: TextStyle(
-                                                  color: cs.onSurface.withOpacity(.8),
-                                                  fontSize: 14,
-                                                ),
-                                              ),
-                                              Text(
-                                                '${((_estimatedPrice! / 0.05).round() * 0.05).toStringAsFixed(2)} CHF/mois',
-                                                style: const TextStyle(
-                                                  fontSize: 18,
-                                                  fontWeight: FontWeight.w800,
-                                                ),
-                                                overflow: TextOverflow.ellipsis, // ✅ coupe si trop long
-                                              ),
-                                            ],
+                                              );
+                                            },
                                           ),
                                         ),
-                                        if (_price != null) ...[
-                                          const SizedBox(width: 12),
-                                          Expanded( // ✅ pareil pour la partie "Actual price"
+                                ),
+
+                                const SizedBox(height: 16),
+
+                                // Header + Edit (si owner)
+                                _MoonCard(
+                                  isDark: isDark,
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Row(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          Expanded(
                                             child: Column(
-                                              crossAxisAlignment: CrossAxisAlignment.end,
+                                              crossAxisAlignment: CrossAxisAlignment.start,
                                               children: [
                                                 Text(
-                                                  'Actual price',
+                                                  _type == 'entire_home' ? 'Entire home' : 'Single room',
                                                   style: TextStyle(
-                                                    color: cs.onSurface.withOpacity(.8),
-                                                    fontSize: 14,
-                                                  ),
-                                                ),
-                                                Text(
-                                                  '${((_price! / 0.05).round() * 0.05).toStringAsFixed(2)} CHF/mois',
-                                                  style: TextStyle(
+                                                    fontSize: 18,
+                                                    fontWeight: FontWeight.w800,
                                                     color: cs.onSurface,
-                                                    fontSize: 16,
-                                                    fontWeight: FontWeight.w600,
                                                   ),
-                                                  overflow: TextOverflow.ellipsis,
                                                 ),
+                                                const SizedBox(height: 4),
                                                 Text(
-                                                  '${((_price! - _estimatedPrice!) / 0.05).round() * 0.05 >= 0 ? '+' : ''}${(((_price! - _estimatedPrice!) / 0.05).round() * 0.05).toStringAsFixed(2)} CHF/mois',
+                                                  '$_address, $_npa $_city',
                                                   style: TextStyle(
-                                                    color: (_price! > _estimatedPrice!) 
-                                                        ? Colors.red 
-                                                        : Colors.green,
-                                                    fontSize: 12,
-                                                    fontWeight: FontWeight.w600,
-                                                    ),
-                                                  overflow: TextOverflow.ellipsis,
+                                                    fontSize: 14,
+                                                    color: cs.onSurface.withOpacity(.8),
                                                   ),
-                                                ],
-                                              ),
+                                                ),
+                                              ],
                                             ),
-                                          ],
+                                          ),
+                                          if (_isOwner)
+                                            MoonButton(
+                                              onTap: () async {
+                                                await Navigator.of(context).push(
+                                                  MaterialPageRoute(
+                                                    builder: (_) => EditListingPage(listingId: widget.listingId),
+                                                  ),
+                                                );
+                                                _load();
+                                              },
+                                              leading: const Icon(Icons.edit),
+                                              label: const Text('Edit'),
+                                            ),
                                         ],
                                       ),
-                                    ),
-                                    const SizedBox(height: 12),
-                                  ],
-                                  if (_estimateError != null) ...[
-                                    Container(
-                                      padding: const EdgeInsets.all(12),
-                                      decoration: BoxDecoration(
-                                        color: Colors.red.withOpacity(.1),
-                                        borderRadius: BorderRadius.circular(8),
-                                      ),
-                                      child: Row(
+                                      const SizedBox(height: 12),
+                                      Wrap(
+                                        spacing: 16,
+                                        runSpacing: 8,
                                         children: [
-                                          const Icon(Icons.error_outline, color: Colors.red, size: 20),
-                                          const SizedBox(width: 8),
-                                          Expanded(
-                                            child: Text(
-                                              _estimateError!,
-                                              style: const TextStyle(color: Colors.red),
-                                            ),
+                                          _chip(
+                                            context,
+                                            icon: Icons.price_change_outlined,
+                                            text: _price != null ? '${_price!.toStringAsFixed(0)} CHF/mo' : '—',
+                                          ),
+                                          _chip(
+                                            context,
+                                            icon: Icons.square_foot_outlined,
+                                            text: _surface != null ? '${_surface!.toStringAsFixed(0)} m²' : '—',
+                                          ),
+                                          _chip(
+                                            context,
+                                            icon: Icons.meeting_room_outlined,
+                                            text: _rooms != null ? '$_rooms rooms' : '—',
+                                          ),
+                                          _chip(
+                                            context,
+                                            icon: Icons.unfold_more_outlined,
+                                            text: _floor != null ? 'Floor $_floor' : '—',
+                                          ),
+                                          _chip(
+                                            context,
+                                            icon: Icons.directions_bus_outlined,
+                                            text: _distTransportKm != null ? '${_distTransportKm!.toStringAsFixed(1)} km PT' : '—',
+                                          ),
+                                          _chip(
+                                            context,
+                                            icon: Icons.school_outlined,
+                                            text: _proximHesKm != null ? '${_proximHesKm!.toStringAsFixed(1)} km HES' : '—',
                                           ),
                                         ],
                                       ),
-                                    ),
-                                    const SizedBox(height: 12),
-                                  ],
-                                  MoonFilledButton(
-                                    onTap: _estimatingPrice ? null : _estimatePrice,
-                                    isFullWidth: true,
-                                    leading: _estimatingPrice 
-                                        ? const SizedBox(
-                                            width: 16,
-                                            height: 16,
-                                            child: CircularProgressIndicator(strokeWidth: 2),
-                                          )
-                                        : const Icon(Icons.calculate_outlined),
-                                    label: Text(_estimatingPrice ? 'Estimating...': 'Estimate price'),
+                                    ],
                                   ),
-                                ],
-                              ),
-                            ),
+                                ),
 
-                            const SizedBox(height: 16),
+                                const SizedBox(height: 16),
 
-                            // Calendrier disponibilité
-                            _MoonCard(
-                              isDark: isDark,
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.stretch,
-                                children: [
-                                  Row(
-                                    mainAxisAlignment:
-                                        MainAxisAlignment.spaceBetween,
+                                // ✅ Bloc Reviews (lecture seule + cliquable)
+                                _MoonCard(
+                                  isDark: isDark,
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
                                     children: [
                                       Row(
                                         mainAxisSize: MainAxisSize.min,
                                         children: [
-                                          const Icon(
-                                            Icons.calendar_today_outlined,
-                                            size: 20,
-                                          ),
+                                          const Icon(Icons.reviews_outlined, size: 20),
                                           const SizedBox(width: 8),
                                           Text(
-                                            'Availability',
+                                            'Reviews',
                                             style: TextStyle(
                                               fontSize: 18,
                                               fontWeight: FontWeight.w800,
@@ -796,115 +652,303 @@ class _ViewListingPageState extends State<ViewListingPage> {
                                           ),
                                         ],
                                       ),
+                                      const SizedBox(height: 10),
+                                      _buildRatingSummary(),
+                                    ],
+                                  ),
+                                ),
+
+                                const SizedBox(height: 16),
+
+                                // Amenities
+                                _MoonCard(
+                                  isDark: isDark,
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
                                       Row(
+                                        mainAxisSize: MainAxisSize.min,
                                         children: [
-                                          IconButton(
-                                            tooltip: 'Previous month',
-                                            onPressed: _prevMonth,
-                                            icon: const Icon(
-                                              Icons.chevron_left,
-                                            ),
-                                          ),
+                                          const Icon(Icons.tune, size: 20),
+                                          const SizedBox(width: 8),
                                           Text(
-                                            '${_shownMonth.year}-${_shownMonth.month.toString().padLeft(2, '0')}',
+                                            'Amenities',
                                             style: TextStyle(
-                                              fontWeight: FontWeight.w700,
+                                              fontSize: 18,
+                                              fontWeight: FontWeight.w800,
                                               color: cs.onSurface,
-                                            ),
-                                          ),
-                                          IconButton(
-                                            tooltip: 'Next month',
-                                            onPressed: _nextMonth,
-                                            icon: const Icon(
-                                              Icons.chevron_right,
                                             ),
                                           ),
                                         ],
                                       ),
+                                      const SizedBox(height: 10),
+                                      Wrap(
+                                        spacing: 8,
+                                        runSpacing: 8,
+                                        children: [
+                                          _amenityPill(context, 'Furnished', _isFurnish),
+                                          _amenityPill(context, 'Wifi included', _wifiIncl),
+                                          _amenityPill(context, 'Charges included', _chargesIncl),
+                                          _amenityPill(context, 'Car park', _carPark),
+                                        ],
+                                      ),
                                     ],
                                   ),
-                                  const SizedBox(height: 6),
-                                  if (_availStart == null)
-                                    Text(
-                                      'No availability information.',
-                                      style: TextStyle(
-                                        color: cs.onSurface.withOpacity(.7),
+                                ),
+
+                                const SizedBox(height: 16),
+
+                                // Price estimation
+                                _MoonCard(
+                                  isDark: isDark,
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          const Icon(Icons.analytics_outlined, size: 20),
+                                          const SizedBox(width: 8),
+                                          Text(
+                                            'Price estimation',
+                                            style: TextStyle(
+                                              fontSize: 18,
+                                              fontWeight: FontWeight.w800,
+                                              color: cs.onSurface,
+                                            ),
+                                          ),
+                                        ],
                                       ),
-                                    )
-                                  else ...[
-                                    GridView.count(
-                                      shrinkWrap: true,
-                                      physics:
-                                          const NeverScrollableScrollPhysics(),
-                                      crossAxisCount: 7,
-                                      children: _buildCalendar(context),
-                                    ),
-                                    const SizedBox(height: 8),
-                                    Row(
-                                      children: [
+                                      const SizedBox(height: 12),
+                                      if (_estimatedPrice != null) ...[
                                         Container(
-                                          width: 16,
-                                          height: 16,
+                                          padding: const EdgeInsets.all(16),
                                           decoration: BoxDecoration(
-                                            color: cs.primary.withOpacity(.25),
-                                            borderRadius: BorderRadius.circular(
-                                              4,
-                                            ),
-                                            border: Border.all(
-                                              color: cs.primary.withOpacity(.6),
-                                            ),
+                                            borderRadius: BorderRadius.circular(12),
+                                            border: Border.all(color: cs.primary.withOpacity(0.12), width: 1),
+                                          ),
+                                          child: Row(
+                                            crossAxisAlignment: CrossAxisAlignment.start,
+                                            children: [
+                                              Icon(Icons.trending_up, color: cs.primary, size: 24),
+                                              const SizedBox(width: 12),
+                                              Expanded(
+                                                child: Column(
+                                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                                  children: [
+                                                    Text(
+                                                      'Estimated price',
+                                                      style: TextStyle(
+                                                        color: cs.onSurface.withOpacity(.8),
+                                                        fontSize: 14,
+                                                      ),
+                                                    ),
+                                                    Text(
+                                                      '${((_estimatedPrice! / 0.05).round() * 0.05).toStringAsFixed(2)} CHF/mois',
+                                                      style: const TextStyle(
+                                                        fontSize: 18,
+                                                        fontWeight: FontWeight.w800,
+                                                      ),
+                                                      overflow: TextOverflow.ellipsis,
+                                                    ),
+                                                  ],
+                                                ),
+                                              ),
+                                              if (_price != null) ...[
+                                                const SizedBox(width: 12),
+                                                Expanded(
+                                                  child: Column(
+                                                    crossAxisAlignment: CrossAxisAlignment.end,
+                                                    children: [
+                                                      Text(
+                                                        'Actual price',
+                                                        style: TextStyle(
+                                                          color: cs.onSurface.withOpacity(.8),
+                                                          fontSize: 14,
+                                                        ),
+                                                      ),
+                                                      Text(
+                                                        '${((_price! / 0.05).round() * 0.05).toStringAsFixed(2)} CHF/mois',
+                                                        style: TextStyle(
+                                                          color: cs.onSurface,
+                                                          fontSize: 16,
+                                                          fontWeight: FontWeight.w600,
+                                                        ),
+                                                        overflow: TextOverflow.ellipsis,
+                                                      ),
+                                                      Text(
+                                                        '${((_price! - _estimatedPrice!) / 0.05).round() * 0.05 >= 0 ? '+' : ''}${(((_price! - _estimatedPrice!) / 0.05).round() * 0.05).toStringAsFixed(2)} CHF/mois',
+                                                        style: TextStyle(
+                                                          color: (_price! > _estimatedPrice!) ? Colors.red : Colors.green,
+                                                          fontSize: 12,
+                                                          fontWeight: FontWeight.w600,
+                                                        ),
+                                                        overflow: TextOverflow.ellipsis,
+                                                      ),
+                                                    ],
+                                                  ),
+                                                ),
+                                              ],
+                                            ],
                                           ),
                                         ),
-                                        const SizedBox(width: 8),
-                                        Text(
-                                          'Available days',
-                                          style: TextStyle(
-                                            color: cs.onSurface.withOpacity(.8),
+                                        const SizedBox(height: 12),
+                                      ],
+                                      if (_estimateError != null) ...[
+                                        Container(
+                                          padding: const EdgeInsets.all(12),
+                                          decoration: BoxDecoration(
+                                            color: Colors.red.withOpacity(.1),
+                                            borderRadius: BorderRadius.circular(8),
+                                          ),
+                                          child: Row(
+                                            children: [
+                                              const Icon(Icons.error_outline, color: Colors.red, size: 20),
+                                              const SizedBox(width: 8),
+                                              Expanded(
+                                                child: Text(
+                                                  _estimateError!,
+                                                  style: const TextStyle(color: Colors.red),
+                                                ),
+                                              ),
+                                            ],
                                           ),
                                         ),
-                                        const Spacer(),
-                                        Text(
-                                          _availEnd == null
-                                              ? 'From ${_fmt(_availStart!)} • no end'
-                                              : '${_fmt(_availStart!)} → ${_fmt(_availEnd!)}',
-                                          style: TextStyle(
-                                            color: cs.onSurface.withOpacity(.8),
-                                            fontStyle: FontStyle.italic,
+                                        const SizedBox(height: 12),
+                                      ],
+                                      MoonFilledButton(
+                                        onTap: _estimatingPrice ? null : _estimatePrice,
+                                        isFullWidth: true,
+                                        leading: _estimatingPrice
+                                            ? const SizedBox(
+                                                width: 16,
+                                                height: 16,
+                                                child: CircularProgressIndicator(strokeWidth: 2),
+                                              )
+                                            : const Icon(Icons.calculate_outlined),
+                                        label: Text(_estimatingPrice ? 'Estimating...' : 'Estimate price'),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+
+                                const SizedBox(height: 16),
+
+                                // Disponibilités
+                                _MoonCard(
+                                  isDark: isDark,
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                                    children: [
+                                      Row(
+                                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                        children: [
+                                          Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              const Icon(Icons.calendar_today_outlined, size: 20),
+                                              const SizedBox(width: 8),
+                                              Text(
+                                                'Availability',
+                                                style: TextStyle(
+                                                  fontSize: 18,
+                                                  fontWeight: FontWeight.w800,
+                                                  color: cs.onSurface,
+                                                ),
+                                              ),
+                                            ],
                                           ),
+                                          Row(
+                                            children: [
+                                              IconButton(
+                                                tooltip: 'Previous month',
+                                                onPressed: _prevMonth,
+                                                icon: const Icon(Icons.chevron_left),
+                                              ),
+                                              Text(
+                                                '${_shownMonth.year}-${_shownMonth.month.toString().padLeft(2, '0')}',
+                                                style: TextStyle(
+                                                  fontWeight: FontWeight.w700,
+                                                  color: cs.onSurface,
+                                                ),
+                                              ),
+                                              IconButton(
+                                                tooltip: 'Next month',
+                                                onPressed: _nextMonth,
+                                                icon: const Icon(Icons.chevron_right),
+                                              ),
+                                            ],
+                                          ),
+                                        ],
+                                      ),
+                                      const SizedBox(height: 6),
+                                      if (_availStart == null)
+                                        Text(
+                                          'No availability information.',
+                                          style: TextStyle(color: cs.onSurface.withOpacity(.7)),
+                                        )
+                                      else ...[
+                                        GridView.count(
+                                          shrinkWrap: true,
+                                          physics: const NeverScrollableScrollPhysics(),
+                                          crossAxisCount: 7,
+                                          children: _buildCalendar(context),
+                                        ),
+                                        const SizedBox(height: 8),
+                                        Row(
+                                          children: [
+                                            Container(
+                                              width: 16,
+                                              height: 16,
+                                              decoration: BoxDecoration(
+                                                color: cs.primary.withOpacity(.25),
+                                                borderRadius: BorderRadius.circular(4),
+                                                border: Border.all(color: cs.primary.withOpacity(.6)),
+                                              ),
+                                            ),
+                                            const SizedBox(width: 8),
+                                            Text('Available days', style: TextStyle(color: cs.onSurface.withOpacity(.8))),
+                                            const Spacer(),
+                                            Text(
+                                              _availEnd == null
+                                                  ? 'From ${_fmt(_availStart!)} • no end'
+                                                  : '${_fmt(_availStart!)} → ${_fmt(_availEnd!)}',
+                                              style: TextStyle(
+                                                color: cs.onSurface.withOpacity(.8),
+                                                fontStyle: FontStyle.italic,
+                                              ),
+                                            ),
+                                          ],
                                         ),
                                       ],
-                                    ),
-                                  ],
-                                ],
-                              ),
+                                    ],
+                                  ),
+                                ),
+
+                                const SizedBox(height: 24),
+
+                                if (_isOwner)
+                                  MoonFilledButton(
+                                    isFullWidth: true,
+                                    onTap: () async {
+                                      await Navigator.of(context).push(
+                                        MaterialPageRoute(
+                                          builder: (_) => EditListingPage(listingId: widget.listingId),
+                                        ),
+                                      );
+                                      _load();
+                                    },
+                                    leading: const Icon(Icons.edit),
+                                    label: const Text('Edit listing'),
+                                  ),
+                              ],
                             ),
-
-                            const SizedBox(height: 24),
-
-                            if (_isOwner)
-                              MoonFilledButton(
-                                isFullWidth: true,
-                                onTap: () async {
-                                  await Navigator.of(context).push(
-                                    MaterialPageRoute(
-                                      builder: (_) => EditListingPage(
-                                        listingId: widget.listingId,
-                                      ),
-                                    ),
-                                  );
-                                  _load();
-                                },
-                                leading: const Icon(Icons.edit),
-                                label: const Text('Edit listing'),
-                              ),
-                          ],
+                          ),
                         ),
                       ),
-                    ),
-                  ),
-                );
-              },
-            ),
+                    );
+                  },
+                ),
     );
   }
 
@@ -943,9 +987,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
-        color: on
-            ? cs.primary.withOpacity(.15)
-            : Theme.of(context).cardColor.withOpacity(.85),
+        color: on ? cs.primary.withOpacity(.15) : Theme.of(context).cardColor.withOpacity(.85),
         borderRadius: BorderRadius.circular(999),
         border: Border.all(
           color: on ? cs.primary.withOpacity(.5) : cs.primary.withOpacity(.12),
@@ -967,6 +1009,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
   }
 }
 
+// Petit conteneur homogène (Moon-like)
 class _MoonCard extends StatelessWidget {
   final Widget child;
   final bool isDark;

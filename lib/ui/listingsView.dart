@@ -6,6 +6,7 @@ import 'package:intl/intl.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
 import 'view_listing_page.dart';
+import 'rate_listing_page.dart'; 
 
 enum ListingsMode {
   all,      // Show all listings
@@ -14,7 +15,7 @@ enum ListingsMode {
 
 class ListingsPage extends StatefulWidget {
   final ListingsMode mode;
-  
+
   const ListingsPage({
     super.key,
     this.mode = ListingsMode.all,
@@ -29,14 +30,13 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
 
   // Filters
   int _typeIndex = -1; // -1 = all, 0 = entire_home, 1 = room
-  int _sortIndex = 0; // 0 = Newest, 1 = Price ↑, 2 = Price ↓
+  int _sortIndex = 0;  // 0 = Newest, 1 = Price ↑, 2 = Price ↓
   bool _furnishedOnly = false;
   bool _wifiOnly = false;
   bool _chargesInclOnly = false;
   bool _carParkOnly = false;
 
   @override
-  // TODO: implement wantKeepAlive
   bool get wantKeepAlive => true;
 
   late final Stream<QuerySnapshot<Map<String, dynamic>>> _listingsStream;
@@ -86,7 +86,7 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
   ) {
     var filtered = docs;
 
-    // Client-side search on city / npa
+    // Search city / npa
     final query = _searchCtrl.text.trim().toLowerCase();
     if (query.isNotEmpty) {
       filtered = filtered.where((d) {
@@ -99,21 +99,15 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
       }).toList();
     }
 
-    // Type filter (client-side)
+    // Type
     if (_typeIndex == 0) {
-      filtered = filtered.where((d) {
-        final type = (d.data()['type'] ?? '').toString().trim();
-        return type == 'entire_home';
-      }).toList();
+      filtered = filtered.where((d) => (d.data()['type'] ?? '').toString().trim() == 'entire_home').toList();
     }
     if (_typeIndex == 1) {
-      filtered = filtered.where((d) {
-        final type = (d.data()['type'] ?? '').toString().trim();
-        return type == 'room';
-      }).toList();
+      filtered = filtered.where((d) => (d.data()['type'] ?? '').toString().trim() == 'room').toList();
     }
 
-    // Boolean amenity filters (client-side)
+    // Amenities
     if (_furnishedOnly) {
       filtered = filtered.where((d) => d.data()['is_furnish'] == true).toList();
     }
@@ -127,8 +121,8 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
       filtered = filtered.where((d) => d.data()['car_park'] == true).toList();
     }
 
-    // Client-side sorting si on a des filtres qui ont pu changer l'ordre
-    bool hasFilters = _typeIndex >= 0 || _furnishedOnly || _wifiOnly || _chargesInclOnly || _carParkOnly;
+    // Keep client-side sort consistent if filters changed order
+    final hasFilters = _typeIndex >= 0 || _furnishedOnly || _wifiOnly || _chargesInclOnly || _carParkOnly;
     if (hasFilters) {
       switch (_sortIndex) {
         case 1:
@@ -144,7 +138,6 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
             final bCreated = b.data()['createdAt'] ?? '';
             return bCreated.compareTo(aCreated);
           });
-          break;
       }
     }
 
@@ -175,40 +168,15 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
     if (surface != '0' && surface.isNotEmpty) {
       title += ' - ${surface}m²';
     }
-
     if (city.isNotEmpty) {
       title += ' in $city';
     }
-
     return title;
   }
 
-  String get _pageTitle {
-    switch (widget.mode) {
-      case ListingsMode.all:
-        return 'All Properties';
-      case ListingsMode.owner:
-        return 'My Properties';
-    }
-  }
-
-  String get _emptyStateMessage {
-    switch (widget.mode) {
-      case ListingsMode.all:
-        return 'No listings match your filters';
-      case ListingsMode.owner:
-        return 'You have no listings yet';
-    }
-  }
-
-  String get _emptyStateSubMessage {
-    switch (widget.mode) {
-      case ListingsMode.all:
-        return 'Try adjusting filters or clearing the search.';
-      case ListingsMode.owner:
-        return 'Create your first listing to get started.';
-    }
-  }
+  String get _pageTitle => widget.mode == ListingsMode.all ? 'All Properties' : 'My Properties';
+  String get _emptyStateMessage => widget.mode == ListingsMode.all ? 'No listings match your filters' : 'You have no listings yet';
+  String get _emptyStateSubMessage => widget.mode == ListingsMode.all ? 'Try adjusting filters or clearing the search.' : 'Create your first listing to get started.';
 
   @override
   Widget build(BuildContext context) {
@@ -231,7 +199,6 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
       ),
       body: LayoutBuilder(
         builder: (context, constraints) {
-          final isWide = constraints.maxWidth >= 900;
           final isXL = constraints.maxWidth >= 1280;
 
           final bg = BoxDecoration(
@@ -278,7 +245,7 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
                   ),
                 ),
                 StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                  stream: _listingsStream, // <-- ici on ne recrée plus le stream
+                  stream: _listingsStream, // stream créé une seule fois (pas de reload au thème)
                   builder: (context, snapshot) {
                     if (snapshot.connectionState == ConnectionState.waiting) {
                       return const SliverFillRemaining(
@@ -309,9 +276,9 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
                       );
                     }
 
-                    // Responsive grid avec aspect ratio ajusté
+                    // Responsive grid
                     int crossAxisCount = 1;
-                    double childAspectRatio = 1.1; // Augmenté pour plus de hauteur
+                    double childAspectRatio = 1.1;
                     final w = constraints.maxWidth;
                     if (w >= 1400) {
                       crossAxisCount = 4;
@@ -422,18 +389,17 @@ class _FilterBar extends StatelessWidget {
           runSpacing: 12,
           crossAxisAlignment: WrapCrossAlignment.center,
           children: [
-            // Type segmented
+            // Type
             ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 480),
               child: MoonSegmentedControl(
-                initialIndex: typeIndex < 0 ? 2 : typeIndex, // hack to allow All
+                initialIndex: typeIndex < 0 ? 2 : typeIndex, // All hack
                 segments: const [
                   Segment(label: Text('Entire home')),
                   Segment(label: Text('Single room')),
                   Segment(label: Text('All')),
                 ],
                 onSegmentChanged: (i) {
-                  // If user taps All (index 2), map to -1
                   final mapped = i == 2 ? -1 : i;
                   onChanged(
                     _Filters(
@@ -450,7 +416,7 @@ class _FilterBar extends StatelessWidget {
               ),
             ),
 
-            // Sort segmented
+            // Sort
             ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 520),
               child: MoonSegmentedControl(
@@ -588,7 +554,7 @@ class _EmptyState extends StatelessWidget {
   final String message;
   final String subMessage;
   final ListingsMode mode;
-  
+
   const _EmptyState({
     required this.message,
     required this.subMessage,
@@ -603,7 +569,7 @@ class _EmptyState extends StatelessWidget {
       children: [
         Icon(
           mode == ListingsMode.owner ? Icons.home_outlined : Icons.search,
-          size: 56, 
+          size: 56,
           color: cs.primary.withOpacity(.7),
         ),
         const SizedBox(height: 12),
@@ -624,7 +590,6 @@ class _EmptyState extends StatelessWidget {
           const SizedBox(height: 16),
           ElevatedButton.icon(
             onPressed: () {
-              // Navigate to new listing page
               Navigator.of(context).pushNamed('/newListing');
             },
             icon: const Icon(Icons.add),
@@ -670,6 +635,75 @@ class _ListingCard extends StatelessWidget {
       if (data['car_park'] == true) 'Car park',
     ];
 
+    Widget _starsRow(BuildContext context, double avg, int count) {
+      final cs = Theme.of(context).colorScheme;
+      final full = avg.round().clamp(0, 5);
+      return Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ...List.generate(5, (i) {
+            final filled = i < full;
+            return Padding(
+              padding: const EdgeInsets.only(right: 2),
+              child: Icon(
+                filled ? Icons.star_rounded : Icons.star_border_rounded,
+                size: 16,
+                color: filled ? cs.primary : cs.onSurface.withOpacity(.35),
+              ),
+            );
+          }),
+          const SizedBox(width: 6),
+          Text(
+            count == 0 ? 'No ratings' : '${avg.toStringAsFixed(1)} ($count)',
+            style: TextStyle(
+              fontSize: 12,
+              color: cs.onSurface.withOpacity(.8),
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      );
+    }
+
+    final ratingsPreview = StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: FirebaseFirestore.instance
+          .collection('ratings')
+          .where('listingId', isEqualTo: listingId)
+          .snapshots(),
+      builder: (context, snap) {
+        double avg = 0;
+        int count = 0;
+        if (snap.hasData) {
+          final docs = snap.data!.docs;
+          count = docs.length;
+          if (count > 0) {
+            final sum = docs.fold<double>(
+              0.0,
+              (acc, d) => acc + ((d.data()['stars'] as num?)?.toDouble() ?? 0.0),
+            );
+            avg = sum / count;
+          }
+        }
+        return InkWell(
+          onTap: () {
+            Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => RateListingPage(
+                  listingId: listingId,
+                  allowAdd: false, 
+                ),
+              ),
+            );
+          },
+          borderRadius: BorderRadius.circular(8),
+          child: Padding(
+            padding: const EdgeInsets.only(top: 6.0, bottom: 2.0),
+            child: _starsRow(context, avg, count),
+          ),
+        );
+      },
+    );
+
     return InkWell(
       onTap: () {
         Navigator.of(context).push(
@@ -696,7 +730,7 @@ class _ListingCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Image section - ratio ajusté
+            // Image
             Expanded(
               flex: 6,
               child: SizedBox(
@@ -721,7 +755,7 @@ class _ListingCard extends StatelessWidget {
               ),
             ),
 
-            // Content section - plus d'espace et mieux organisé
+            // Content
             Expanded(
               flex: 6,
               child: Padding(
@@ -729,12 +763,12 @@ class _ListingCard extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // Title - plus compact
+                    // Titre
                     Flexible(
                       child: Text(
                         title,
                         style: const TextStyle(
-                          fontSize: 15, // Réduit de 16 à 15
+                          fontSize: 15,
                           fontWeight: FontWeight.bold,
                         ),
                         maxLines: 2,
@@ -743,6 +777,7 @@ class _ListingCard extends StatelessWidget {
                     ),
                     const SizedBox(height: 6),
 
+                    // Prix + type
                     Row(
                       children: [
                         Text(
@@ -755,10 +790,7 @@ class _ListingCard extends StatelessWidget {
                         const SizedBox(width: 8),
                         Flexible(
                           child: Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 6,
-                              vertical: 2,
-                            ),
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                             decoration: BoxDecoration(
                               color: cs.primary.withOpacity(.12),
                               borderRadius: BorderRadius.circular(6),
@@ -767,7 +799,7 @@ class _ListingCard extends StatelessWidget {
                             child: Text(
                               type,
                               style: TextStyle(
-                                fontSize: 11, // Réduit de 12 à 11
+                                fontSize: 11,
                                 fontWeight: FontWeight.w700,
                                 color: cs.onSurface,
                               ),
@@ -779,22 +811,17 @@ class _ListingCard extends StatelessWidget {
                       ],
                     ),
 
-                    const SizedBox(height: 4),
+                    ratingsPreview,
+
+                    const SizedBox(height: 2),
                     Row(
                       children: [
-                        Icon(
-                          Icons.place,
-                          size: 13,
-                          color: cs.onSurface.withOpacity(.7),
-                        ),
+                        Icon(Icons.place, size: 13, color: cs.onSurface.withOpacity(.7)),
                         const SizedBox(width: 4),
                         Expanded(
                           child: Text(
                             '$city${npa.isNotEmpty ? ' · $npa' : ''}',
-                            style: TextStyle(
-                              fontSize: 12,
-                              color: cs.onSurface.withOpacity(.8)
-                            ),
+                            style: TextStyle(fontSize: 12, color: cs.onSurface.withOpacity(.8)),
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                           ),
@@ -802,35 +829,21 @@ class _ListingCard extends StatelessWidget {
                       ],
                     ),
                     const SizedBox(height: 3),
-                    
+
                     Row(
                       children: [
-                        Icon(
-                          Icons.square_foot,
-                          size: 13, 
-                          color: cs.onSurface.withOpacity(.7),
-                        ),
+                        Icon(Icons.square_foot, size: 13, color: cs.onSurface.withOpacity(.7)),
                         const SizedBox(width: 4),
                         Text(
                           surface.isNotEmpty ? '$surface m²' : '—',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: cs.onSurface.withOpacity(.8)
-                          ),
+                          style: TextStyle(fontSize: 12, color: cs.onSurface.withOpacity(.8)),
                         ),
                         const SizedBox(width: 12),
-                        Icon(
-                          Icons.meeting_room,
-                          size: 13, 
-                          color: cs.onSurface.withOpacity(.7),
-                        ),
+                        Icon(Icons.meeting_room, size: 13, color: cs.onSurface.withOpacity(.7)),
                         const SizedBox(width: 4),
                         Text(
                           rooms.isNotEmpty ? '$rooms rooms' : '—',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: cs.onSurface.withOpacity(.8)
-                          ),
+                          style: TextStyle(fontSize: 12, color: cs.onSurface.withOpacity(.8)),
                         ),
                       ],
                     ),
@@ -846,23 +859,15 @@ class _ListingCard extends StatelessWidget {
                                   (a) => Padding(
                                     padding: const EdgeInsets.only(right: 4),
                                     child: Container(
-                                      padding: const EdgeInsets.symmetric(
-                                        horizontal: 6,
-                                        vertical: 2, // Réduit de 3 à 2
-                                      ),
+                                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                                       decoration: BoxDecoration(
                                         color: cs.primary.withOpacity(.08),
                                         borderRadius: BorderRadius.circular(999),
-                                        border: Border.all(
-                                          color: cs.primary.withOpacity(.18),
-                                        ),
+                                        border: Border.all(color: cs.primary.withOpacity(.18)),
                                       ),
                                       child: Text(
                                         a,
-                                        style: const TextStyle(
-                                          fontSize: 10, // Réduit de 11 à 10
-                                          fontWeight: FontWeight.w600,
-                                        ),
+                                        style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w600),
                                       ),
                                     ),
                                   ),
