@@ -206,14 +206,39 @@ class _ViewListingPageState extends State<ViewListingPage> {
     if (!_isStudent) return;
     
     final status = _getDateStatus(date);
-    if (status != null) return; // Date déjà réservée ou en attente
+    if (status != null) return;
     
-    if (!_isAvailableOn(date)) return; // Date non disponible
+    if (!_isAvailableOn(date)) return;
     
     setState(() {
-      if (_selectedDates.contains(date)) {
-        _selectedDates.remove(date);
+      if (_selectedDates.isEmpty) {
+        _selectedDates.add(date);
+      } else if (_selectedDates.length == 1) {
+        final firstDate = _selectedDates.first;
+        final startDate = date.isBefore(firstDate) ? date : firstDate;
+        final endDate = date.isAfter(firstDate) ? date : firstDate;
+        
+        _selectedDates.clear();
+        
+        DateTime currentDate = startDate;
+        while (!currentDate.isAfter(endDate)) {
+          if (_isAvailableOn(currentDate) && _getDateStatus(currentDate) == null) {
+            _selectedDates.add(currentDate);
+          } else {
+            _selectedDates.clear();
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Some dates in the selected range are not available'),
+                backgroundColor: Colors.orange,
+              ),
+            );
+            _showBookingPanel = false;
+            return;
+          }
+          currentDate = currentDate.add(const Duration(days: 1));
+        }
       } else {
+        _selectedDates.clear();
         _selectedDates.add(date);
       }
       
