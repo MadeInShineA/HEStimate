@@ -466,7 +466,7 @@ class _FilterBar extends StatelessWidget {
             Expanded(
               child: MoonFormTextInput(
                 hasFloatingLabel: false,
-                hintText: 'Search by city, NPA…',
+                hintText: 'Search by city, NPA',
                 controller: searchCtrl,
                 leading: const Icon(Icons.search),
                 onChanged: (_) => onChanged(
