@@ -9,6 +9,12 @@ import 'package:http/http.dart' as http;
 
 import 'edit_listing_page.dart';
 
+// ✅ Use the same key you verified via curl (Directions API enabled, billing on)
+const _googleMapsApiKey = 'AIzaSyAopsH4eK8TqlVIhcOAGwb4h1vX0em_wTo';
+
+// ✅ Your campuses are stored in this collection
+const _hesCollection = 'schools';
+
 class ViewListingPage extends StatefulWidget {
   final String listingId;
   const ViewListingPage({super.key, required this.listingId});
@@ -21,7 +27,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
   bool _loading = true;
   String? _error;
 
-  // Données
+  // Données listing
   String _ownerUid = '';
   String _address = '';
   String _city = '';
@@ -37,15 +43,27 @@ class _ViewListingPageState extends State<ViewListingPage> {
   String _type = 'room';
   double? _distTransportKm;
 
+  // Géoloc
   double? _latitude;
   double? _longitude;
-  double? _proximHesKm;
-  String? _nearestHesId;
 
+  // HES (vol d’oiseau)
+  double? _proximHesKm;
+  String? _nearestHesId; // Firestore doc id in `schools`
+  String? _nearestHesName; // From `name` field
+  bool _computingHes = false;
+
+  // Transport public → HES (prochaines 2h)
+  bool _loadingPt = false;
+  String? _ptError;
+  List<_TransitRoute> _ptRoutes = [];
+
+  // Dispo & photos
   DateTime? _availStart;
   DateTime? _availEnd;
   List<String> _photos = [];
 
+  // Estimation prix
   bool _estimatingPrice = false;
   double? _estimatedPrice;
   String? _estimateError;
@@ -112,8 +130,11 @@ class _ViewListingPageState extends State<ViewListingPage> {
 
       _latitude = (m['latitude'] as num?)?.toDouble();
       _longitude = (m['longitude'] as num?)?.toDouble();
+
+      // persisted fields (keep same keys on the listing):
       _proximHesKm = (m['proxim_hesso_km'] as num?)?.toDouble();
       _nearestHesId = (m['nearest_hesso_id'] ?? '').toString();
+      _nearestHesName = null; // resolved later
 
       final tsStart = m['availability_start'] as Timestamp?;
       final tsEnd = m['availability_end'] as Timestamp?;
@@ -127,6 +148,15 @@ class _ViewListingPageState extends State<ViewListingPage> {
         _loading = false;
         if (_availStart != null) _shownMonth = _monthDate(_availStart!);
       });
+
+      // Auto-calc HES if missing, else resolve its name from `schools`
+      if (_latitude != null &&
+          _longitude != null &&
+          (_proximHesKm == null || (_nearestHesId ?? '').isEmpty)) {
+        _computeNearestHes(persist: true);
+      } else if ((_nearestHesId ?? '').isNotEmpty && _nearestHesName == null) {
+        _resolveHesNameById(_nearestHesId!);
+      }
     } catch (e) {
       setState(() {
         _error = 'Failed to load listing: $e';
@@ -136,11 +166,10 @@ class _ViewListingPageState extends State<ViewListingPage> {
   }
 
   Future<void> _estimatePrice() async {
-    // Vérifier que nous avons les données nécessaires
-    if (_latitude == null || 
-        _longitude == null || 
-        _surface == null || 
-        _rooms == null || 
+    if (_latitude == null ||
+        _longitude == null ||
+        _surface == null ||
+        _rooms == null ||
         _floor == null ||
         _distTransportKm == null ||
         _proximHesKm == null) {
@@ -170,22 +199,25 @@ class _ViewListingPageState extends State<ViewListingPage> {
           "car_park": _carPark,
           "dist_public_transport_km": _distTransportKm!,
           "proxim_hesso_km": _proximHesKm!,
-        }
+        },
       ];
 
       final response = await http.post(
-        Uri.parse('https://hestimate-api-production.up.railway.app/estimate-price'),
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        Uri.parse(
+          'https://hestimate-api-production.up.railway.app/estimate-price',
+        ),
+        headers: {'Content-Type': 'application/json'},
         body: jsonEncode(body),
       );
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
-        if (data is List && data.isNotEmpty && data[0]['predicted_price_chf'] != null) {
+        if (data is List &&
+            data.isNotEmpty &&
+            data[0]['predicted_price_chf'] != null) {
           setState(() {
-            _estimatedPrice = (data[0]['predicted_price_chf'] as num).toDouble();
+            _estimatedPrice = (data[0]['predicted_price_chf'] as num)
+                .toDouble();
             _estimatingPrice = false;
           });
         } else {
@@ -207,6 +239,252 @@ class _ViewListingPageState extends State<ViewListingPage> {
       });
     }
   }
+
+  // --- HES helpers (use `schools`) ------------------------------------------
+
+  double _deg2rad(double d) => d * math.pi / 180.0;
+
+  double _haversineKm(double lat1, double lon1, double lat2, double lon2) {
+    const earthRadiusKm = 6371.0;
+    final dLat = _deg2rad(lat2 - lat1);
+    final dLon = _deg2rad(lon2 - lon1);
+    final a =
+        math.sin(dLat / 2) * math.sin(dLat / 2) +
+        math.cos(_deg2rad(lat1)) *
+            math.cos(_deg2rad(lat2)) *
+            math.sin(dLon / 2) *
+            math.sin(dLon / 2);
+    final c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a));
+    return earthRadiusKm * c;
+  }
+
+  Future<void> _resolveHesNameById(String campusId) async {
+    try {
+      final doc = await FirebaseFirestore.instance
+          .collection(_hesCollection) // schools
+          .doc(campusId)
+          .get();
+      if (doc.exists) {
+        final name = (doc.data()?['name'] ?? '').toString();
+        if (mounted) {
+          setState(() {
+            _nearestHesName = name.isEmpty ? campusId : name;
+          });
+        }
+      } else {
+        // If previously persisted id points to a missing doc, recompute
+        _computeNearestHes(persist: true);
+      }
+    } catch (_) {
+      // ignore
+    }
+  }
+
+  Future<void> _computeNearestHes({bool persist = true}) async {
+    if (_latitude == null || _longitude == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Missing listing coordinates')),
+      );
+      return;
+    }
+
+    setState(() => _computingHes = true);
+    try {
+      final query = await FirebaseFirestore.instance
+          .collection(_hesCollection)
+          .get();
+
+      if (query.docs.isEmpty) {
+        throw Exception('No school records found in "$_hesCollection".');
+      }
+
+      double bestKm = double.infinity;
+      String? bestId;
+      String? bestName;
+
+      for (final d in query.docs) {
+        final m = d.data();
+        final lat = (m['latitude'] as num?)?.toDouble();
+        final lon = (m['longitude'] as num?)?.toDouble();
+        final name = (m['name'] ?? '').toString();
+        if (lat == null || lon == null) continue;
+
+        final km = _haversineKm(_latitude!, _longitude!, lat, lon);
+        if (km < bestKm) {
+          bestKm = km;
+          bestId = d.id;
+          bestName = name.isEmpty ? d.id : name;
+        }
+      }
+
+      if (bestId == null) {
+        throw Exception('No valid school coordinates found.');
+      }
+
+      setState(() {
+        _proximHesKm = double.parse(bestKm.toStringAsFixed(3));
+        _nearestHesId = bestId;
+        _nearestHesName = bestName;
+      });
+
+      if (persist) {
+        await FirebaseFirestore.instance
+            .collection('listings')
+            .doc(widget.listingId)
+            .update({
+              'proxim_hesso_km': _proximHesKm,
+              'nearest_hesso_id': _nearestHesId,
+            });
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to compute nearest school: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _computingHes = false);
+    }
+  }
+
+  // --- Directions (transit) for next 2 hours --------------------------------
+
+  Future<void> _loadPtRoutesNext2h() async {
+    if (_latitude == null || _longitude == null) {
+      setState(() => _ptError = 'Missing listing coordinates');
+      return;
+    }
+    // Ensure we have a nearest school id
+    if (_nearestHesId == null || _nearestHesId!.isEmpty) {
+      await _computeNearestHes(persist: true);
+      if (_nearestHesId == null || _nearestHesId!.isEmpty) {
+        setState(() => _ptError = 'No school found for this listing');
+        return;
+      }
+    }
+    if (_googleMapsApiKey.isEmpty ||
+        _googleMapsApiKey == 'YOUR_DIRECTIONS_API_KEY') {
+      setState(
+        () => _ptError =
+            'Google Directions API key missing. Set _googleMapsApiKey.',
+      );
+      return;
+    }
+
+    // Load school coords from `schools`
+    final hesDoc = await FirebaseFirestore.instance
+        .collection(_hesCollection)
+        .doc(_nearestHesId!)
+        .get();
+
+    if (!hesDoc.exists) {
+      // If the doc was deleted/renamed, recompute and retry once
+      await _computeNearestHes(persist: true);
+      final retryDoc = await FirebaseFirestore.instance
+          .collection(_hesCollection)
+          .doc(_nearestHesId!)
+          .get();
+      if (!retryDoc.exists) {
+        setState(() => _ptError = 'School doc not found in "$_hesCollection".');
+        return;
+      }
+      // use retryDoc
+    }
+
+    final schoolData = hesDoc.exists
+        ? hesDoc.data()!
+        : (await FirebaseFirestore.instance
+                  .collection(_hesCollection)
+                  .doc(_nearestHesId!)
+                  .get())
+              .data()!;
+
+    final hesLat = (schoolData['latitude'] as num?)?.toDouble();
+    final hesLon = (schoolData['longitude'] as num?)?.toDouble();
+    final hesName = (schoolData['name'] ?? '').toString();
+
+    if (hesLat == null || hesLon == null) {
+      setState(() => _ptError = 'School has no coordinates');
+      return;
+    }
+
+    setState(() {
+      _nearestHesName = (hesName.isEmpty ? _nearestHesId! : hesName);
+      _ptError = null;
+      _loadingPt = true;
+      _ptRoutes = [];
+    });
+
+    try {
+      final now = DateTime.now();
+      final horizon = now.add(const Duration(hours: 2));
+      final anchors = <DateTime>[];
+      var cursor = now;
+      while (cursor.isBefore(horizon) && anchors.length < 6) {
+        anchors.add(cursor);
+        cursor = cursor.add(const Duration(minutes: 20));
+      }
+
+      final results = <_TransitRoute>[];
+      for (final dt in anchors) {
+        final secs = (dt.millisecondsSinceEpoch / 1000).round();
+        final uri =
+            Uri.https('maps.googleapis.com', '/maps/api/directions/json', {
+              'origin': '${_latitude!},${_longitude!}',
+              'destination': '$hesLat,$hesLon',
+              'mode': 'transit',
+              'alternatives': 'true',
+              'transit_routing_preference': 'less_walking',
+              'language': 'en',
+              'departure_time': '$secs',
+              'key': _googleMapsApiKey,
+            });
+
+        final resp = await http.get(uri);
+        if (resp.statusCode != 200) {
+          setState(() => _ptError = 'HTTP ${resp.statusCode}: ${resp.body}');
+          continue;
+        }
+        final jd = jsonDecode(resp.body);
+        if (jd['status'] != 'OK' || jd['routes'] == null) {
+          final em = (jd['error_message'] ?? '').toString();
+          setState(
+            () => _ptError =
+                'Directions status: ${jd['status']}${em.isNotEmpty ? ' • $em' : ''}',
+          );
+          continue;
+        }
+
+        for (final r in jd['routes']) {
+          final leg = (r['legs'] as List).first;
+          final route = _TransitRoute.fromGoogle(leg, r);
+          if (route == null) continue;
+          if (route.departureTime.isAfter(horizon)) continue;
+
+          final key =
+              '${route.departureTime.millisecondsSinceEpoch}-${route.summary}';
+          if (!results.any((x) => x._dedupeKey == key)) {
+            results.add(route.._dedupeKey = key);
+          }
+        }
+      }
+
+      results.sort((a, b) => a.departureTime.compareTo(b.departureTime));
+
+      setState(() {
+        _ptRoutes = results.take(12).toList();
+        _loadingPt = false;
+        if (_ptRoutes.isEmpty && _ptError == null) {
+          _ptError = 'No scheduled routes found in the next 2 hours.';
+        }
+      });
+    } catch (e) {
+      setState(() {
+        _ptError = 'Failed to load transit routes: $e';
+        _loadingPt = false;
+      });
+    }
+  }
+
+  // ---------------------------------------------------------------------------
 
   // Calendrier
   bool _isAvailableOn(DateTime day) {
@@ -325,14 +603,9 @@ class _ViewListingPageState extends State<ViewListingPage> {
                 if (canPop) {
                   Navigator.of(context).pop();
                 } else {
-                  // No back stack (e.g., after pushReplacement) → go Home.
                   Navigator.of(
                     context,
                   ).pushNamedAndRemoveUntil('/home', (route) => false);
-                  // If you want to land on a specific tab inside HomeMenuPage,
-                  // pass an index as arguments, e.g.:
-                  // Navigator.of(context).pushNamedAndRemoveUntil('/home', (route) => false, arguments: 0); // Dashboard
-                  // Navigator.of(context).pushNamedAndRemoveUntil('/home', (route) => false, arguments: 1); // Properties
                 }
               },
             );
@@ -374,7 +647,6 @@ class _ViewListingPageState extends State<ViewListingPage> {
                 final isWide = constraints.maxWidth >= 900;
                 const contentMax = 1000.0;
 
-                // ❗ Fix: ne jamais produire un padding négatif
                 final horizontalPad = math.max(
                   16.0,
                   (constraints.maxWidth - contentMax) / 2 + 16.0,
@@ -464,7 +736,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
 
                             const SizedBox(height: 16),
 
-                            // Header + bouton Edit (si propriétaire)
+                            // Header + bouton Edit
                             _MoonCard(
                               isDark: isDark,
                               child: Column(
@@ -559,13 +831,40 @@ class _ViewListingPageState extends State<ViewListingPage> {
                                             ? '${_distTransportKm!.toStringAsFixed(1)} km PT'
                                             : '—',
                                       ),
-                                      _chip(
-                                        context,
-                                        icon: Icons.school_outlined,
-                                        text: _proximHesKm != null
-                                            ? '${_proximHesKm!.toStringAsFixed(1)} km HES'
-                                            : '—',
-                                      ),
+                                      if (_proximHesKm != null)
+                                        _chip(
+                                          context,
+                                          icon: Icons.school_outlined,
+                                          text:
+                                              _nearestHesName != null &&
+                                                  _nearestHesName!
+                                                      .trim()
+                                                      .isNotEmpty
+                                              ? '${_proximHesKm!.toStringAsFixed(1)} km • $_nearestHesName'
+                                              : '${_proximHesKm!.toStringAsFixed(1)} km HES',
+                                        )
+                                      else
+                                        MoonButton(
+                                          isFullWidth: false,
+                                          onTap: _computingHes
+                                              ? null
+                                              : () => _computeNearestHes(
+                                                  persist: true,
+                                                ),
+                                          leading: _computingHes
+                                              ? const SizedBox(
+                                                  width: 16,
+                                                  height: 16,
+                                                  child:
+                                                      CircularProgressIndicator(
+                                                        strokeWidth: 2,
+                                                      ),
+                                                )
+                                              : const Icon(
+                                                  Icons.school_outlined,
+                                                ),
+                                          label: const Text('Nearest HES'),
+                                        ),
                                     ],
                                   ),
                                 ],
@@ -628,6 +927,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
 
                             const SizedBox(height: 16),
 
+                            // Price estimation
                             _MoonCard(
                               isDark: isDark,
                               child: Column(
@@ -636,7 +936,10 @@ class _ViewListingPageState extends State<ViewListingPage> {
                                   Row(
                                     mainAxisSize: MainAxisSize.min,
                                     children: [
-                                      const Icon(Icons.analytics_outlined, size: 20),
+                                      const Icon(
+                                        Icons.analytics_outlined,
+                                        size: 20,
+                                      ),
                                       const SizedBox(width: 8),
                                       Text(
                                         'Price estimation',
@@ -660,64 +963,80 @@ class _ViewListingPageState extends State<ViewListingPage> {
                                         ),
                                       ),
                                       child: Row(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      children: [
-                                        Icon(Icons.trending_up, color: cs.primary, size: 24),
-                                        const SizedBox(width: 12),
-                                        Expanded( // ✅ ça permet au texte de se couper si nécessaire
-                                          child: Column(
-                                            crossAxisAlignment: CrossAxisAlignment.start,
-                                            children: [
-                                              Text(
-                                                'Estimated price',
-                                                style: TextStyle(
-                                                  color: cs.onSurface.withOpacity(.8),
-                                                  fontSize: 14,
-                                                ),
-                                              ),
-                                              Text(
-                                                '${((_estimatedPrice! / 0.05).round() * 0.05).toStringAsFixed(2)} CHF/mois',
-                                                style: const TextStyle(
-                                                  fontSize: 18,
-                                                  fontWeight: FontWeight.w800,
-                                                ),
-                                                overflow: TextOverflow.ellipsis, // ✅ coupe si trop long
-                                              ),
-                                            ],
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Icon(
+                                            Icons.trending_up,
+                                            color: cs.primary,
+                                            size: 24,
                                           ),
-                                        ),
-                                        if (_price != null) ...[
                                           const SizedBox(width: 12),
-                                          Expanded( // ✅ pareil pour la partie "Actual price"
+                                          Expanded(
                                             child: Column(
-                                              crossAxisAlignment: CrossAxisAlignment.end,
+                                              crossAxisAlignment:
+                                                  CrossAxisAlignment.start,
                                               children: [
                                                 Text(
-                                                  'Actual price',
+                                                  'Estimated price',
                                                   style: TextStyle(
-                                                    color: cs.onSurface.withOpacity(.8),
+                                                    color: cs.onSurface
+                                                        .withOpacity(.8),
                                                     fontSize: 14,
                                                   ),
                                                 ),
                                                 Text(
-                                                  '${((_price! / 0.05).round() * 0.05).toStringAsFixed(2)} CHF/mois',
-                                                  style: TextStyle(
-                                                    color: cs.onSurface,
-                                                    fontSize: 16,
-                                                    fontWeight: FontWeight.w600,
+                                                  '${((_estimatedPrice! / 0.05).round() * 0.05).toStringAsFixed(2)} CHF/mois',
+                                                  style: const TextStyle(
+                                                    fontSize: 18,
+                                                    fontWeight: FontWeight.w800,
                                                   ),
-                                                  overflow: TextOverflow.ellipsis,
+                                                  overflow:
+                                                      TextOverflow.ellipsis,
                                                 ),
-                                                Text(
-                                                  '${((_price! - _estimatedPrice!) / 0.05).round() * 0.05 >= 0 ? '+' : ''}${(((_price! - _estimatedPrice!) / 0.05).round() * 0.05).toStringAsFixed(2)} CHF/mois',
-                                                  style: TextStyle(
-                                                    color: (_price! > _estimatedPrice!) 
-                                                        ? Colors.red 
-                                                        : Colors.green,
-                                                    fontSize: 12,
-                                                    fontWeight: FontWeight.w600,
+                                              ],
+                                            ),
+                                          ),
+                                          if (_price != null) ...[
+                                            const SizedBox(width: 12),
+                                            Expanded(
+                                              child: Column(
+                                                crossAxisAlignment:
+                                                    CrossAxisAlignment.end,
+                                                children: [
+                                                  Text(
+                                                    'Actual price',
+                                                    style: TextStyle(
+                                                      color: cs.onSurface
+                                                          .withOpacity(.8),
+                                                      fontSize: 14,
                                                     ),
-                                                  overflow: TextOverflow.ellipsis,
+                                                  ),
+                                                  Text(
+                                                    '${((_price! / 0.05).round() * 0.05).toStringAsFixed(2)} CHF/mois',
+                                                    style: TextStyle(
+                                                      color: cs.onSurface,
+                                                      fontSize: 16,
+                                                      fontWeight:
+                                                          FontWeight.w600,
+                                                    ),
+                                                    overflow:
+                                                        TextOverflow.ellipsis,
+                                                  ),
+                                                  Text(
+                                                    '${((_price! - _estimatedPrice!) / 0.05).round() * 0.05 >= 0 ? '+' : ''}${(((_price! - _estimatedPrice!) / 0.05).round() * 0.05).toStringAsFixed(2)} CHF/mois',
+                                                    style: TextStyle(
+                                                      color:
+                                                          (_price! >
+                                                              _estimatedPrice!)
+                                                          ? Colors.red
+                                                          : Colors.green,
+                                                      fontSize: 12,
+                                                      fontWeight:
+                                                          FontWeight.w600,
+                                                    ),
+                                                    overflow:
+                                                        TextOverflow.ellipsis,
                                                   ),
                                                 ],
                                               ),
@@ -737,12 +1056,18 @@ class _ViewListingPageState extends State<ViewListingPage> {
                                       ),
                                       child: Row(
                                         children: [
-                                          const Icon(Icons.error_outline, color: Colors.red, size: 20),
+                                          const Icon(
+                                            Icons.error_outline,
+                                            color: Colors.red,
+                                            size: 20,
+                                          ),
                                           const SizedBox(width: 8),
                                           Expanded(
                                             child: Text(
                                               _estimateError!,
-                                              style: const TextStyle(color: Colors.red),
+                                              style: const TextStyle(
+                                                color: Colors.red,
+                                              ),
                                             ),
                                           ),
                                         ],
@@ -751,17 +1076,156 @@ class _ViewListingPageState extends State<ViewListingPage> {
                                     const SizedBox(height: 12),
                                   ],
                                   MoonFilledButton(
-                                    onTap: _estimatingPrice ? null : _estimatePrice,
+                                    onTap: _estimatingPrice
+                                        ? null
+                                        : _estimatePrice,
                                     isFullWidth: true,
-                                    leading: _estimatingPrice 
+                                    leading: _estimatingPrice
                                         ? const SizedBox(
                                             width: 16,
                                             height: 16,
-                                            child: CircularProgressIndicator(strokeWidth: 2),
+                                            child: CircularProgressIndicator(
+                                              strokeWidth: 2,
+                                            ),
                                           )
                                         : const Icon(Icons.calculate_outlined),
-                                    label: Text(_estimatingPrice ? 'Estimating...': 'Estimate price'),
+                                    label: Text(
+                                      _estimatingPrice
+                                          ? 'Estimating...'
+                                          : 'Estimate price',
+                                    ),
                                   ),
+                                ],
+                              ),
+                            ),
+
+                            const SizedBox(height: 16),
+
+                            // Public transport → HES (responsive)
+                            _MoonCard(
+                              isDark: isDark,
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    mainAxisAlignment:
+                                        MainAxisAlignment.spaceBetween,
+                                    children: [
+                                      Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          const Icon(
+                                            Icons.alt_route_outlined,
+                                            size: 20,
+                                          ),
+                                          const SizedBox(width: 8),
+                                          Text(
+                                            'Public transport to HES (next 2h)',
+                                            style: TextStyle(
+                                              fontSize: 18,
+                                              fontWeight: FontWeight.w800,
+                                              color: cs.onSurface,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                      MoonButton(
+                                        onTap: _loadingPt
+                                            ? null
+                                            : _loadPtRoutesNext2h,
+                                        leading: _loadingPt
+                                            ? const SizedBox(
+                                                width: 16,
+                                                height: 16,
+                                                child:
+                                                    CircularProgressIndicator(
+                                                      strokeWidth: 2,
+                                                    ),
+                                              )
+                                            : const Icon(
+                                                Icons.refresh_outlined,
+                                              ),
+                                        label: const Text('Refresh'),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 10),
+                                  if (_nearestHesName != null)
+                                    Text(
+                                      'Destination: $_nearestHesName',
+                                      style: TextStyle(
+                                        color: cs.onSurface.withOpacity(.8),
+                                      ),
+                                    ),
+                                  const SizedBox(height: 8),
+
+                                  if (_ptError != null)
+                                    Text(
+                                      _ptError!,
+                                      style: const TextStyle(
+                                        color: Colors.redAccent,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    )
+                                  else if (_loadingPt)
+                                    const Padding(
+                                      padding: EdgeInsets.all(8.0),
+                                      child: LinearProgressIndicator(),
+                                    )
+                                  else if (_ptRoutes.isEmpty)
+                                    Text(
+                                      'No routes loaded. Tap Refresh.',
+                                      style: TextStyle(
+                                        color: cs.onSurface.withOpacity(.7),
+                                      ),
+                                    )
+                                  else
+                                    // Responsive: horizontal scroller with cards sized to screen
+                                    LayoutBuilder(
+                                      builder: (ctx, cts) {
+                                        final screenW = MediaQuery.of(
+                                          ctx,
+                                        ).size.width;
+                                        // Card width: 80–86% of screen on phones, max 440 on larger
+                                        final cardW = screenW < 480
+                                            ? screenW * 0.86
+                                            : math.min(440.0, screenW * 0.48);
+                                        return SingleChildScrollView(
+                                          scrollDirection: Axis.horizontal,
+                                          child: Row(
+                                            children: _ptRoutes
+                                                .map(
+                                                  (r) => Padding(
+                                                    padding:
+                                                        const EdgeInsets.only(
+                                                          right: 10.0,
+                                                        ),
+                                                    child: ConstrainedBox(
+                                                      constraints:
+                                                          BoxConstraints(
+                                                            minWidth: cardW
+                                                                .clamp(
+                                                                  280,
+                                                                  500,
+                                                                ),
+                                                            maxWidth: cardW
+                                                                .clamp(
+                                                                  300,
+                                                                  520,
+                                                                ),
+                                                          ),
+                                                      child: _routeCard(
+                                                        context,
+                                                        r,
+                                                      ),
+                                                    ),
+                                                  ),
+                                                )
+                                                .toList(),
+                                          ),
+                                        );
+                                      },
+                                    ),
                                 ],
                               ),
                             ),
@@ -929,9 +1393,16 @@ class _ViewListingPageState extends State<ViewListingPage> {
         children: [
           Icon(icon, size: 16, color: cs.onSurface.withOpacity(.75)),
           const SizedBox(width: 6),
-          Text(
-            text,
-            style: TextStyle(color: cs.onSurface, fontWeight: FontWeight.w600),
+          Flexible(
+            child: Text(
+              text,
+              overflow: TextOverflow.ellipsis,
+              softWrap: true,
+              style: TextStyle(
+                color: cs.onSurface,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
           ),
         ],
       ),
@@ -965,7 +1436,269 @@ class _ViewListingPageState extends State<ViewListingPage> {
       ),
     );
   }
+
+  // --- UI: route card --------------------------------------------------------
+
+  Widget _routeCard(BuildContext context, _TransitRoute r) {
+    final cs = Theme.of(context).colorScheme;
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 6),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        border: Border.all(color: cs.primary.withOpacity(.12)),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Times + duration
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                '${_clock(r.departureTime)} → ${_clock(r.arrivalTime)}',
+                style: TextStyle(
+                  fontWeight: FontWeight.w800,
+                  color: cs.onSurface,
+                ),
+              ),
+              Text(
+                r.totalText,
+                style: TextStyle(
+                  color: cs.onSurface.withOpacity(.8),
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+          if (r.summary.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 2.0),
+              child: Text(
+                r.summary,
+                style: TextStyle(color: cs.onSurface.withOpacity(.7)),
+              ),
+            ),
+          const SizedBox(height: 8),
+          // Steps
+          Column(
+            children: r.steps.map((s) {
+              return Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.only(top: 5.0),
+                    child: Icon(
+                      s.type == _StepType.walk
+                          ? Icons.directions_walk
+                          : Icons.directions_transit,
+                      size: 16,
+                      color: cs.primary,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        if (s.type == _StepType.walk) ...[
+                          Text(
+                            'Walk • ${s.durationText ?? ''} • ${s.distanceText ?? ''}',
+                            style: const TextStyle(fontWeight: FontWeight.w600),
+                          ),
+                          if (s.instruction?.isNotEmpty == true)
+                            Text(
+                              s.instruction!,
+                              style: TextStyle(
+                                color: cs.onSurface.withOpacity(.8),
+                              ),
+                            ),
+                        ] else ...[
+                          Text(
+                            '${s.transitLine ?? 'Transit'} • ${s.transitHeadsign ?? ''}'
+                                .trim(),
+                            style: const TextStyle(fontWeight: FontWeight.w700),
+                          ),
+                          Text(
+                            'From ${s.departureStop ?? '?'} (${_clock(s.departureTime!)}) to ${s.arrivalStop ?? '?'} (${_clock(s.arrivalTime!)})',
+                            style: TextStyle(
+                              color: cs.onSurface.withOpacity(.85),
+                            ),
+                          ),
+                          if ((s.platform ?? '').isNotEmpty)
+                            Text(
+                              'Platform: ${s.platform}',
+                              style: TextStyle(
+                                color: cs.onSurface.withOpacity(.7),
+                              ),
+                            ),
+                          if ((s.numStops ?? 0) > 0)
+                            Text(
+                              '${s.numStops} stops',
+                              style: TextStyle(
+                                color: cs.onSurface.withOpacity(.7),
+                              ),
+                            ),
+                        ],
+                        const SizedBox(height: 8),
+                      ],
+                    ),
+                  ),
+                ],
+              );
+            }).toList(),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _clock(DateTime dt) =>
+      '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
 }
+
+// --- Models for Directions response ------------------------------------------
+
+enum _StepType { walk, transit }
+
+class _TransitStep {
+  final _StepType type;
+  final String? instruction;
+  final String? distanceText;
+  final String? durationText;
+
+  // Transit-only
+  final String? transitLine;
+  final String? transitHeadsign;
+  final String? departureStop;
+  final String? arrivalStop;
+  final String? platform;
+  final int? numStops;
+  final DateTime? departureTime;
+  final DateTime? arrivalTime;
+
+  _TransitStep.walk({this.instruction, this.distanceText, this.durationText})
+    : type = _StepType.walk,
+      transitLine = null,
+      transitHeadsign = null,
+      departureStop = null,
+      arrivalStop = null,
+      platform = null,
+      numStops = null,
+      departureTime = null,
+      arrivalTime = null;
+
+  _TransitStep.transit({
+    this.transitLine,
+    this.transitHeadsign,
+    this.departureStop,
+    this.arrivalStop,
+    this.platform,
+    this.numStops,
+    this.departureTime,
+    this.arrivalTime,
+    this.distanceText,
+    this.durationText,
+  }) : type = _StepType.transit,
+       instruction = null;
+}
+
+class _TransitRoute {
+  late String _dedupeKey; // internal
+
+  final DateTime departureTime;
+  final DateTime arrivalTime;
+  final String totalText;
+  final String summary;
+  final List<_TransitStep> steps;
+
+  _TransitRoute({
+    required this.departureTime,
+    required this.arrivalTime,
+    required this.totalText,
+    required this.summary,
+    required this.steps,
+  });
+
+  static _TransitRoute? fromGoogle(Map leg, Map route) {
+    try {
+      final dep = _parseGoogleTime(leg['departure_time']);
+      final arr = _parseGoogleTime(leg['arrival_time']);
+      final durText = (leg['duration']?['text'] ?? '').toString();
+      final summary = (route['summary'] ?? '').toString();
+
+      final rawSteps = (leg['steps'] as List?) ?? const [];
+      final steps = <_TransitStep>[];
+
+      for (final s in rawSteps) {
+        final travelMode = (s['travel_mode'] ?? '').toString();
+        if (travelMode == 'WALKING') {
+          steps.add(
+            _TransitStep.walk(
+              instruction: (s['html_instructions'] ?? '').toString().replaceAll(
+                RegExp(r'<[^>]+>'),
+                '',
+              ),
+              distanceText: (s['distance']?['text'] ?? '').toString(),
+              durationText: (s['duration']?['text'] ?? '').toString(),
+            ),
+          );
+        } else if (travelMode == 'TRANSIT') {
+          final td = s['transit_details'] ?? {};
+          final line = td['line'] ?? {};
+          final depStop = td['departure_stop']?['name']?.toString();
+          final arrStop = td['arrival_stop']?['name']?.toString();
+          final headsign = (td['headsign'] ?? '').toString();
+          final lineName = (line['short_name'] ?? line['name'] ?? '')
+              .toString();
+          final numStops = (td['num_stops'] as num?)?.toInt();
+          final depTime = _parseGoogleTime(td['departure_time']);
+          final arrTime = _parseGoogleTime(td['arrival_time']);
+          final platform = (td['departure_platform'] ?? '').toString();
+
+          steps.add(
+            _TransitStep.transit(
+              transitLine: lineName.isEmpty ? null : lineName,
+              transitHeadsign: headsign.isEmpty ? null : headsign,
+              departureStop: depStop,
+              arrivalStop: arrStop,
+              numStops: numStops,
+              departureTime: depTime,
+              arrivalTime: arrTime,
+              platform: platform.isEmpty ? null : platform,
+              distanceText: (s['distance']?['text'] ?? '').toString(),
+              durationText: (s['duration']?['text'] ?? '').toString(),
+            ),
+          );
+        }
+      }
+
+      return _TransitRoute(
+        departureTime: dep ?? DateTime.now(),
+        arrivalTime: arr ?? DateTime.now(),
+        totalText: durText,
+        summary: summary,
+        steps: steps,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static DateTime? _parseGoogleTime(dynamic obj) {
+    if (obj == null) return null;
+    final v = obj['value'];
+    if (v is int) {
+      return DateTime.fromMillisecondsSinceEpoch(
+        v * 1000,
+        isUtc: false,
+      ).toLocal();
+    }
+    return null;
+  }
+}
+
+// --- Reusable card ------------------------------------------------------------
 
 class _MoonCard extends StatelessWidget {
   final Widget child;
