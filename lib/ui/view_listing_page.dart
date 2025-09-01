@@ -660,14 +660,12 @@ class _ViewListingPageState extends State<ViewListingPage> {
                                         ),
                                       ),
                                       child: Row(
-                                        children: [
-                                          Icon(
-                                            Icons.trending_up,
-                                            color: cs.primary,
-                                            size: 24,
-                                          ),
-                                          const SizedBox(width: 12),
-                                          Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Icon(Icons.trending_up, color: cs.primary, size: 24),
+                                        const SizedBox(width: 12),
+                                        Expanded( // ✅ ça permet au texte de se couper si nécessaire
+                                          child: Column(
                                             crossAxisAlignment: CrossAxisAlignment.start,
                                             children: [
                                               Text(
@@ -679,16 +677,19 @@ class _ViewListingPageState extends State<ViewListingPage> {
                                               ),
                                               Text(
                                                 '${((_estimatedPrice! / 0.05).round() * 0.05).toStringAsFixed(2)} CHF/mois',
-                                                style: TextStyle(
-                                                  fontSize: 20,
+                                                style: const TextStyle(
+                                                  fontSize: 18,
                                                   fontWeight: FontWeight.w800,
                                                 ),
+                                                overflow: TextOverflow.ellipsis, // ✅ coupe si trop long
                                               ),
                                             ],
                                           ),
-                                          const Spacer(),
-                                          if (_price != null) ...[
-                                            Column(
+                                        ),
+                                        if (_price != null) ...[
+                                          const SizedBox(width: 12),
+                                          Expanded( // ✅ pareil pour la partie "Actual price"
+                                            child: Column(
                                               crossAxisAlignment: CrossAxisAlignment.end,
                                               children: [
                                                 Text(
@@ -705,6 +706,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
                                                     fontSize: 16,
                                                     fontWeight: FontWeight.w600,
                                                   ),
+                                                  overflow: TextOverflow.ellipsis,
                                                 ),
                                                 Text(
                                                   '${((_price! - _estimatedPrice!) / 0.05).round() * 0.05 >= 0 ? '+' : ''}${(((_price! - _estimatedPrice!) / 0.05).round() * 0.05).toStringAsFixed(2)} CHF/mois',
@@ -714,9 +716,11 @@ class _ViewListingPageState extends State<ViewListingPage> {
                                                         : Colors.green,
                                                     fontSize: 12,
                                                     fontWeight: FontWeight.w600,
+                                                    ),
+                                                  overflow: TextOverflow.ellipsis,
                                                   ),
-                                                ),
-                                              ],
+                                                ],
+                                              ),
                                             ),
                                           ],
                                         ],
