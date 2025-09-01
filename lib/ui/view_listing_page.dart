@@ -9,7 +9,7 @@ import 'package:http/http.dart' as http;
 
 import 'edit_listing_page.dart';
 
-// ✅ Use the same key you verified via curl (Directions API enabled, billing on)
+// ✅ Use the same key you verified via curl (Directions + Places v1 enabled, billing on)
 const _googleMapsApiKey = 'AIzaSyAopsH4eK8TqlVIhcOAGwb4h1vX0em_wTo';
 
 // ✅ Your campuses are stored in this collection
@@ -57,6 +57,11 @@ class _ViewListingPageState extends State<ViewListingPage> {
   bool _loadingPt = false;
   String? _ptError;
   List<_TransitRoute> _ptRoutes = [];
+
+  // Nearby bars (Places API v1)
+  bool _loadingBars = false;
+  String? _barsError;
+  List<_NearbyPlace> _bars = [];
 
   // Dispo & photos
   DateTime? _availStart;
@@ -149,19 +154,35 @@ class _ViewListingPageState extends State<ViewListingPage> {
         if (_availStart != null) _shownMonth = _monthDate(_availStart!);
       });
 
-      // Auto-calc HES if missing, else resolve its name from `schools`
-      if (_latitude != null &&
-          _longitude != null &&
-          (_proximHesKm == null || (_nearestHesId ?? '').isEmpty)) {
-        _computeNearestHes(persist: true);
-      } else if ((_nearestHesId ?? '').isNotEmpty && _nearestHesName == null) {
-        _resolveHesNameById(_nearestHesId!);
-      }
+      // Auto-calc / resolve HES, then auto-load PT + bars (no buttons)
+      await _ensureNearestSchool();
+      _autoLoadSections();
     } catch (e) {
       setState(() {
         _error = 'Failed to load listing: $e';
         _loading = false;
       });
+    }
+  }
+
+  Future<void> _ensureNearestSchool() async {
+    // If missing, compute and persist
+    if (_latitude != null &&
+        _longitude != null &&
+        (_proximHesKm == null || (_nearestHesId ?? '').isEmpty)) {
+      await _computeNearestHes(persist: true);
+    }
+    // If we have an id but no name, resolve
+    if ((_nearestHesId ?? '').isNotEmpty && _nearestHesName == null) {
+      await _resolveHesNameById(_nearestHesId!);
+    }
+  }
+
+  void _autoLoadSections() {
+    // Auto-load transit routes and nearby bars once we have coords + school
+    if (_latitude != null && _longitude != null) {
+      _loadPtRoutesNext2h(); // fire-and-forget
+      _loadNearbyBars(); // fire-and-forget
     }
   }
 
@@ -272,11 +293,10 @@ class _ViewListingPageState extends State<ViewListingPage> {
           });
         }
       } else {
-        // If previously persisted id points to a missing doc, recompute
-        _computeNearestHes(persist: true);
+        await _computeNearestHes(persist: true);
       }
     } catch (_) {
-      // ignore
+      /* no-op */
     }
   }
 
@@ -376,7 +396,6 @@ class _ViewListingPageState extends State<ViewListingPage> {
         .get();
 
     if (!hesDoc.exists) {
-      // If the doc was deleted/renamed, recompute and retry once
       await _computeNearestHes(persist: true);
       final retryDoc = await FirebaseFirestore.instance
           .collection(_hesCollection)
@@ -386,17 +405,16 @@ class _ViewListingPageState extends State<ViewListingPage> {
         setState(() => _ptError = 'School doc not found in "$_hesCollection".');
         return;
       }
-      // use retryDoc
     }
 
-    final schoolData = hesDoc.exists
-        ? hesDoc.data()!
-        : (await FirebaseFirestore.instance
-                  .collection(_hesCollection)
-                  .doc(_nearestHesId!)
-                  .get())
-              .data()!;
+    final docToUse = hesDoc.exists
+        ? hesDoc
+        : await FirebaseFirestore.instance
+              .collection(_hesCollection)
+              .doc(_nearestHesId!)
+              .get();
 
+    final schoolData = docToUse.data()!;
     final hesLat = (schoolData['latitude'] as num?)?.toDouble();
     final hesLon = (schoolData['longitude'] as num?)?.toDouble();
     final hesName = (schoolData['name'] ?? '').toString();
@@ -480,6 +498,110 @@ class _ViewListingPageState extends State<ViewListingPage> {
       setState(() {
         _ptError = 'Failed to load transit routes: $e';
         _loadingPt = false;
+      });
+    }
+  }
+
+  // --- Places API v1 Nearby Bars --------------------------------------------
+
+  Future<void> _loadNearbyBars() async {
+    if (_latitude == null || _longitude == null) {
+      setState(() => _barsError = 'Missing listing coordinates');
+      return;
+    }
+    if (_googleMapsApiKey.isEmpty ||
+        _googleMapsApiKey == 'YOUR_DIRECTIONS_API_KEY') {
+      setState(
+        () => _barsError =
+            'Google Places API key missing. Set _googleMapsApiKey.',
+      );
+      return;
+    }
+
+    setState(() {
+      _loadingBars = true;
+      _barsError = null;
+      _bars = [];
+    });
+
+    try {
+      final url = Uri.parse(
+        'https://places.googleapis.com/v1/places:searchNearby',
+      );
+
+      final body = {
+        "includedTypes": ["bar"],
+        "maxResultCount": 15,
+        "locationRestriction": {
+          "circle": {
+            "center": {"latitude": _latitude, "longitude": _longitude},
+            "radius": 1500.0, // meters
+          },
+        },
+      };
+
+      final headers = {
+        'Content-Type': 'application/json',
+        'X-Goog-Api-Key': _googleMapsApiKey,
+        // Request only what we render to keep payload small
+        'X-Goog-FieldMask':
+            'places.displayName,places.formattedAddress,places.rating,places.userRatingCount,places.location,places.types',
+      };
+
+      final resp = await http.post(
+        url,
+        headers: headers,
+        body: jsonEncode(body),
+      );
+
+      if (resp.statusCode != 200) {
+        setState(() {
+          _barsError = 'HTTP ${resp.statusCode}: ${resp.body}';
+          _loadingBars = false;
+        });
+        return;
+      }
+
+      final jd = jsonDecode(resp.body);
+      final List items = (jd['places'] as List?) ?? const [];
+
+      final parsed = <_NearbyPlace>[];
+      for (final p in items) {
+        final name = (p['displayName']?['text'] ?? '').toString();
+        final addr = (p['formattedAddress'] ?? '').toString();
+        final rating = (p['rating'] as num?)?.toDouble();
+        final urc = (p['userRatingCount'] as num?)?.toInt();
+        final plat = (p['location']?['latitude'] as num?)?.toDouble();
+        final plon = (p['location']?['longitude'] as num?)?.toDouble();
+        if (plat == null || plon == null || name.isEmpty) continue;
+
+        final km = _haversineKm(_latitude!, _longitude!, plat, plon);
+        parsed.add(
+          _NearbyPlace(
+            name: name,
+            address: addr,
+            rating: rating,
+            ratingCount: urc,
+            latitude: plat,
+            longitude: plon,
+            distanceKm: double.parse(km.toStringAsFixed(2)),
+          ),
+        );
+      }
+
+      parsed.sort((a, b) => a.distanceKm.compareTo(b.distanceKm));
+
+      setState(() {
+        _bars = parsed.take(20).toList();
+        _loadingBars = false;
+        if (_bars.isEmpty) {
+          _barsError = 'No bars found nearby.';
+        }
+      });
+    } catch (e) {
+      setState(() {
+        _barsError = 'Failed to load nearby bars: $e';
+        _loadingBars = false;
       });
     }
   }
@@ -1101,55 +1223,40 @@ class _ViewListingPageState extends State<ViewListingPage> {
 
                             const SizedBox(height: 16),
 
-                            // Public transport → HES (responsive)
+                            // Public transport → HES (responsive, auto-load, no button)
                             _MoonCard(
                               isDark: isDark,
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
                                   Row(
-                                    mainAxisAlignment:
-                                        MainAxisAlignment.spaceBetween,
+                                    mainAxisAlignment: MainAxisAlignment.start,
                                     children: [
-                                      Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          const Icon(
-                                            Icons.alt_route_outlined,
-                                            size: 20,
-                                          ),
-                                          const SizedBox(width: 8),
-                                          Text(
-                                            'Public transport to HES (next 2h)',
-                                            style: TextStyle(
-                                              fontSize: 18,
-                                              fontWeight: FontWeight.w800,
-                                              color: cs.onSurface,
-                                            ),
-                                          ),
-                                        ],
+                                      const Icon(
+                                        Icons.alt_route_outlined,
+                                        size: 20,
                                       ),
-                                      MoonButton(
-                                        onTap: _loadingPt
-                                            ? null
-                                            : _loadPtRoutesNext2h,
-                                        leading: _loadingPt
-                                            ? const SizedBox(
-                                                width: 16,
-                                                height: 16,
-                                                child:
-                                                    CircularProgressIndicator(
-                                                      strokeWidth: 2,
-                                                    ),
-                                              )
-                                            : const Icon(
-                                                Icons.refresh_outlined,
-                                              ),
-                                        label: const Text('Refresh'),
+                                      const SizedBox(width: 8),
+                                      Text(
+                                        'Public transport to HES (next 2h)',
+                                        style: TextStyle(
+                                          fontSize: 18,
+                                          fontWeight: FontWeight.w800,
+                                          color: cs.onSurface,
+                                        ),
                                       ),
                                     ],
                                   ),
-                                  const SizedBox(height: 10),
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    'Tip: multiple routes — swipe sideways to explore.',
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      fontStyle: FontStyle.italic,
+                                      color: cs.onSurface.withOpacity(.7),
+                                    ),
+                                  ),
+                                  const SizedBox(height: 8),
                                   if (_nearestHesName != null)
                                     Text(
                                       'Destination: $_nearestHesName',
@@ -1174,19 +1281,17 @@ class _ViewListingPageState extends State<ViewListingPage> {
                                     )
                                   else if (_ptRoutes.isEmpty)
                                     Text(
-                                      'No routes loaded. Tap Refresh.',
+                                      'No routes found in the next 2 hours.',
                                       style: TextStyle(
                                         color: cs.onSurface.withOpacity(.7),
                                       ),
                                     )
                                   else
-                                    // Responsive: horizontal scroller with cards sized to screen
                                     LayoutBuilder(
                                       builder: (ctx, cts) {
                                         final screenW = MediaQuery.of(
                                           ctx,
                                         ).size.width;
-                                        // Card width: 80–86% of screen on phones, max 440 on larger
                                         final cardW = screenW < 480
                                             ? screenW * 0.86
                                             : math.min(440.0, screenW * 0.48);
@@ -1206,17 +1311,123 @@ class _ViewListingPageState extends State<ViewListingPage> {
                                                             minWidth: cardW
                                                                 .clamp(
                                                                   280,
-                                                                  500,
+                                                                  520,
                                                                 ),
                                                             maxWidth: cardW
                                                                 .clamp(
                                                                   300,
-                                                                  520,
+                                                                  560,
                                                                 ),
                                                           ),
                                                       child: _routeCard(
                                                         context,
                                                         r,
+                                                      ),
+                                                    ),
+                                                  ),
+                                                )
+                                                .toList(),
+                                          ),
+                                        );
+                                      },
+                                    ),
+                                ],
+                              ),
+                            ),
+
+                            const SizedBox(height: 16),
+
+                            // Nearby Bars (Places API v1)
+                            _MoonCard(
+                              isDark: isDark,
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    mainAxisAlignment: MainAxisAlignment.start,
+                                    children: [
+                                      const Icon(
+                                        Icons.local_bar_outlined,
+                                        size: 20,
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Text(
+                                        'Nearby bars',
+                                        style: TextStyle(
+                                          fontSize: 18,
+                                          fontWeight: FontWeight.w800,
+                                          color: cs.onSurface,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    'Swipe sideways to view more options around the listing.',
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      fontStyle: FontStyle.italic,
+                                      color: cs.onSurface.withOpacity(.7),
+                                    ),
+                                  ),
+                                  const SizedBox(height: 8),
+
+                                  if (_barsError != null)
+                                    Text(
+                                      _barsError!,
+                                      style: const TextStyle(
+                                        color: Colors.redAccent,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    )
+                                  else if (_loadingBars)
+                                    const Padding(
+                                      padding: EdgeInsets.all(8.0),
+                                      child: LinearProgressIndicator(),
+                                    )
+                                  else if (_bars.isEmpty)
+                                    Text(
+                                      'No bars found nearby.',
+                                      style: TextStyle(
+                                        color: cs.onSurface.withOpacity(.7),
+                                      ),
+                                    )
+                                  else
+                                    LayoutBuilder(
+                                      builder: (ctx, cts) {
+                                        final screenW = MediaQuery.of(
+                                          ctx,
+                                        ).size.width;
+                                        final cardW = screenW < 480
+                                            ? screenW * 0.8
+                                            : math.min(380.0, screenW * 0.44);
+                                        return SingleChildScrollView(
+                                          scrollDirection: Axis.horizontal,
+                                          child: Row(
+                                            children: _bars
+                                                .map(
+                                                  (p) => Padding(
+                                                    padding:
+                                                        const EdgeInsets.only(
+                                                          right: 10.0,
+                                                        ),
+                                                    child: ConstrainedBox(
+                                                      constraints:
+                                                          BoxConstraints(
+                                                            minWidth: cardW
+                                                                .clamp(
+                                                                  240,
+                                                                  460,
+                                                                ),
+                                                            maxWidth: cardW
+                                                                .clamp(
+                                                                  260,
+                                                                  500,
+                                                                ),
+                                                          ),
+                                                      child: _barCard(
+                                                        context,
+                                                        p,
                                                       ),
                                                     ),
                                                   ),
@@ -1437,7 +1648,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
     );
   }
 
-  // --- UI: route card --------------------------------------------------------
+  // --- UI: transit route card ------------------------------------------------
 
   Widget _routeCard(BuildContext context, _TransitRoute r) {
     final cs = Theme.of(context).colorScheme;
@@ -1455,13 +1666,17 @@ class _ViewListingPageState extends State<ViewListingPage> {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(
-                '${_clock(r.departureTime)} → ${_clock(r.arrivalTime)}',
-                style: TextStyle(
-                  fontWeight: FontWeight.w800,
-                  color: cs.onSurface,
+              Flexible(
+                child: Text(
+                  '${_clock(r.departureTime)} → ${_clock(r.arrivalTime)}',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w800,
+                    color: cs.onSurface,
+                  ),
+                  overflow: TextOverflow.ellipsis,
                 ),
               ),
+              const SizedBox(width: 8),
               Text(
                 r.totalText,
                 style: TextStyle(
@@ -1477,6 +1692,8 @@ class _ViewListingPageState extends State<ViewListingPage> {
               child: Text(
                 r.summary,
                 style: TextStyle(color: cs.onSurface.withOpacity(.7)),
+                overflow: TextOverflow.ellipsis,
+                maxLines: 1,
               ),
             ),
           const SizedBox(height: 8),
@@ -1505,6 +1722,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
                           Text(
                             'Walk • ${s.durationText ?? ''} • ${s.distanceText ?? ''}',
                             style: const TextStyle(fontWeight: FontWeight.w600),
+                            overflow: TextOverflow.ellipsis,
                           ),
                           if (s.instruction?.isNotEmpty == true)
                             Text(
@@ -1512,18 +1730,23 @@ class _ViewListingPageState extends State<ViewListingPage> {
                               style: TextStyle(
                                 color: cs.onSurface.withOpacity(.8),
                               ),
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
                             ),
                         ] else ...[
                           Text(
                             '${s.transitLine ?? 'Transit'} • ${s.transitHeadsign ?? ''}'
                                 .trim(),
                             style: const TextStyle(fontWeight: FontWeight.w700),
+                            overflow: TextOverflow.ellipsis,
                           ),
                           Text(
                             'From ${s.departureStop ?? '?'} (${_clock(s.departureTime!)}) to ${s.arrivalStop ?? '?'} (${_clock(s.arrivalTime!)})',
                             style: TextStyle(
                               color: cs.onSurface.withOpacity(.85),
                             ),
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
                           ),
                           if ((s.platform ?? '').isNotEmpty)
                             Text(
@@ -1531,6 +1754,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
                               style: TextStyle(
                                 color: cs.onSurface.withOpacity(.7),
                               ),
+                              overflow: TextOverflow.ellipsis,
                             ),
                           if ((s.numStops ?? 0) > 0)
                             Text(
@@ -1548,6 +1772,71 @@ class _ViewListingPageState extends State<ViewListingPage> {
               );
             }).toList(),
           ),
+        ],
+      ),
+    );
+  }
+
+  // --- UI: nearby bar card ---------------------------------------------------
+
+  Widget _barCard(BuildContext context, _NearbyPlace p) {
+    final cs = Theme.of(context).colorScheme;
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 6),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        border: Border.all(color: cs.primary.withOpacity(.12)),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            p.name,
+            style: TextStyle(
+              fontWeight: FontWeight.w800,
+              color: cs.onSurface,
+              fontSize: 16,
+            ),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          const SizedBox(height: 4),
+          Row(
+            children: [
+              Icon(Icons.place_outlined, size: 14, color: cs.primary),
+              const SizedBox(width: 4),
+              Flexible(
+                child: Text(
+                  '${p.distanceKm.toStringAsFixed(2)} km • ${p.address}',
+                  style: TextStyle(color: cs.onSurface.withOpacity(.8)),
+                  overflow: TextOverflow.ellipsis,
+                  maxLines: 2,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          if (p.rating != null)
+            Row(
+              children: [
+                Icon(Icons.star_rate_rounded, size: 16, color: cs.primary),
+                const SizedBox(width: 4),
+                Text(
+                  '${p.rating!.toStringAsFixed(1)}'
+                  '${p.ratingCount != null ? ' (${p.ratingCount})' : ''}',
+                  style: TextStyle(
+                    color: cs.onSurface.withOpacity(.9),
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            )
+          else
+            Text(
+              'No rating yet',
+              style: TextStyle(color: cs.onSurface.withOpacity(.6)),
+            ),
         ],
       ),
     );
@@ -1696,6 +1985,28 @@ class _TransitRoute {
     }
     return null;
   }
+}
+
+// --- Nearby place model -------------------------------------------------------
+
+class _NearbyPlace {
+  final String name;
+  final String address;
+  final double? rating;
+  final int? ratingCount;
+  final double latitude;
+  final double longitude;
+  final double distanceKm;
+
+  _NearbyPlace({
+    required this.name,
+    required this.address,
+    required this.rating,
+    required this.ratingCount,
+    required this.latitude,
+    required this.longitude,
+    required this.distanceKm,
+  });
 }
 
 // --- Reusable card ------------------------------------------------------------
