@@ -181,20 +181,6 @@ class _LoginPageState extends State<LoginPage> {
                       },
 
                     ),
-                    const SizedBox(height: 8),
-                    Align(
-                      alignment: Alignment.centerRight,
-                      child: TextButton(
-                        onPressed: () => Navigator.of(context).pushNamed('/forgot-password'),
-                        child: Text(
-                          'Forgot Password?',
-                          style: TextStyle(
-                            fontSize: 14,
-                            color: theme?.tokens.colors.piccolo,
-                          ),
-                        ),
-                      ),
-                    ),
                     const SizedBox(height: 12),
                     SizedBox(
                       height: 48,
@@ -209,12 +195,29 @@ class _LoginPageState extends State<LoginPage> {
                             : const Text('Sign in'),
                       ),
                     ),
-                    const SizedBox(height: 12),
+                    const SizedBox(height: 8),
                     Align(
                       alignment: Alignment.center,
                       child: TextButton(
                         onPressed: () => Navigator.of(context).pushReplacementNamed('/register'),
-                        child: const Text("Don't have an account? Register"),
+                        child: Text(
+                          "Don't have an account? Register",
+                          style: TextStyle(
+                            color: theme?.tokens.colors.piccolo,
+                          ),
+                        ),
+                      ),
+                    ),
+                    Align(
+                      alignment: Alignment.center,
+                      child: TextButton(
+                        onPressed: () => Navigator.of(context).pushNamed('/forgot-password'),
+                        child: Text(
+                          'Forgot Password?',
+                          style: TextStyle(
+                            color: theme?.tokens.colors.piccolo,
+                          ),
+                        ),
                       ),
                     ),
 
