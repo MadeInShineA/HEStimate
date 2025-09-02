@@ -37,6 +37,7 @@ dependencies:
   firebase_storage: ^12.3.3
   path_provider: ^2.1.5
   flutter_dotenv: ^5.0.2
+  url_launcher: ^6.3.0
   moon_design:
     git:
       url: https://github.com/coingaming/moon_flutter.git

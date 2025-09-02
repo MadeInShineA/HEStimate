@@ -1,16 +1,20 @@
 // lib/ui/view_listing_page.dart
 import 'dart:math' as math;
 import 'dart:convert';
+import 'dart:io' show Platform;
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:moon_design/moon_design.dart';
 import 'package:http/http.dart' as http;
+import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import 'edit_listing_page.dart';
 
 // ✅ Use the same key you verified via curl (Directions + Places v1 enabled, billing on)
-const _googleMapsApiKey = 'AIzaSyAopsH4eK8TqlVIhcOAGwb4h1vX0em_wTo';
+final _googleMapsApiKey = dotenv.env['GOOGLE_API_KEY'] ?? '';
 
 // ✅ Your campuses are stored in this collection
 const _hesCollection = 'schools';
@@ -78,8 +82,16 @@ class _ViewListingPageState extends State<ViewListingPage> {
   static DateTime _monthDate(DateTime d) => DateTime(d.year, d.month);
   DateTime _dateOnly(DateTime d) => DateTime(d.year, d.month, d.day);
 
-  // Carrousel
+  // Carrousels
   late final PageController _photoCtrl;
+
+  // Carousels & accordion state
+  // Full-width pages → no adjacent peek
+  late final PageController _ptCtrl = PageController(viewportFraction: 1.0);
+  late final PageController _barsCtrl = PageController(viewportFraction: 1.0);
+  int _ptPage = 0;
+  int _barsPage = 0;
+  int? _expandedBarIndex; // null = none
 
   bool get _isOwner =>
       FirebaseAuth.instance.currentUser?.uid != null &&
@@ -95,7 +107,33 @@ class _ViewListingPageState extends State<ViewListingPage> {
   @override
   void dispose() {
     _photoCtrl.dispose();
+    _ptCtrl.dispose();
+    _barsCtrl.dispose();
     super.dispose();
+  }
+
+  // Dots helper
+  Widget _dots(BuildContext context, {required int count, required int index}) {
+    final cs = Theme.of(context).colorScheme;
+    if (count <= 1) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: List.generate(count, (i) {
+          final active = i == index;
+          return Container(
+            width: active ? 10 : 8,
+            height: active ? 10 : 8,
+            margin: const EdgeInsets.symmetric(horizontal: 4),
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: active ? cs.primary : cs.primary.withOpacity(.25),
+            ),
+          );
+        }),
+      ),
+    );
   }
 
   Future<void> _load() async {
@@ -166,20 +204,17 @@ class _ViewListingPageState extends State<ViewListingPage> {
   }
 
   Future<void> _ensureNearestSchool() async {
-    // If missing, compute and persist
     if (_latitude != null &&
         _longitude != null &&
         (_proximHesKm == null || (_nearestHesId ?? '').isEmpty)) {
       await _computeNearestHes(persist: true);
     }
-    // If we have an id but no name, resolve
     if ((_nearestHesId ?? '').isNotEmpty && _nearestHesName == null) {
       await _resolveHesNameById(_nearestHesId!);
     }
   }
 
   void _autoLoadSections() {
-    // Auto-load transit routes and nearby bars once we have coords + school
     if (_latitude != null && _longitude != null) {
       _loadPtRoutesNext2h(); // fire-and-forget
       _loadNearbyBars(); // fire-and-forget
@@ -282,7 +317,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
   Future<void> _resolveHesNameById(String campusId) async {
     try {
       final doc = await FirebaseFirestore.instance
-          .collection(_hesCollection) // schools
+          .collection(_hesCollection)
           .doc(campusId)
           .get();
       if (doc.exists) {
@@ -372,7 +407,6 @@ class _ViewListingPageState extends State<ViewListingPage> {
       setState(() => _ptError = 'Missing listing coordinates');
       return;
     }
-    // Ensure we have a nearest school id
     if (_nearestHesId == null || _nearestHesId!.isEmpty) {
       await _computeNearestHes(persist: true);
       if (_nearestHesId == null || _nearestHesId!.isEmpty) {
@@ -380,8 +414,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
         return;
       }
     }
-    if (_googleMapsApiKey.isEmpty ||
-        _googleMapsApiKey == 'YOUR_DIRECTIONS_API_KEY') {
+    if (_googleMapsApiKey.isEmpty) {
       setState(
         () => _ptError =
             'Google Directions API key missing. Set _googleMapsApiKey.',
@@ -429,6 +462,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
       _ptError = null;
       _loadingPt = true;
       _ptRoutes = [];
+      _ptPage = 0;
     });
 
     try {
@@ -509,8 +543,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
       setState(() => _barsError = 'Missing listing coordinates');
       return;
     }
-    if (_googleMapsApiKey.isEmpty ||
-        _googleMapsApiKey == 'YOUR_DIRECTIONS_API_KEY') {
+    if (_googleMapsApiKey.isEmpty) {
       setState(
         () => _barsError =
             'Google Places API key missing. Set _googleMapsApiKey.',
@@ -522,6 +555,8 @@ class _ViewListingPageState extends State<ViewListingPage> {
       _loadingBars = true;
       _barsError = null;
       _bars = [];
+      _barsPage = 0;
+      _expandedBarIndex = null;
     });
 
     try {
@@ -589,10 +624,27 @@ class _ViewListingPageState extends State<ViewListingPage> {
         );
       }
 
-      parsed.sort((a, b) => a.distanceKm.compareTo(b.distanceKm));
+      // Deduplicate by (name,address)
+      final seen = <String>{};
+      final deduped = <_NearbyPlace>[];
+      for (final p in parsed) {
+        final k = '${p.name.toLowerCase()}|${p.address.toLowerCase()}';
+        if (seen.add(k)) deduped.add(p);
+      }
+
+      // Sort by rating desc, then ratingCount desc, then distance asc
+      deduped.sort((a, b) {
+        final ar = a.rating ?? -1.0;
+        final br = b.rating ?? -1.0;
+        if (ar != br) return br.compareTo(ar);
+        final arc = a.ratingCount ?? -1;
+        final brc = b.ratingCount ?? -1;
+        if (arc != brc) return brc.compareTo(arc);
+        return a.distanceKm.compareTo(b.distanceKm);
+      });
 
       setState(() {
-        _bars = parsed.take(20).toList();
+        _bars = deduped.take(20).toList();
         _loadingBars = false;
         if (_bars.isEmpty) {
           _barsError = 'No bars found nearby.';
@@ -691,6 +743,58 @@ class _ViewListingPageState extends State<ViewListingPage> {
     }
 
     return items;
+  }
+
+  // --- Open place in Maps (cross-platform & robust) --------------------------
+
+  Future<void> _openPlaceInMaps(_NearbyPlace p) async {
+    final lat = p.latitude.toStringAsFixed(6);
+    final lon = p.longitude.toStringAsFixed(6);
+    final encodedQuery = Uri.encodeComponent('${p.name}, ${p.address}');
+
+    // Build candidates in priority order per platform
+    final List<Uri> candidates;
+    if (kIsWeb) {
+      candidates = [
+        Uri.parse('https://www.google.com/maps/search/?api=1&query=$lat,$lon'),
+      ];
+    } else if (Platform.isIOS) {
+      candidates = [
+        Uri.parse('comgooglemaps://?q=$lat,$lon&center=$lat,$lon&zoom=16'),
+        Uri.parse('maps://?q=$encodedQuery&ll=$lat,$lon'), // Apple Maps
+        Uri.parse('https://www.google.com/maps/search/?api=1&query=$lat,$lon'),
+      ];
+    } else if (Platform.isAndroid) {
+      candidates = [
+        Uri.parse('geo:$lat,$lon?q=$encodedQuery'),
+        Uri.parse('https://www.google.com/maps/search/?api=1&query=$lat,$lon'),
+      ];
+    } else {
+      candidates = [
+        Uri.parse('https://www.google.com/maps/search/?api=1&query=$lat,$lon'),
+      ];
+    }
+
+    for (final uri in candidates) {
+      try {
+        final launched = await launchUrl(
+          uri,
+          mode: kIsWeb
+              ? LaunchMode.platformDefault
+              : LaunchMode.externalApplication,
+          webOnlyWindowName: kIsWeb ? '_blank' : null,
+        );
+        if (launched) return;
+      } catch (_) {
+        // try next candidate
+      }
+    }
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not open Google Maps')),
+      );
+    }
   }
 
   @override
@@ -1223,7 +1327,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
 
                             const SizedBox(height: 16),
 
-                            // Public transport → HES (responsive, auto-load, no button)
+                            // Public transport → HES (PageView full-width + dots, overflow-safe)
                             _MoonCard(
                               isDark: isDark,
                               child: Column(
@@ -1237,19 +1341,19 @@ class _ViewListingPageState extends State<ViewListingPage> {
                                         size: 20,
                                       ),
                                       const SizedBox(width: 8),
-                                      Text(
-                                        'Public transport to HES (next 2h)',
-                                        style: TextStyle(
-                                          fontSize: 18,
-                                          fontWeight: FontWeight.w800,
-                                          color: cs.onSurface,
-                                        ),
-                                      ),
                                     ],
+                                  ),
+                                  Text(
+                                    'Public transport to HES (next 2h)',
+                                    style: TextStyle(
+                                      fontSize: 18,
+                                      fontWeight: FontWeight.w800,
+                                      color: cs.onSurface,
+                                    ),
                                   ),
                                   const SizedBox(height: 8),
                                   Text(
-                                    'Tip: multiple routes — swipe sideways to explore.',
+                                    'Swipe horizontally to browse routes.',
                                     style: TextStyle(
                                       fontSize: 12,
                                       fontStyle: FontStyle.italic,
@@ -1286,58 +1390,42 @@ class _ViewListingPageState extends State<ViewListingPage> {
                                         color: cs.onSurface.withOpacity(.7),
                                       ),
                                     )
-                                  else
-                                    LayoutBuilder(
-                                      builder: (ctx, cts) {
-                                        final screenW = MediaQuery.of(
-                                          ctx,
-                                        ).size.width;
-                                        final cardW = screenW < 480
-                                            ? screenW * 0.86
-                                            : math.min(440.0, screenW * 0.48);
-                                        return SingleChildScrollView(
-                                          scrollDirection: Axis.horizontal,
-                                          child: Row(
-                                            children: _ptRoutes
-                                                .map(
-                                                  (r) => Padding(
-                                                    padding:
-                                                        const EdgeInsets.only(
-                                                          right: 10.0,
-                                                        ),
-                                                    child: ConstrainedBox(
-                                                      constraints:
-                                                          BoxConstraints(
-                                                            minWidth: cardW
-                                                                .clamp(
-                                                                  280,
-                                                                  520,
-                                                                ),
-                                                            maxWidth: cardW
-                                                                .clamp(
-                                                                  300,
-                                                                  560,
-                                                                ),
-                                                          ),
-                                                      child: _routeCard(
-                                                        context,
-                                                        r,
-                                                      ),
-                                                    ),
-                                                  ),
-                                                )
-                                                .toList(),
+                                  else ...[
+                                    Builder(
+                                      builder: (ctx) {
+                                        final pvHeight = math.min(
+                                          MediaQuery.of(ctx).size.height * 0.5,
+                                          420.0,
+                                        );
+                                        return SizedBox(
+                                          height: pvHeight,
+                                          child: PageView.builder(
+                                            controller: _ptCtrl,
+                                            padEnds: true,
+                                            itemCount: _ptRoutes.length,
+                                            onPageChanged: (i) =>
+                                                setState(() => _ptPage = i),
+                                            itemBuilder: (ctx, i) {
+                                              final r = _ptRoutes[i];
+                                              return _routeCard(context, r);
+                                            },
                                           ),
                                         );
                                       },
                                     ),
+                                    _dots(
+                                      context,
+                                      count: _ptRoutes.length,
+                                      index: _ptPage,
+                                    ),
+                                  ],
                                 ],
                               ),
                             ),
 
                             const SizedBox(height: 16),
 
-                            // Nearby Bars (Places API v1)
+                            // Nearby Bars (PageView full-width + dots + accordion; sorted by rating desc)
                             _MoonCard(
                               isDark: isDark,
                               child: Column(
@@ -1351,19 +1439,19 @@ class _ViewListingPageState extends State<ViewListingPage> {
                                         size: 20,
                                       ),
                                       const SizedBox(width: 8),
-                                      Text(
-                                        'Nearby bars',
-                                        style: TextStyle(
-                                          fontSize: 18,
-                                          fontWeight: FontWeight.w800,
-                                          color: cs.onSurface,
-                                        ),
-                                      ),
                                     ],
+                                  ),
+                                  Text(
+                                    'Nearby bars (best rated first)',
+                                    style: TextStyle(
+                                      fontSize: 18,
+                                      fontWeight: FontWeight.w800,
+                                      color: cs.onSurface,
+                                    ),
                                   ),
                                   const SizedBox(height: 8),
                                   Text(
-                                    'Swipe sideways to view more options around the listing.',
+                                    'Swipe horizontally. Tap a card to expand details.',
                                     style: TextStyle(
                                       fontSize: 12,
                                       fontStyle: FontStyle.italic,
@@ -1392,51 +1480,58 @@ class _ViewListingPageState extends State<ViewListingPage> {
                                         color: cs.onSurface.withOpacity(.7),
                                       ),
                                     )
-                                  else
-                                    LayoutBuilder(
-                                      builder: (ctx, cts) {
-                                        final screenW = MediaQuery.of(
-                                          ctx,
-                                        ).size.width;
-                                        final cardW = screenW < 480
-                                            ? screenW * 0.8
-                                            : math.min(380.0, screenW * 0.44);
-                                        return SingleChildScrollView(
-                                          scrollDirection: Axis.horizontal,
-                                          child: Row(
-                                            children: _bars
-                                                .map(
-                                                  (p) => Padding(
-                                                    padding:
-                                                        const EdgeInsets.only(
-                                                          right: 10.0,
-                                                        ),
-                                                    child: ConstrainedBox(
-                                                      constraints:
-                                                          BoxConstraints(
-                                                            minWidth: cardW
-                                                                .clamp(
-                                                                  240,
-                                                                  460,
-                                                                ),
-                                                            maxWidth: cardW
-                                                                .clamp(
-                                                                  260,
-                                                                  500,
-                                                                ),
-                                                          ),
-                                                      child: _barCard(
-                                                        context,
-                                                        p,
-                                                      ),
-                                                    ),
-                                                  ),
-                                                )
-                                                .toList(),
-                                          ),
-                                        );
-                                      },
+                                  else ...[
+                                    // ✅ Inline PageView (no const, uses parent state)
+                                    SizedBox(
+                                      height:
+                                          170, // compact, enough to show accordion content
+                                      child: PageView.builder(
+                                        controller: _barsCtrl,
+                                        padEnds: true,
+                                        itemCount: _bars.length,
+                                        onPageChanged: (i) => setState(() {
+                                          _barsPage = i;
+                                          _expandedBarIndex =
+                                              null; // collapse on swipe
+                                        }),
+                                        itemBuilder: (ctx, i) {
+                                          final p = _bars[i];
+                                          final expanded =
+                                              _expandedBarIndex == i;
+                                          return _barCard(
+                                            context,
+                                            p,
+                                            index: i,
+                                            expanded: expanded,
+                                            onTap: () {
+                                              setState(() {
+                                                _expandedBarIndex = expanded
+                                                    ? null
+                                                    : i;
+                                              });
+                                            },
+                                          );
+                                        },
+                                      ),
                                     ),
+                                    _dots(
+                                      context,
+                                      count: _bars.length,
+                                      index: _barsPage,
+                                    ),
+                                    if (_bars.length > 1)
+                                      Padding(
+                                        padding: const EdgeInsets.only(top: 6),
+                                        child: Text(
+                                          '${_barsPage + 1} / ${_bars.length}',
+                                          textAlign: TextAlign.center,
+                                          style: TextStyle(
+                                            color: cs.onSurface.withOpacity(.6),
+                                            fontSize: 12,
+                                          ),
+                                        ),
+                                      ),
+                                  ],
                                 ],
                               ),
                             ),
@@ -1648,7 +1743,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
     );
   }
 
-  // --- UI: transit route card ------------------------------------------------
+  // --- UI: transit route card (scrollable to avoid overflow) -----------------
 
   Widget _routeCard(BuildContext context, _TransitRoute r) {
     final cs = Theme.of(context).colorScheme;
@@ -1659,191 +1754,344 @@ class _ViewListingPageState extends State<ViewListingPage> {
         border: Border.all(color: cs.primary.withOpacity(.12)),
         borderRadius: BorderRadius.circular(12),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Times + duration
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Flexible(
-                child: Text(
-                  '${_clock(r.departureTime)} → ${_clock(r.arrivalTime)}',
-                  style: TextStyle(
-                    fontWeight: FontWeight.w800,
-                    color: cs.onSurface,
-                  ),
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-              const SizedBox(width: 8),
-              Text(
-                r.totalText,
-                style: TextStyle(
-                  color: cs.onSurface.withOpacity(.8),
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ],
-          ),
-          if (r.summary.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(top: 2.0),
-              child: Text(
-                r.summary,
-                style: TextStyle(color: cs.onSurface.withOpacity(.7)),
-                overflow: TextOverflow.ellipsis,
-                maxLines: 1,
-              ),
-            ),
-          const SizedBox(height: 8),
-          // Steps
-          Column(
-            children: r.steps.map((s) {
-              return Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.only(top: 5.0),
-                    child: Icon(
-                      s.type == _StepType.walk
-                          ? Icons.directions_walk
-                          : Icons.directions_transit,
-                      size: 16,
-                      color: cs.primary,
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        if (s.type == _StepType.walk) ...[
-                          Text(
-                            'Walk • ${s.durationText ?? ''} • ${s.distanceText ?? ''}',
-                            style: const TextStyle(fontWeight: FontWeight.w600),
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                          if (s.instruction?.isNotEmpty == true)
-                            Text(
-                              s.instruction!,
-                              style: TextStyle(
-                                color: cs.onSurface.withOpacity(.8),
-                              ),
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                        ] else ...[
-                          Text(
-                            '${s.transitLine ?? 'Transit'} • ${s.transitHeadsign ?? ''}'
-                                .trim(),
-                            style: const TextStyle(fontWeight: FontWeight.w700),
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                          Text(
-                            'From ${s.departureStop ?? '?'} (${_clock(s.departureTime!)}) to ${s.arrivalStop ?? '?'} (${_clock(s.arrivalTime!)})',
-                            style: TextStyle(
-                              color: cs.onSurface.withOpacity(.85),
-                            ),
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                          if ((s.platform ?? '').isNotEmpty)
-                            Text(
-                              'Platform: ${s.platform}',
-                              style: TextStyle(
-                                color: cs.onSurface.withOpacity(.7),
-                              ),
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          if ((s.numStops ?? 0) > 0)
-                            Text(
-                              '${s.numStops} stops',
-                              style: TextStyle(
-                                color: cs.onSurface.withOpacity(.7),
-                              ),
-                            ),
-                        ],
-                        const SizedBox(height: 8),
-                      ],
-                    ),
-                  ),
-                ],
-              );
-            }).toList(),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // --- UI: nearby bar card ---------------------------------------------------
-
-  Widget _barCard(BuildContext context, _NearbyPlace p) {
-    final cs = Theme.of(context).colorScheme;
-    return Container(
-      margin: const EdgeInsets.symmetric(vertical: 6),
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        border: Border.all(color: cs.primary.withOpacity(.12)),
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            p.name,
-            style: TextStyle(
-              fontWeight: FontWeight.w800,
-              color: cs.onSurface,
-              fontSize: 16,
-            ),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
-          const SizedBox(height: 4),
-          Row(
-            children: [
-              Icon(Icons.place_outlined, size: 14, color: cs.primary),
-              const SizedBox(width: 4),
-              Flexible(
-                child: Text(
-                  '${p.distanceKm.toStringAsFixed(2)} km • ${p.address}',
-                  style: TextStyle(color: cs.onSurface.withOpacity(.8)),
-                  overflow: TextOverflow.ellipsis,
-                  maxLines: 2,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 6),
-          if (p.rating != null)
+      child: SingleChildScrollView(
+        physics: const BouncingScrollPhysics(),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Times + duration
             Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Icon(Icons.star_rate_rounded, size: 16, color: cs.primary),
-                const SizedBox(width: 4),
+                Flexible(
+                  child: Text(
+                    '${_clock(r.departureTime)} → ${_clock(r.arrivalTime)}',
+                    style: TextStyle(
+                      fontWeight: FontWeight.w800,
+                      color: cs.onSurface,
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                const SizedBox(width: 8),
                 Text(
-                  '${p.rating!.toStringAsFixed(1)}'
-                  '${p.ratingCount != null ? ' (${p.ratingCount})' : ''}',
+                  r.totalText,
                   style: TextStyle(
-                    color: cs.onSurface.withOpacity(.9),
+                    color: cs.onSurface.withOpacity(.8),
                     fontWeight: FontWeight.w600,
                   ),
                 ),
               ],
-            )
-          else
-            Text(
-              'No rating yet',
-              style: TextStyle(color: cs.onSurface.withOpacity(.6)),
             ),
-        ],
+            if (r.summary.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 2.0),
+                child: Text(
+                  r.summary,
+                  style: TextStyle(color: cs.onSurface.withOpacity(.7)),
+                  overflow: TextOverflow.ellipsis,
+                  maxLines: 1,
+                ),
+              ),
+            const SizedBox(height: 8),
+            // Steps
+            Column(
+              children: r.steps.map((s) {
+                return Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.only(top: 5.0),
+                      child: Icon(
+                        s.type == _StepType.walk
+                            ? Icons.directions_walk
+                            : Icons.directions_transit,
+                        size: 16,
+                        color: cs.primary,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          if (s.type == _StepType.walk) ...[
+                            Text(
+                              'Walk • ${s.durationText ?? ''} • ${s.distanceText ?? ''}',
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w600,
+                              ),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            if (s.instruction?.isNotEmpty == true)
+                              Text(
+                                s.instruction!,
+                                style: TextStyle(
+                                  color: cs.onSurface.withOpacity(.8),
+                                ),
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                          ] else ...[
+                            Text(
+                              '${s.transitLine ?? 'Transit'} • ${s.transitHeadsign ?? ''}'
+                                  .trim(),
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w700,
+                              ),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            Text(
+                              'From ${s.departureStop ?? '?'} (${_clock(s.departureTime!)}) to ${s.arrivalStop ?? '?'} (${_clock(s.arrivalTime!)})',
+                              style: TextStyle(
+                                color: cs.onSurface.withOpacity(.85),
+                              ),
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            if ((s.platform ?? '').isNotEmpty)
+                              Text(
+                                'Platform: ${s.platform}',
+                                style: TextStyle(
+                                  color: cs.onSurface.withOpacity(.7),
+                                ),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            if ((s.numStops ?? 0) > 0)
+                              Text(
+                                '${s.numStops} stops',
+                                style: TextStyle(
+                                  color: cs.onSurface.withOpacity(.7),
+                                ),
+                              ),
+                          ],
+                          const SizedBox(height: 8),
+                        ],
+                      ),
+                    ),
+                  ],
+                );
+              }).toList(),
+            ),
+            const SizedBox(height: 4),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // --- UI: nearby bar card (tap to expand/collapse) --------------------------
+
+  Widget _barCard(
+    BuildContext context,
+    _NearbyPlace p, {
+    required int index,
+    required bool expanded,
+    required VoidCallback onTap,
+  }) {
+    final cs = Theme.of(context).colorScheme;
+
+    // Travel time estimates (derived from distance)
+    final walkMins = (p.distanceKm / 4.5 * 60).round(); // ~4.5 km/h
+    final bikeMins = (p.distanceKm / 14.0 * 60).round(); // ~14 km/h
+
+    return InkWell(
+      borderRadius: BorderRadius.circular(12),
+      onTap: onTap, // toggles accordion
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOut,
+        margin: const EdgeInsets.symmetric(vertical: 6),
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          border: Border.all(color: cs.primary.withOpacity(.12)),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: LayoutBuilder(
+          builder: (ctx, constraints) {
+            return SingleChildScrollView(
+              physics: expanded
+                  ? const BouncingScrollPhysics()
+                  : const NeverScrollableScrollPhysics(),
+              child: ConstrainedBox(
+                constraints: BoxConstraints(minHeight: constraints.maxHeight),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Name
+                    Text(
+                      p.name,
+                      style: TextStyle(
+                        fontWeight: FontWeight.w800,
+                        color: cs.onSurface,
+                        fontSize: 16,
+                      ),
+                      maxLines: expanded ? 3 : 1,
+                      overflow: expanded
+                          ? TextOverflow.visible
+                          : TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 4),
+
+                    // Address
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Icon(Icons.place_outlined, size: 14, color: cs.primary),
+                        const SizedBox(width: 4),
+                        Expanded(
+                          child: Text(
+                            '${p.distanceKm.toStringAsFixed(2)} km • ${p.address}',
+                            style: TextStyle(
+                              color: cs.onSurface.withOpacity(.8),
+                            ),
+                            maxLines: expanded ? null : 2,
+                            overflow: expanded
+                                ? TextOverflow.visible
+                                : TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+
+                    // Rating
+                    if (p.rating != null)
+                      Row(
+                        children: [
+                          Icon(
+                            Icons.star_rate_rounded,
+                            size: 16,
+                            color: cs.primary,
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            '${p.rating!.toStringAsFixed(1)}'
+                            '${p.ratingCount != null ? ' (${p.ratingCount})' : ''}',
+                            style: TextStyle(
+                              color: cs.onSurface.withOpacity(.9),
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ],
+                      )
+                    else
+                      Text(
+                        'No rating yet',
+                        style: TextStyle(color: cs.onSurface.withOpacity(.6)),
+                      ),
+
+                    // Extra details (only expanded)
+                    AnimatedCrossFade(
+                      duration: const Duration(milliseconds: 180),
+                      sizeCurve: Curves.easeOut,
+                      alignment: Alignment.topLeft,
+                      crossFadeState: expanded
+                          ? CrossFadeState.showSecond
+                          : CrossFadeState.showFirst,
+                      firstChild: const SizedBox.shrink(),
+                      secondChild: Padding(
+                        padding: const EdgeInsets.only(top: 10),
+                        child: Container(
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: cs.primary.withOpacity(.06),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(
+                              color: cs.primary.withOpacity(.15),
+                            ),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              // Travel time
+                              Row(
+                                children: [
+                                  const Icon(Icons.directions_walk, size: 16),
+                                  const SizedBox(width: 6),
+                                  Text(
+                                    'Walk ~ $walkMins min',
+                                    style: TextStyle(
+                                      color: cs.onSurface.withOpacity(.9),
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  const Icon(Icons.pedal_bike, size: 16),
+                                  const SizedBox(width: 6),
+                                  Text(
+                                    'Bike ~ $bikeMins min',
+                                    style: TextStyle(
+                                      color: cs.onSurface.withOpacity(.9),
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 8),
+
+                              // Google Maps link (tap here should NOT close the accordion)
+                              GestureDetector(
+                                behavior: HitTestBehavior.opaque,
+                                onTap: () => _openPlaceInMaps(p),
+                                onTapDown: (_) {}, // eagerly claim the gesture
+                                child: Row(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    const Icon(Icons.map_outlined, size: 16),
+                                    const SizedBox(width: 6),
+                                    Expanded(
+                                      child: Text(
+                                        'Open in Google Maps',
+                                        style: TextStyle(
+                                          color: cs.primary,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        ),
       ),
     );
   }
 
   String _clock(DateTime dt) =>
       '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+}
+
+// --- Nearby place model -------------------------------------------------------
+
+class _NearbyPlace {
+  final String name;
+  final String address;
+  final double? rating;
+  final int? ratingCount;
+  final double latitude;
+  final double longitude;
+  final double distanceKm;
+
+  _NearbyPlace({
+    required this.name,
+    required this.address,
+    required this.rating,
+    required this.ratingCount,
+    required this.latitude,
+    required this.longitude,
+    required this.distanceKm,
+  });
 }
 
 // --- Models for Directions response ------------------------------------------
@@ -1948,7 +2196,9 @@ class _TransitRoute {
           steps.add(
             _TransitStep.transit(
               transitLine: lineName.isEmpty ? null : lineName,
-              transitHeadsign: headsign.isEmpty ? null : headsign,
+              transitHeadsign: headsign is String && headsign.isNotEmpty
+                  ? headsign
+                  : null,
               departureStop: depStop,
               arrivalStop: arrStop,
               numStops: numStops,
@@ -1985,28 +2235,6 @@ class _TransitRoute {
     }
     return null;
   }
-}
-
-// --- Nearby place model -------------------------------------------------------
-
-class _NearbyPlace {
-  final String name;
-  final String address;
-  final double? rating;
-  final int? ratingCount;
-  final double latitude;
-  final double longitude;
-  final double distanceKm;
-
-  _NearbyPlace({
-    required this.name,
-    required this.address,
-    required this.rating,
-    required this.ratingCount,
-    required this.latitude,
-    required this.longitude,
-    required this.distanceKm,
-  });
 }
 
 // --- Reusable card ------------------------------------------------------------
