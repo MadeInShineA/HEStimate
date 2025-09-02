@@ -96,6 +96,74 @@ String _generateTitle(Map<String, dynamic> data) {
   return title;
 }
 
+Widget _starsRow(BuildContext context, double avg, int count) {
+  final cs = Theme.of(context).colorScheme;
+  final full = avg.round().clamp(0, 5);
+  return Row(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      ...List.generate(5, (i) {
+        final filled = i < full;
+        return Padding(
+          padding: const EdgeInsets.only(right: 2),
+          child: Icon(
+            filled ? Icons.star_rounded : Icons.star_border_rounded,
+            size: 16,
+            color: filled ? cs.primary : cs.onSurface.withOpacity(.35),
+          ),
+        );
+      }),
+      const SizedBox(width: 6),
+      Text(
+        count == 0 ? 'No ratings' : '${avg.toStringAsFixed(1)} ($count)',
+        style: TextStyle(
+          fontSize: 12,
+          color: cs.onSurface.withOpacity(.8),
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+    ],
+  );
+}
+
+class StudentRatingPreview extends StatelessWidget {
+  final String? studentUid;
+  const StudentRatingPreview({super.key, required this.studentUid});
+
+  @override
+  Widget build(BuildContext context) {
+    if (studentUid == null || studentUid!.isEmpty) {
+      return _starsRow(context, 0, 0); // fallback propre
+    }
+
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: FirebaseFirestore.instance
+          .collection('reviews')
+          .where('studentUid', isEqualTo: studentUid)
+          .snapshots(),
+      builder: (context, snap) {
+        double avg = 0;
+        int count = 0;
+        if (snap.hasData) {
+          final docs = snap.data!.docs;
+          count = docs.length;
+          if (count > 0) {
+            final sum = docs.fold<double>(
+              0.0,
+              (acc, d) => acc + ((d.data()['rating'] as num?)?.toDouble() ?? 0.0),
+            );
+            avg = sum / count;
+          }
+        }
+        return Padding(
+          padding: const EdgeInsets.only(top: 6.0),
+          child: _starsRow(context, avg, count),
+        );
+      },
+    );
+  }
+}
+
 // ============================================
 // ONGLET REQUESTS - Gestion des demandes de réservation
 // ============================================
@@ -433,6 +501,7 @@ class _RequestsTabState extends State<RequestsTab> with AutomaticKeepAliveClient
                                   color: cs.onSurface.withOpacity(0.6),
                                 ),
                               ),
+                              StudentRatingPreview(studentUid: data['studentUid']),
                             ],
                           ),
                         ),
@@ -790,6 +859,7 @@ class _ReviewsTabState extends State<ReviewsTab> with AutomaticKeepAliveClientMi
                                   color: cs.onSurface.withOpacity(0.6),
                                 ),
                               ),
+                              StudentRatingPreview(studentUid: data['studentUid']),
                             ],
                           ),
                         ),
@@ -1073,6 +1143,7 @@ class _StudentsTabState extends State<StudentsTab> with AutomaticKeepAliveClient
                                     color: cs.onSurface.withOpacity(0.6),
                                   ),
                                 ),
+                                StudentRatingPreview(studentUid: data['studentUid']),
                               ],
                             ),
                           ),
