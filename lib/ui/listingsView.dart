@@ -1,7 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:moon_design/moon_design.dart';
-import 'package:moon_icons/moon_icons.dart';
 import 'package:intl/intl.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
@@ -37,6 +36,8 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
   bool _wifiOnly = false;
   bool _chargesInclOnly = false;
   bool _carParkOnly = false;
+  bool _favoritesOnly = false;
+
   double? _globalMinPrice;
   double? _globalMaxPrice;
   double? _minPrice;
@@ -46,15 +47,33 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
   bool get wantKeepAlive => true;
 
   late final Stream<QuerySnapshot<Map<String, dynamic>>> _listingsStream;
+  late final Stream<Set<String>> _favoritesStream;
+
+  // --- FAVORITES STREAM (user ↔ listing link table) ---
+  Stream<Set<String>> _userFavoritesStream() {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return Stream.value(<String>{});
+    return FirebaseFirestore.instance
+        .collection('favorites')
+        .where('userUid', isEqualTo: uid)
+        .snapshots()
+        .map((snap) => snap.docs
+            .map((d) {
+              final m = d.data() as Map<String, dynamic>;
+              // listingId stocké en champ; si absent, fallback sur parsing éventuel de l'id
+              final lid = (m['listingId'] ?? '').toString();
+              return lid.isNotEmpty ? lid : d.id.split('_').last;
+            })
+            .where((id) => id.isNotEmpty)
+            .toSet());
+  }
 
   Future<void> _fetchPriceBounds() async {
     Query<Map<String, dynamic>> baseQuery = FirebaseFirestore.instance.collection('listings');
-    
-    // Si on est en mode "owner", on filtre par l'utilisateur courant
+
     if (widget.mode == ListingsMode.owner) {
       final uid = FirebaseAuth.instance.currentUser?.uid;
       if (uid == null) {
-        // Pas d'utilisateur connecté, pas de propriétés
         setState(() {
           _globalMinPrice = 0;
           _globalMaxPrice = 10000;
@@ -66,15 +85,8 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
       baseQuery = baseQuery.where('ownerUid', isEqualTo: uid);
     }
 
-    final minSnap = await baseQuery
-        .orderBy('price', descending: false)
-        .limit(1)
-        .get();
-
-    final maxSnap = await baseQuery
-        .orderBy('price', descending: true)
-        .limit(1)
-        .get();
+    final minSnap = await baseQuery.orderBy('price', descending: false).limit(1).get();
+    final maxSnap = await baseQuery.orderBy('price', descending: true).limit(1).get();
 
     final minPrice = minSnap.docs.isNotEmpty ? (minSnap.docs.first['price'] ?? 0).toDouble() : 0;
     final maxPrice = maxSnap.docs.isNotEmpty ? (maxSnap.docs.first['price'] ?? 0).toDouble() : 10000;
@@ -82,16 +94,17 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
     setState(() {
       _globalMinPrice = minPrice;
       _globalMaxPrice = maxPrice;
-      // initialise la sélection utilisateur
       _minPrice = minPrice;
       _maxPrice = maxPrice;
     });
   }
 
+ 
   @override
   void initState() {
     super.initState();
     _listingsStream = _baseQuery().snapshots();
+    _favoritesStream = _userFavoritesStream();
     _fetchPriceBounds();
   }
 
@@ -131,10 +144,10 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
 
   List<QueryDocumentSnapshot<Map<String, dynamic>>> _applyClientSideFilters(
     List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
+    Set<String> favIds,
   ) {
     var filtered = docs;
 
-    // Search city / npa
     final query = _searchCtrl.text.trim().toLowerCase();
     if (query.isNotEmpty) {
       filtered = filtered.where((d) {
@@ -155,7 +168,6 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
       filtered = filtered.where((d) => (d.data()['type'] ?? '').toString().trim() == 'room').toList();
     }
 
-    // Amenities
     if (_furnishedOnly) {
       filtered = filtered.where((d) => d.data()['is_furnish'] == true).toList();
     }
@@ -169,8 +181,10 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
       filtered = filtered.where((d) => d.data()['car_park'] == true).toList();
     }
 
-    // Keep client-side sort consistent if filters changed order
-    final hasFilters = _typeIndex >= 0 || _furnishedOnly || _wifiOnly || _chargesInclOnly || _carParkOnly;
+    // Favorites filter via link-table
+    if (_favoritesOnly) {
+      filtered = filtered.where((d) => favIds.contains(d.id)).toList();
+    }
 
     if (_minPrice != null && _maxPrice != null) {
       filtered = filtered.where((d) {
@@ -178,6 +192,15 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
         return price >= _minPrice! && price <= _maxPrice!;
       }).toList();
     }
+
+
+    // Re-sort if any filter applied (including favorites)
+    final hasFilters = _typeIndex >= 0 ||
+        _furnishedOnly ||
+        _wifiOnly ||
+        _chargesInclOnly ||
+        _carParkOnly ||
+        _favoritesOnly;
 
     if (hasFilters) {
       switch (_sortIndex) {
@@ -234,6 +257,34 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
   String get _emptyStateMessage => widget.mode == ListingsMode.all ? 'No listings match your filters' : 'You have no listings yet';
   String get _emptyStateSubMessage => widget.mode == ListingsMode.all ? 'Try adjusting filters or clearing the search.' : 'Create your first listing to get started.';
 
+  Future<void> _toggleFavorite(String listingId, bool isCurrentlyFavorite) async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Connecte-toi pour utiliser les favoris.')),
+      );
+      return;
+    }
+    final favDocId = '${uid}_$listingId';
+    final ref = FirebaseFirestore.instance.collection('favorites').doc(favDocId);
+
+    try {
+      if (isCurrentlyFavorite) {
+        await ref.delete();
+      } else {
+        await ref.set({
+          'userUid': uid,
+          'listingId': listingId,
+          'createdAt': FieldValue.serverTimestamp(),
+        });
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Erreur favoris: $e')),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     super.build(context);
@@ -289,7 +340,10 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
                       wifiOnly: _wifiOnly,
                       chargesInclOnly: _chargesInclOnly,
                       carParkOnly: _carParkOnly,
-                      minPrice: _minPrice ?? (_globalMinPrice ?? 0), // fallback in case null
+
+                      favoritesOnly: _favoritesOnly,
+                      minPrice: _minPrice ?? (_globalMinPrice ?? 0),
+
                       maxPrice: _maxPrice ?? (_globalMaxPrice ?? 10000),
                       globalMinPrice: _globalMinPrice,
                       globalMaxPrice: _globalMaxPrice,
@@ -300,44 +354,45 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
                         _wifiOnly = f.wifiOnly;
                         _chargesInclOnly = f.chargesInclOnly;
                         _carParkOnly = f.carParkOnly;
+                        _favoritesOnly = f.favoritesOnly;
+
                         _minPrice = f.minPrice;
                         _maxPrice = f.maxPrice;
                       }),
                     ),
                   ),
                 ),
+
+                // Listings stream
                 StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                  stream: _listingsStream, // stream créé une seule fois (pas de reload au thème)
-                  builder: (context, snapshot) {
-                    if (snapshot.connectionState == ConnectionState.waiting) {
+
+                  stream: _listingsStream,
+                  builder: (context, listingsSnap) {
+                    if (listingsSnap.connectionState == ConnectionState.waiting) {
+
                       return const SliverFillRemaining(
                         hasScrollBody: false,
                         child: Center(child: CircularProgressIndicator()),
                       );
                     }
-                    if (snapshot.hasError) {
+                    if (listingsSnap.hasError) {
                       return SliverToBoxAdapter(
                         child: Padding(
                           padding: const EdgeInsets.all(24),
-                          child: Text('Error: ${snapshot.error}'),
+                          child: Text('Error: ${listingsSnap.error}'),
                         ),
                       );
                     }
 
-                    final docs = snapshot.data?.docs ?? [];
-                    final filtered = _applyClientSideFilters(docs);
+                    final docs = listingsSnap.data?.docs ?? [];
 
-                    if (filtered.isEmpty) {
-                      return SliverFillRemaining(
-                        hasScrollBody: false,
-                        child: _EmptyState(
-                          message: _emptyStateMessage,
-                          subMessage: _emptyStateSubMessage,
-                          mode: widget.mode,
-                        ),
-                      );
-                    }
+                    // Favorites stream (user link table)
+                    return StreamBuilder<Set<String>>(
+                      stream: _favoritesStream,
+                      builder: (context, favSnap) {
+                        final favIds = favSnap.data ?? <String>{};
 
+                        final filtered = _applyClientSideFilters(docs, favIds);
                     // Responsive grid
                     int crossAxisCount = 1;
                     double childAspectRatio = 1.1;
@@ -353,32 +408,69 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
                       childAspectRatio = 1.05;
                     }
 
-                    return SliverPadding(
-                      padding: EdgeInsets.symmetric(
-                        horizontal: isXL ? (constraints.maxWidth - 1200) / 2 + 16 : 16,
-                        vertical: 8,
-                      ),
-                      sliver: SliverGrid(
-                        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                          crossAxisCount: crossAxisCount,
-                          crossAxisSpacing: 16,
-                          mainAxisSpacing: 16,
-                          childAspectRatio: childAspectRatio,
-                        ),
-                        delegate: SliverChildBuilderDelegate(
-                          (context, i) {
-                            final doc = filtered[i];
-                            final data = doc.data();
-                            final title = _generateTitle(data);
-                            return _ListingCard(
-                              listingId: doc.id,
-                              data: data,
-                              title: title,
-                            );
-                          },
-                          childCount: filtered.length,
-                        ),
-                      ),
+                        if (filtered.isEmpty) {
+                          return SliverFillRemaining(
+                            hasScrollBody: false,
+                            child: _EmptyState(
+                              message: _emptyStateMessage,
+                              subMessage: _emptyStateSubMessage,
+                              mode: widget.mode,
+                            ),
+                          );
+                        }
+
+                        // Responsive grid
+                        if (w >= 1400) {
+                          crossAxisCount = 4;
+                          childAspectRatio = 0.95;
+                        } else if (w >= 1000) {
+                          crossAxisCount = 3;
+                          childAspectRatio = 1.0;
+                        } else if (w >= 700) {
+                          crossAxisCount = 2;
+                          childAspectRatio = 1.05;
+                        }
+
+                        return SliverPadding(
+                          padding: EdgeInsets.symmetric(
+                            horizontal: isXL ? (constraints.maxWidth - 1200) / 2 + 16 : 16,
+                            vertical: 8,
+                          ),
+                          sliver: SliverGrid(
+                            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                              crossAxisCount: crossAxisCount,
+                              crossAxisSpacing: 16,
+                              mainAxisSpacing: 16,
+                              childAspectRatio: childAspectRatio,
+                            ),
+                            delegate: SliverChildBuilderDelegate(
+                              (context, i) {
+                                final doc = filtered[i];
+                                final data = doc.data();
+                                final title = _generateTitle(data);
+                                final isFav = favIds.contains(doc.id);
+
+                                return _ListingCard(
+                                  key: ValueKey(doc.id),
+                                  listingId: doc.id,
+                                  data: data,
+                                  title: title,
+                                  isFavorite: isFav,
+                                  onToggleFavorite: () => _toggleFavorite(doc.id, isFav),
+                                );
+                              },
+                              childCount: filtered.length,
+                              findChildIndexCallback: (Key key) {
+                                final id = (key as ValueKey<String>).value;
+                                final index = filtered.indexWhere((d) => d.id == id);
+                                return index == -1 ? null : index;
+                              },
+                              addAutomaticKeepAlives: false,
+                              addRepaintBoundaries: true,
+                            ),
+                          ),
+                        );
+                      },
                     );
                   },
                 ),
@@ -400,6 +492,7 @@ class _FilterBar extends StatelessWidget {
   final bool wifiOnly;
   final bool chargesInclOnly;
   final bool carParkOnly;
+  final bool favoritesOnly;
   final double minPrice;
   final double maxPrice;
   final double? globalMinPrice;
@@ -414,6 +507,7 @@ class _FilterBar extends StatelessWidget {
     required this.wifiOnly,
     required this.chargesInclOnly,
     required this.carParkOnly,
+    required this.favoritesOnly,
     required this.minPrice,
     required this.maxPrice,
     required this.globalMinPrice,
@@ -445,6 +539,7 @@ class _FilterBar extends StatelessWidget {
                     wifiOnly: wifiOnly,
                     chargesInclOnly: chargesInclOnly,
                     carParkOnly: carParkOnly,
+                    favoritesOnly: favoritesOnly,
                   ),
                 ),
               ),
@@ -479,6 +574,7 @@ class _FilterBar extends StatelessWidget {
                       wifiOnly: wifiOnly,
                       chargesInclOnly: chargesInclOnly,
                       carParkOnly: carParkOnly,
+                      favoritesOnly: favoritesOnly,
                     ),
                   );
                 },
@@ -504,6 +600,7 @@ class _FilterBar extends StatelessWidget {
                     wifiOnly: wifiOnly,
                     chargesInclOnly: chargesInclOnly,
                     carParkOnly: carParkOnly,
+                    favoritesOnly: favoritesOnly,
                   ),
                 ),
                 isExpanded: false,
@@ -522,6 +619,7 @@ class _FilterBar extends StatelessWidget {
                   wifiOnly: wifiOnly,
                   chargesInclOnly: chargesInclOnly,
                   carParkOnly: carParkOnly,
+                  favoritesOnly: favoritesOnly,
                 ),
               ),
             ),
@@ -536,6 +634,7 @@ class _FilterBar extends StatelessWidget {
                   wifiOnly: v,
                   chargesInclOnly: chargesInclOnly,
                   carParkOnly: carParkOnly,
+                  favoritesOnly: favoritesOnly,
                 ),
               ),
             ),
@@ -550,6 +649,7 @@ class _FilterBar extends StatelessWidget {
                   wifiOnly: wifiOnly,
                   chargesInclOnly: v,
                   carParkOnly: carParkOnly,
+                  favoritesOnly: favoritesOnly,
                 ),
               ),
             ),
@@ -564,6 +664,24 @@ class _FilterBar extends StatelessWidget {
                   wifiOnly: wifiOnly,
                   chargesInclOnly: chargesInclOnly,
                   carParkOnly: v,
+                  favoritesOnly: favoritesOnly,
+                ),
+              ),
+            ),
+
+            // Favorites only
+            _BoolChip(
+              label: 'Favorites',
+              value: favoritesOnly,
+              onChanged: (v) => onChanged(
+                _Filters(
+                  typeIndex: typeIndex,
+                  sortIndex: sortIndex,
+                  furnishedOnly: furnishedOnly,
+                  wifiOnly: wifiOnly,
+                  chargesInclOnly: chargesInclOnly,
+                  carParkOnly: carParkOnly,
+                  favoritesOnly: v,
                 ),
               ),
             ),
@@ -572,9 +690,10 @@ class _FilterBar extends StatelessWidget {
 
         if (globalMinPrice != null && globalMaxPrice != null) ...[
           const SizedBox(height: 16),
-          Text(
+          const Text(
             "Price range (CHF)",
-            style: const TextStyle(fontWeight: FontWeight.bold),
+            style: TextStyle(fontWeight: FontWeight.bold),
+
           ),
           RangeSlider(
             values: RangeValues(minPrice, maxPrice),
@@ -594,6 +713,7 @@ class _FilterBar extends StatelessWidget {
                   wifiOnly: wifiOnly,
                   chargesInclOnly: chargesInclOnly,
                   carParkOnly: carParkOnly,
+                  favoritesOnly: favoritesOnly,
                   minPrice: values.start,
                   maxPrice: values.end,
                 ),
@@ -707,10 +827,16 @@ class _ListingCard extends StatelessWidget {
   final String listingId;
   final Map<String, dynamic> data;
   final String title;
+  final bool isFavorite;
+  final VoidCallback onToggleFavorite;
+
   const _ListingCard({
+    super.key,
     required this.listingId,
     required this.data,
     required this.title,
+    required this.isFavorite,
+    required this.onToggleFavorite,
   });
 
   @override
@@ -832,28 +958,49 @@ class _ListingCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Image
             Expanded(
               flex: 6,
-              child: SizedBox(
-                width: double.infinity,
-                child: imageUrl == null
-                    ? Container(
-                        color: cs.primary.withOpacity(.08),
-                        child: Center(
-                          child: Icon(
-                            Icons.image_outlined,
-                            size: 40,
-                            color: cs.primary.withOpacity(.6),
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  SizedBox(
+                    width: double.infinity,
+                    child: imageUrl == null
+                        ? Container(
+                            color: cs.primary.withOpacity(.08),
+                            child: Center(
+                              child: Icon(
+                                Icons.image_outlined,
+                                size: 40,
+                                color: cs.primary.withOpacity(.6),
+                              ),
+                            ),
+                          )
+                        : Image.network(
+                            imageUrl,
+                            fit: BoxFit.cover,
+                            width: double.infinity,
+                            height: double.infinity,
                           ),
+                  ),
+                  Positioned(
+                    top: 8,
+                    right: 8,
+                    child: ClipOval(
+                      child: Material(
+                        color: Colors.black.withOpacity(0.35),
+                        child: IconButton(
+                          splashRadius: 24,
+                          iconSize: 22,
+                          icon: Icon(isFavorite ? Icons.favorite : Icons.favorite_border),
+                          color: isFavorite ? Colors.redAccent : Colors.white,
+                          tooltip: isFavorite ? 'Retirer des favoris' : 'Ajouter aux favoris',
+                          onPressed: onToggleFavorite,
                         ),
-                      )
-                    : Image.network(
-                        imageUrl,
-                        fit: BoxFit.cover,
-                        width: double.infinity,
-                        height: double.infinity,
                       ),
+                    ),
+                  ),
+                ],
               ),
             ),
 
@@ -865,7 +1012,6 @@ class _ListingCard extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // Titre
                     Flexible(
                       child: Text(
                         title,
@@ -997,6 +1143,7 @@ class _Filters {
   final bool wifiOnly;
   final bool chargesInclOnly;
   final bool carParkOnly;
+  final bool favoritesOnly;
   final double? minPrice;
   final double? maxPrice;
 
@@ -1007,6 +1154,7 @@ class _Filters {
     required this.wifiOnly,
     required this.chargesInclOnly,
     required this.carParkOnly,
+    required this.favoritesOnly,
     this.minPrice,
     this.maxPrice,
   });
