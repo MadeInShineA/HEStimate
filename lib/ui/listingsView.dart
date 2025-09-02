@@ -99,47 +99,7 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
     });
   }
 
-  Future<void> _fetchPriceBounds() async {
-    Query<Map<String, dynamic>> baseQuery = FirebaseFirestore.instance.collection('listings');
-    
-    // Si on est en mode "owner", on filtre par l'utilisateur courant
-    if (widget.mode == ListingsMode.owner) {
-      final uid = FirebaseAuth.instance.currentUser?.uid;
-      if (uid == null) {
-        // Pas d'utilisateur connecté, pas de propriétés
-        setState(() {
-          _globalMinPrice = 0;
-          _globalMaxPrice = 10000;
-          _minPrice = 0;
-          _maxPrice = 10000;
-        });
-        return;
-      }
-      baseQuery = baseQuery.where('ownerUid', isEqualTo: uid);
-    }
-
-    final minSnap = await baseQuery
-        .orderBy('price', descending: false)
-        .limit(1)
-        .get();
-
-    final maxSnap = await baseQuery
-        .orderBy('price', descending: true)
-        .limit(1)
-        .get();
-
-    final minPrice = minSnap.docs.isNotEmpty ? (minSnap.docs.first['price'] ?? 0).toDouble() : 0;
-    final maxPrice = maxSnap.docs.isNotEmpty ? (maxSnap.docs.first['price'] ?? 0).toDouble() : 10000;
-
-    setState(() {
-      _globalMinPrice = minPrice;
-      _globalMaxPrice = maxPrice;
-      // initialise la sélection utilisateur
-      _minPrice = minPrice;
-      _maxPrice = maxPrice;
-    });
-  }
-
+ 
   @override
   void initState() {
     super.initState();
@@ -460,9 +420,6 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
                         }
 
                         // Responsive grid
-                        int crossAxisCount = 1;
-                        double childAspectRatio = 1.1;
-                        final w = constraints.maxWidth;
                         if (w >= 1400) {
                           crossAxisCount = 4;
                           childAspectRatio = 0.95;
