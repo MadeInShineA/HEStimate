@@ -9,6 +9,7 @@ import 'new_listing_page.dart';
 import 'profile.dart';
 import 'about_page.dart';
 import 'home.dart'; // DashboardPage lives here
+import 'owner_management.dart'; // OwnerManagementPage lives here
 
 /// Pages add this mixin to provide menu metadata while staying Stateless/Stateful.
 mixin MenuPageMeta {
@@ -228,16 +229,17 @@ class _HomeMenuPageState extends State<HomeMenuPage> {
       const DashboardPage(),        // Index 0
       const ListingsSection(),      // Index 1
       if (_isHomeowner) ...[
-        const MyListingsSection(),  // Index 2 (only for homeowners)
-        const NewListingSection(),  // Index 3 (only for homeowners)
+        const MyListingsSection(),      // Index 2 (only for homeowners)
+        const NewListingSection(),      // Index 3 (only for homeowners)
+        const OwnerManagementSection()  // Index 4 (only for homeowners)
       ],
-      const ProfileSection(),       // Index 4 (or 2 for non-homeowners)
-      const AboutSection(),         // Index 5 (or 3 for non-homeowners)
+      const ProfileSection(),       // Index 5 (or 2 for non-homeowners)
+      const AboutSection(),         // Index 6 (or 3 for non-homeowners)
     ];
 
     // Determine bottom nav indices based on homeowner status
     final bottomNavIndices = _isHomeowner
-        ? const [0, 1, 2, 3, 4] // Dashboard, Properties, My Properties, New Listing, Profile
+        ? const [0, 2, 3, 4, 5] // Dashboard, Properties, My Properties, New Listing, Profile
         : const [0, 1, 2, 3];   // Dashboard, Properties, Profile, About
 
     return MoonMenuShell(
@@ -306,6 +308,22 @@ class ProfileSection extends StatelessWidget with MenuPageMeta {
   IconData? get menuSelectedIcon => Icons.person;
   @override
   Widget build(BuildContext context) => const ProfilePage();
+}
+
+class OwnerManagementSection extends StatelessWidget with MenuPageMeta {
+  const OwnerManagementSection({super.key});
+  
+  @override
+  String get menuLabel => 'Manage';
+  
+  @override
+  IconData get menuIcon => Icons.manage_accounts_outlined;
+  
+  @override
+  IconData? get menuSelectedIcon => Icons.manage_accounts;
+  
+  @override
+  Widget build(BuildContext context) => const OwnerManagementPage();
 }
 
 class AboutSection extends StatelessWidget with MenuPageMeta {

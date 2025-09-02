@@ -1,4 +1,3 @@
-// lib/ui/view_listing_page.dart
 import 'dart:math' as math;
 import 'dart:convert';
 import 'package:flutter/material.dart';
@@ -6,6 +5,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:moon_design/moon_design.dart';
 import 'package:http/http.dart' as http;
+import 'package:phone_numbers_parser/phone_numbers_parser.dart';
 
 import 'edit_listing_page.dart';
 
@@ -58,21 +58,83 @@ class _ViewListingPageState extends State<ViewListingPage> {
   // Carrousel
   late final PageController _photoCtrl;
 
+  // Booking system
+  List<Map<String, dynamic>> _bookedDates = [];
+  final TextEditingController _messageController = TextEditingController();
+  final TextEditingController _phoneController = TextEditingController();
+  final TextEditingController _startDateController = TextEditingController();
+  final TextEditingController _endDateController = TextEditingController();
+  DateTime? _selectedStart;
+  DateTime? _selectedEnd;
+  bool _submittingBooking = false;
+  
+  // Phone validation
+  String? _phoneError;
+  bool _isValidPhone = false;
+
   bool get _isOwner =>
       FirebaseAuth.instance.currentUser?.uid != null &&
       FirebaseAuth.instance.currentUser!.uid == _ownerUid;
+
+  bool get _isStudent => 
+      FirebaseAuth.instance.currentUser != null && !_isOwner;
 
   @override
   void initState() {
     super.initState();
     _photoCtrl = PageController(viewportFraction: 0.92);
+    _phoneController.addListener(_validatePhoneNumber);
     _load();
   }
 
   @override
   void dispose() {
     _photoCtrl.dispose();
+    _messageController.dispose();
+    _phoneController.dispose();
     super.dispose();
+  }
+
+  void _validatePhoneNumber() {
+    final phoneText = _phoneController.text.trim();
+    
+    if (phoneText.isEmpty) {
+      setState(() {
+        _phoneError = null;
+        _isValidPhone = true; // Phone is optional, so empty is valid
+      });
+      return;
+    }
+
+    try {
+      // Try to parse the phone number
+      // Assume Swiss context by default, but allow international format
+      PhoneNumber phoneNumber;
+      
+      if (phoneText.startsWith('+')) {
+        phoneNumber = PhoneNumber.parse(phoneText);
+      } else {
+        // Try Swiss format first
+        phoneNumber = PhoneNumber.parse(phoneText, destinationCountry: IsoCode.CH);
+      }
+      
+      if (phoneNumber.isValid()) {
+        setState(() {
+          _phoneError = null;
+          _isValidPhone = true;
+        });
+      } else {
+        setState(() {
+          _phoneError = 'Invalid phone number format';
+          _isValidPhone = false;
+        });
+      }
+    } catch (e) {
+      setState(() {
+        _phoneError = 'Invalid phone number format';
+        _isValidPhone = false;
+      });
+    }
   }
 
   Future<void> _load() async {
@@ -123,6 +185,9 @@ class _ViewListingPageState extends State<ViewListingPage> {
       final List photos = (m['photos'] as List?) ?? const [];
       _photos = photos.map((e) => e.toString()).toList();
 
+      // Charger seulement les dates approuvées
+      await _loadBookedDates();
+
       setState(() {
         _loading = false;
         if (_availStart != null) _shownMonth = _monthDate(_availStart!);
@@ -132,6 +197,74 @@ class _ViewListingPageState extends State<ViewListingPage> {
         _error = 'Failed to load listing: $e';
         _loading = false;
       });
+    }
+  }
+
+  Future<void> _loadBookedDates() async {
+    try {
+      final snapshot = await FirebaseFirestore.instance
+          .collection('booking_requests')
+          .where('listingId', isEqualTo: widget.listingId)
+          .where('status', isEqualTo: 'approved')
+          .get();
+
+      _bookedDates = snapshot.docs.map((doc) {
+        final data = doc.data();
+        return {
+          'id': doc.id,
+          'startDate': (data['startDate'] as Timestamp).toDate(),
+          'endDate': (data['endDate'] as Timestamp).toDate(),
+        };
+      }).toList();
+    } catch (e) {
+      print('Error loading booked dates: $e');
+    }
+  }
+
+  bool _isDateBooked(DateTime day) {
+    final d = _dateOnly(day);
+    
+    for (final booking in _bookedDates) {
+      final start = _dateOnly(booking['startDate']);
+      final end = _dateOnly(booking['endDate']);
+      
+      if (!d.isBefore(start) && !d.isAfter(end)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  bool _isDateAvailableForSelection(DateTime day) {
+    return _isAvailableOn(day) && !_isDateBooked(day);
+  }
+
+  // Check if selected date range conflicts with any approved bookings
+  Future<bool> _checkBookingConflict(DateTime startDate, DateTime endDate) async {
+    try {
+      final snapshot = await FirebaseFirestore.instance
+          .collection('booking_requests')
+          .where('listingId', isEqualTo: widget.listingId)
+          .where('status', isEqualTo: 'approved')
+          .get();
+
+      for (final doc in snapshot.docs) {
+        final data = doc.data();
+        final existingStart = _dateOnly((data['startDate'] as Timestamp).toDate());
+        final existingEnd = _dateOnly((data['endDate'] as Timestamp).toDate());
+        final reqStart = _dateOnly(startDate);
+        final reqEnd = _dateOnly(endDate);
+        
+        // Check if dates overlap
+        if (!(reqEnd.isBefore(existingStart) || reqStart.isAfter(existingEnd))) {
+          return true; // Conflict found
+        }
+      }
+      
+      return false; // No conflict
+    } catch (e) {
+      print('Error checking booking conflict: $e');
+      return true; // Assume conflict on error for safety
     }
   }
 
@@ -228,6 +361,8 @@ class _ViewListingPageState extends State<ViewListingPage> {
     setState(() => _shownMonth = _monthDate(d));
   }
 
+  void _onDateTap(DateTime date) {}
+
   List<Widget> _buildCalendar(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final firstOfMonth = DateTime(_shownMonth.year, _shownMonth.month, 1);
@@ -263,26 +398,38 @@ class _ViewListingPageState extends State<ViewListingPage> {
     for (var day = 1; day <= daysInMonth; day++) {
       final date = DateTime(_shownMonth.year, _shownMonth.month, day);
       final available = _isAvailableOn(date);
+      final isBooked = _isDateBooked(date);
+
+      Color bgColor = Colors.transparent;
+      Color borderColor = cs.primary.withOpacity(.12);
+      Color textColor = cs.onSurface;
+
+      if (isBooked) {
+        bgColor = Colors.red.withOpacity(.2);
+        borderColor = Colors.red.withOpacity(.5);
+        textColor = Colors.red;
+      } else if (available) {
+        bgColor = cs.primary.withOpacity(.12);
+        borderColor = cs.primary.withOpacity(.45);
+        textColor = cs.primary;
+      }
 
       items.add(
-        Container(
-          margin: const EdgeInsets.all(4),
-          decoration: BoxDecoration(
-            color: available ? cs.primary.withOpacity(.12) : Colors.transparent,
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(
-              color: available
-                  ? cs.primary.withOpacity(.45)
-                  : cs.primary.withOpacity(.12),
-              width: 1,
+        GestureDetector(
+          child: Container(
+            margin: const EdgeInsets.all(4),
+            decoration: BoxDecoration(
+              color: bgColor,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: borderColor, width: 1),
             ),
-          ),
-          child: Center(
-            child: Text(
-              '$day',
-              style: TextStyle(
-                fontWeight: FontWeight.w600,
-                color: available ? cs.primary : cs.onSurface,
+            child: Center(
+              child: Text(
+                '$day',
+                style: TextStyle(
+                  fontWeight: FontWeight.w600,
+                  color: textColor,
+                ),
               ),
             ),
           ),
@@ -291,6 +438,263 @@ class _ViewListingPageState extends State<ViewListingPage> {
     }
 
     return items;
+  }
+
+  Widget _buildBookingPanel(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      margin: const EdgeInsets.only(top: 16),
+      decoration: BoxDecoration(
+        color: Theme.of(context).cardColor,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Theme.of(context).colorScheme.primary.withOpacity(0.3)),
+        boxShadow: [
+          BoxShadow(
+            color: Theme.of(context).colorScheme.primary.withOpacity(0.1),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            'Book your stay',
+            style: TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.w800,
+              color: Theme.of(context).colorScheme.onSurface,
+            ),
+          ),
+          const SizedBox(height: 16),
+          
+          // Start Date Picker
+          TextField(
+            readOnly: true,
+            controller: _startDateController,
+            decoration: InputDecoration(
+              labelText: 'Start Date',
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+              contentPadding: const EdgeInsets.all(12),
+              suffixIcon: const Icon(Icons.calendar_today),
+            ),
+            onTap: () async {
+              final picked = await showDatePicker(
+                context: context,
+                initialDate: _selectedStart ?? (_availStart ?? DateTime.now()),
+                firstDate: _availStart ?? DateTime.now(),
+                lastDate: _availEnd ?? DateTime.now().add(const Duration(days: 365)),
+                selectableDayPredicate: _isDateAvailableForSelection,
+              );
+              if (picked != null) {
+                setState(() {
+                  _selectedStart = picked;
+                  _startDateController.text = _fmt(picked);
+                  // Reset end date si elle est avant start
+                  if (_selectedEnd != null && _selectedEnd!.isBefore(picked)) {
+                    _selectedEnd = null;
+                    _endDateController.text = '';
+                  }
+                });
+              }
+            },
+          ),
+          const SizedBox(height: 12),
+
+          // End Date Picker
+          TextField(
+            readOnly: true,
+            controller: _endDateController,
+            decoration: InputDecoration(
+              labelText: 'End Date',
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+              contentPadding: const EdgeInsets.all(12),
+              suffixIcon: const Icon(Icons.calendar_today),
+            ),
+            onTap: () async {
+              if (_selectedStart == null) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Please select a start date first')),
+                );
+                return;
+              }
+              
+              final picked = await showDatePicker(
+                context: context,
+                initialDate: _selectedEnd ?? _selectedStart!.add(const Duration(days: 1)),
+                firstDate: _selectedStart!.add(const Duration(days: 1)),
+                lastDate: _availEnd ?? DateTime.now().add(const Duration(days: 365)),
+                selectableDayPredicate: _isDateAvailableForSelection,
+              );
+              if (picked != null) {
+                setState(() {
+                  _selectedEnd = picked;
+                  _endDateController.text = _fmt(picked);
+                });
+              }
+            },
+          ),
+
+          // Message to owner
+          const SizedBox(height: 12),
+          TextField(
+            controller: _messageController,
+            maxLines: 3,
+            decoration: InputDecoration(
+              labelText: 'Message to owner *',
+              hintText: 'Tell the owner about yourself...',
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
+              contentPadding: const EdgeInsets.all(12),
+            ),
+          ),
+
+          // Phone number with validation
+          const SizedBox(height: 12),
+          TextField(
+            controller: _phoneController,
+            keyboardType: TextInputType.phone,
+            decoration: InputDecoration(
+              labelText: 'Phone number (optional)',
+              hintText: '+41 79 123 45 67 or 079 123 45 67',
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+                borderSide: BorderSide(
+                  color: _phoneError != null ? Colors.red : Colors.grey,
+                ),
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+                borderSide: BorderSide(
+                  color: _phoneError != null ? Colors.red : Colors.grey,
+                ),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+                borderSide: BorderSide(
+                  color: _phoneError != null ? Colors.red : Theme.of(context).colorScheme.primary,
+                ),
+              ),
+              contentPadding: const EdgeInsets.all(12),
+              errorText: _phoneError,
+              suffixIcon: _phoneController.text.isNotEmpty
+                  ? Icon(
+                      _isValidPhone ? Icons.check_circle : Icons.error,
+                      color: _isValidPhone ? Colors.green : Colors.red,
+                    )
+                  : null,
+            ),
+          ),
+
+          // Submit button
+          const SizedBox(height: 16),
+          MoonFilledButton(
+            isFullWidth: true,
+            onTap: _selectedStart != null &&
+                    _selectedEnd != null &&
+                    _messageController.text.isNotEmpty &&
+                    _isValidPhone &&
+                    !_submittingBooking
+                ? () => _submitBookingRequestWithDates(_selectedStart!, _selectedEnd!)
+                : null,
+            leading: _submittingBooking 
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                  )
+                : const Icon(Icons.send),
+            label: Text(_submittingBooking ? 'Sending...' : 'Send booking request'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _submitBookingRequestWithDates(DateTime start, DateTime end) async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    setState(() => _submittingBooking = true);
+
+    try {
+      // Check for conflicts before submitting
+      final hasConflict = await _checkBookingConflict(start, end);
+      if (hasConflict) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Selected dates are no longer available. Please choose different dates.'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+        setState(() => _submittingBooking = false);
+        return;
+      }
+
+      final userDoc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .get();
+      final userData = userDoc.data() ?? {};
+
+      // Format the phone number properly if provided
+      String? formattedPhone;
+      if (_phoneController.text.trim().isNotEmpty) {
+        try {
+          PhoneNumber phoneNumber;
+          if (_phoneController.text.trim().startsWith('+')) {
+            phoneNumber = PhoneNumber.parse(_phoneController.text.trim());
+          } else {
+            phoneNumber = PhoneNumber.parse(_phoneController.text.trim(), destinationCountry: IsoCode.CH);
+          }
+          formattedPhone = phoneNumber.international;
+        } catch (e) {
+          formattedPhone = _phoneController.text.trim();
+        }
+      }
+
+      await FirebaseFirestore.instance.collection('booking_requests').add({
+        'listingId': widget.listingId,
+        'studentUid': user.uid,
+        'ownerUid': _ownerUid,
+        'startDate': Timestamp.fromDate(start),
+        'endDate': Timestamp.fromDate(end),
+        'message': _messageController.text.trim(),
+        'studentName': userData['name'] ?? user.email,
+        'studentEmail': user.email,
+        'studentPhone': formattedPhone,
+        'status': 'pending',
+        'createdAt': Timestamp.now(),
+        'updatedAt': Timestamp.now(),
+      });
+
+      setState(() {
+        _messageController.clear();
+        _phoneController.clear();
+        _startDateController.clear();
+        _endDateController.clear();
+        _selectedStart = null;
+        _selectedEnd = null;
+        _submittingBooking = false;
+      });
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Booking request sent successfully!'), backgroundColor: Colors.green),
+        );
+      }
+    } catch (e) {
+      setState(() => _submittingBooking = false);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error sending request: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
   }
 
   @override
@@ -325,14 +729,9 @@ class _ViewListingPageState extends State<ViewListingPage> {
                 if (canPop) {
                   Navigator.of(context).pop();
                 } else {
-                  // No back stack (e.g., after pushReplacement) → go Home.
                   Navigator.of(
                     context,
                   ).pushNamedAndRemoveUntil('/home', (route) => false);
-                  // If you want to land on a specific tab inside HomeMenuPage,
-                  // pass an index as arguments, e.g.:
-                  // Navigator.of(context).pushNamedAndRemoveUntil('/home', (route) => false, arguments: 0); // Dashboard
-                  // Navigator.of(context).pushNamedAndRemoveUntil('/home', (route) => false, arguments: 1); // Properties
                 }
               },
             );
@@ -374,7 +773,6 @@ class _ViewListingPageState extends State<ViewListingPage> {
                 final isWide = constraints.maxWidth >= 900;
                 const contentMax = 1000.0;
 
-                // ❗ Fix: ne jamais produire un padding négatif
                 final horizontalPad = math.max(
                   16.0,
                   (constraints.maxWidth - contentMax) / 2 + 16.0,
@@ -664,7 +1062,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
                                       children: [
                                         Icon(Icons.trending_up, color: cs.primary, size: 24),
                                         const SizedBox(width: 12),
-                                        Expanded( // ✅ ça permet au texte de se couper si nécessaire
+                                        Expanded(
                                           child: Column(
                                             crossAxisAlignment: CrossAxisAlignment.start,
                                             children: [
@@ -676,19 +1074,19 @@ class _ViewListingPageState extends State<ViewListingPage> {
                                                 ),
                                               ),
                                               Text(
-                                                '${((_estimatedPrice! / 0.05).round() * 0.05).toStringAsFixed(2)} CHF/mois',
+                                                '${((_estimatedPrice! / 0.05).round() * 0.05).toStringAsFixed(2)} CHF/month',
                                                 style: const TextStyle(
                                                   fontSize: 18,
                                                   fontWeight: FontWeight.w800,
                                                 ),
-                                                overflow: TextOverflow.ellipsis, // ✅ coupe si trop long
+                                                overflow: TextOverflow.ellipsis,
                                               ),
                                             ],
                                           ),
                                         ),
                                         if (_price != null) ...[
                                           const SizedBox(width: 12),
-                                          Expanded( // ✅ pareil pour la partie "Actual price"
+                                          Expanded(
                                             child: Column(
                                               crossAxisAlignment: CrossAxisAlignment.end,
                                               children: [
@@ -700,7 +1098,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
                                                   ),
                                                 ),
                                                 Text(
-                                                  '${((_price! / 0.05).round() * 0.05).toStringAsFixed(2)} CHF/mois',
+                                                  '${((_price! / 0.05).round() * 0.05).toStringAsFixed(2)} CHF/month',
                                                   style: TextStyle(
                                                     color: cs.onSurface,
                                                     fontSize: 16,
@@ -709,7 +1107,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
                                                   overflow: TextOverflow.ellipsis,
                                                 ),
                                                 Text(
-                                                  '${((_price! - _estimatedPrice!) / 0.05).round() * 0.05 >= 0 ? '+' : ''}${(((_price! - _estimatedPrice!) / 0.05).round() * 0.05).toStringAsFixed(2)} CHF/mois',
+                                                  '${((_price! - _estimatedPrice!) / 0.05).round() * 0.05 >= 0 ? '+' : ''}${(((_price! - _estimatedPrice!) / 0.05).round() * 0.05).toStringAsFixed(2)} CHF/month',
                                                   style: TextStyle(
                                                     color: (_price! > _estimatedPrice!) 
                                                         ? Colors.red 
@@ -778,38 +1176,55 @@ class _ViewListingPageState extends State<ViewListingPage> {
                                     mainAxisAlignment:
                                         MainAxisAlignment.spaceBetween,
                                     children: [
-                                      Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          const Icon(
-                                            Icons.calendar_today_outlined,
-                                            size: 20,
-                                          ),
-                                          const SizedBox(width: 8),
-                                          Text(
-                                            'Availability',
-                                            style: TextStyle(
-                                              fontSize: 18,
-                                              fontWeight: FontWeight.w800,
-                                              color: cs.onSurface,
+                                      Expanded(
+                                        child: Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            const Icon(
+                                              Icons.calendar_today_outlined,
+                                              size: 20,
                                             ),
-                                          ),
-                                        ],
+                                            const SizedBox(width: 8),
+                                            Flexible(
+                                              child: Text(
+                                                'Availability',
+                                                style: TextStyle(
+                                                  fontSize: 18,
+                                                  fontWeight: FontWeight.w800,
+                                                  color: cs.onSurface,
+                                                ),
+                                                overflow: TextOverflow.ellipsis,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
                                       ),
                                       Row(
+                                        mainAxisSize: MainAxisSize.min,
                                         children: [
                                           IconButton(
                                             tooltip: 'Previous month',
                                             onPressed: _prevMonth,
                                             icon: const Icon(
                                               Icons.chevron_left,
+                                              size: 20,
+                                            ),
+                                            padding: const EdgeInsets.all(8),
+                                            constraints: const BoxConstraints(
+                                              minWidth: 36,
+                                              minHeight: 36,
                                             ),
                                           ),
-                                          Text(
-                                            '${_shownMonth.year}-${_shownMonth.month.toString().padLeft(2, '0')}',
-                                            style: TextStyle(
-                                              fontWeight: FontWeight.w700,
-                                              color: cs.onSurface,
+                                          Container(
+                                            constraints: const BoxConstraints(minWidth: 80),
+                                            child: Text(
+                                              '${_shownMonth.year}-${_shownMonth.month.toString().padLeft(2, '0')}',
+                                              style: TextStyle(
+                                                fontWeight: FontWeight.w700,
+                                                color: cs.onSurface,
+                                                fontSize: 14,
+                                              ),
+                                              textAlign: TextAlign.center,
                                             ),
                                           ),
                                           IconButton(
@@ -817,6 +1232,12 @@ class _ViewListingPageState extends State<ViewListingPage> {
                                             onPressed: _nextMonth,
                                             icon: const Icon(
                                               Icons.chevron_right,
+                                              size: 20,
+                                            ),
+                                            padding: const EdgeInsets.all(8),
+                                            constraints: const BoxConstraints(
+                                              minWidth: 36,
+                                              minHeight: 36,
                                             ),
                                           ),
                                         ],
@@ -840,29 +1261,28 @@ class _ViewListingPageState extends State<ViewListingPage> {
                                       children: _buildCalendar(context),
                                     ),
                                     const SizedBox(height: 8),
+                                    // Légende du calendrier
+                                    Wrap(
+                                      spacing: 16,
+                                      runSpacing: 8,
+                                      children: [
+                                        _buildLegendItem(
+                                          context, 
+                                          'Available', 
+                                          cs.primary.withOpacity(.25),
+                                          cs.primary.withOpacity(.6),
+                                        ),
+                                        _buildLegendItem(
+                                          context, 
+                                          'Booked', 
+                                          Colors.red.withOpacity(.2),
+                                          Colors.red.withOpacity(.5),
+                                        ),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 8),
                                     Row(
                                       children: [
-                                        Container(
-                                          width: 16,
-                                          height: 16,
-                                          decoration: BoxDecoration(
-                                            color: cs.primary.withOpacity(.25),
-                                            borderRadius: BorderRadius.circular(
-                                              4,
-                                            ),
-                                            border: Border.all(
-                                              color: cs.primary.withOpacity(.6),
-                                            ),
-                                          ),
-                                        ),
-                                        const SizedBox(width: 8),
-                                        Text(
-                                          'Available days',
-                                          style: TextStyle(
-                                            color: cs.onSurface.withOpacity(.8),
-                                          ),
-                                        ),
-                                        const Spacer(),
                                         Text(
                                           _availEnd == null
                                               ? 'From ${_fmt(_availStart!)} • no end'
@@ -878,6 +1298,10 @@ class _ViewListingPageState extends State<ViewListingPage> {
                                 ],
                               ),
                             ),
+
+                            // Formulaire de réservation pour les étudiants (toujours affiché)
+                            if (_isStudent) 
+                              _buildBookingPanel(context),
 
                             const SizedBox(height: 24),
 
@@ -905,6 +1329,31 @@ class _ViewListingPageState extends State<ViewListingPage> {
                 );
               },
             ),
+    );
+  }
+
+  Widget _buildLegendItem(BuildContext context, String label, Color bgColor, Color borderColor) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 16,
+          height: 16,
+          decoration: BoxDecoration(
+            color: bgColor,
+            borderRadius: BorderRadius.circular(4),
+            border: Border.all(color: borderColor),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Text(
+          label,
+          style: TextStyle(
+            color: Theme.of(context).colorScheme.onSurface.withOpacity(.8),
+            fontSize: 12,
+          ),
+        ),
+      ],
     );
   }
 

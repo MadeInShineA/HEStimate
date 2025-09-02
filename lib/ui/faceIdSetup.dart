@@ -162,124 +162,124 @@ class _FaceIdSetupPageState extends State<FaceIdSetupPage> {
   @override
   Widget build(BuildContext context) {
     final theme = context.moonTheme;
+    final screenHeight = MediaQuery.of(context).size.height;
+    final availableHeight = screenHeight - MediaQuery.of(context).padding.top - kToolbarHeight - 32;
 
     return BasePage(
-      title: '',
-      child: SafeArea(
-        child: Stack(
-          children: [
-            Padding(
-              padding: const EdgeInsets.all(24),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  const SizedBox(height: 40),
-                  Icon(
-                    Icons.face_retouching_natural,
-                    size: 80,
-                    color: theme?.tokens.colors.piccolo,
-                  ),
-                  const SizedBox(height: 24),
-                  Text(
-                    'Set up Face ID',
-                    textAlign: TextAlign.center,
-                    style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  Text(
-                    'Would you like to enable Face ID for faster and more secure login?',
-                    textAlign: TextAlign.center,
-                    style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                      color: Colors.grey.shade600,
-                    ),
-                  ),
-                  const SizedBox(height: 40),
-                  
-                  Container(
-                    height: 300,
-                    decoration: BoxDecoration(
-                      color: Colors.grey.shade100,
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: Colors.grey.shade300),
-                    ),
-                    child: _faceImage != null
-                        ? ClipRRect(
-                            borderRadius: BorderRadius.circular(12),
-                            child: Image.file(
-                              _faceImage!,
-                              key: ValueKey(_imageKey),
-                              fit: BoxFit.contain,
-                              width: double.infinity,
-                            ),
-                          )
-                        : Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Icon(
-                                Icons.add_a_photo_outlined,
-                                size: 64,
-                                color: Colors.grey.shade400,
-                              ),
-                              const SizedBox(height: 16),
-                              Text(
-                                'No photo added yet',
-                                style: TextStyle(
-                                  color: Colors.grey.shade600,
-                                  fontSize: 16,
-                                ),
-                              ),
-                            ],
-                          ),
-                  ),
-                  
-                  const SizedBox(height: 24),
-                  
-                  MoonFilledButton(
-                    onTap: _isLoading ? null : _pickFaceImage,
-                    label: Text(_faceImage != null ? 'Change Photo' : 'Add Face ID Photo'),
-                  ),
-                  
-                  const Spacer(),
-                  
-                  if (_faceImage != null) ...[
-                    MoonFilledButton(
-                      onTap: _isLoading ? null : _enableFaceIdAndContinue,
-                      backgroundColor: Colors.green,
-                      label: const Text(
-                        'Enable Face ID',
-                        style: TextStyle(color: Colors.white),
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                  ],
-                  
-                  MoonOutlinedButton(
-                    onTap: _isLoading ? null : _skipFaceId,
-                    label: Text(
-                      _faceImage != null ? 'Skip for now' : 'Skip Face ID',
-                      style: TextStyle(color: Colors.grey.shade700),
-                    ),
-                  ),
-                  
-                  const SizedBox(height: 20),
-                  
-                  Text(
-                    _faceImage != null
-                        ? 'You can always change this later in your profile settings.'
-                        : 'You can always enable Face ID later in your profile settings.',
-                    textAlign: TextAlign.center,
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: Colors.grey.shade500,
-                    ),
-                  ),
-                ],
+      title: 'Face ID Setup',
+      scrollable: true,
+      child: Stack(
+        children: [
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const SizedBox(height: 40),
+              Icon(
+                Icons.face_retouching_natural,
+                size: 80,
+                color: theme?.tokens.colors.piccolo ?? Colors.deepPurple,
               ),
-            ),
-            if (_isLoading) const FullScreenLoader(message: 'Setting up Face ID...'),
-          ],
-        ),
+              const SizedBox(height: 24),
+              Text(
+                'Set up Face ID',
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(height: 16),
+              Text(
+                'Would you like to enable Face ID for faster and more secure login?',
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                  color: Colors.grey.shade600,
+                ),
+              ),
+              const SizedBox(height: 40),
+              
+              Container(
+                height: 300,
+                decoration: BoxDecoration(
+                  color: Colors.grey.shade100,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.grey.shade300),
+                ),
+                child: _faceImage != null
+                    ? ClipRRect(
+                        borderRadius: BorderRadius.circular(12),
+                        child: Image.file(
+                          _faceImage!,
+                          key: ValueKey(_imageKey),
+                          fit: BoxFit.contain,
+                          width: double.infinity,
+                        ),
+                      )
+                    : Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(
+                            Icons.add_a_photo_outlined,
+                            size: 64,
+                            color: Colors.grey.shade400,
+                          ),
+                          const SizedBox(height: 16),
+                          Text(
+                            'No photo added yet',
+                            style: TextStyle(
+                              color: Colors.grey.shade600,
+                              fontSize: 16,
+                            ),
+                          ),
+                        ],
+                      ),
+              ),
+              
+              SizedBox(height: availableHeight > 600 ? 60 : 24),
+              
+              MoonFilledButton(
+                onTap: _isLoading ? null : _pickFaceImage,
+                label: Text(_faceImage != null ? 'Change Photo' : 'Add Face ID Photo'),
+              ),
+              
+              const SizedBox(height: 16),
+              
+              if (_faceImage != null) ...[
+                MoonFilledButton(
+                  onTap: _isLoading ? null : _enableFaceIdAndContinue,
+                  backgroundColor: Colors.green,
+                  label: const Text(
+                    'Enable Face ID',
+                    style: TextStyle(color: Colors.white),
+                  ),
+                ),
+                const SizedBox(height: 12),
+              ],
+              
+              MoonOutlinedButton(
+                onTap: _isLoading ? null : _skipFaceId,
+                label: Text(
+                  _faceImage != null ? 'Skip for now' : 'Skip Face ID',
+                  style: TextStyle(color: Colors.grey.shade700),
+                ),
+              ),
+              
+              const SizedBox(height: 20),
+              
+              Text(
+                _faceImage != null
+                    ? 'You can always change this later in your profile settings.'
+                    : 'You can always enable Face ID later in your profile settings.',
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: Colors.grey.shade500,
+                ),
+              ),
+              
+              const SizedBox(height: 40),
+            ],
+          ),
+          if (_isLoading) const FullScreenLoader(message: 'Setting up Face ID...'),
+        ],
       ),
     );
   }
