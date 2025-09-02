@@ -1424,7 +1424,7 @@ out body;
                                           SizedBox(
                                             width: fieldWidth,
                                             child: _AmenitySwitch(
-                                              title: 'Wifi included?',
+                                              title: 'Wi-Fi included?',
                                               value: _wifiIncl,
                                               onChanged: (v) =>
                                                   setState(() => _wifiIncl = v),

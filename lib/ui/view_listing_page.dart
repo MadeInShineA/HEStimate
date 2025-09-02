@@ -1630,7 +1630,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
                                       ),
                                       _amenityPill(
                                         context,
-                                        'Wifi included',
+                                        'Wi-Fi included',
                                         _wifiIncl,
                                       ),
                                       _amenityPill(
@@ -1710,7 +1710,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
                                                   ),
                                                 ),
                                                 Text(
-                                                  '${((_estimatedPrice! / 0.05).round() * 0.05).toStringAsFixed(2)} CHF/mois',
+                                                  '${((_estimatedPrice! / 0.05).round() * 0.05).toStringAsFixed(2)} CHF/month',
                                                   style: const TextStyle(
                                                     fontSize: 18,
                                                     fontWeight: FontWeight.w800,
@@ -1737,7 +1737,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
                                                     ),
                                                   ),
                                                   Text(
-                                                    '${((_price! / 0.05).round() * 0.05).toStringAsFixed(2)} CHF/mois',
+                                                    '${((_price! / 0.05).round() * 0.05).toStringAsFixed(2)} CHF/month',
                                                     style: TextStyle(
                                                       color: cs.onSurface,
                                                       fontSize: 16,
@@ -1748,7 +1748,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
                                                         TextOverflow.ellipsis,
                                                   ),
                                                   Text(
-                                                    '${((_price! - _estimatedPrice!) / 0.05).round() * 0.05 >= 0 ? '+' : ''}${(((_price! - _estimatedPrice!) / 0.05).round() * 0.05).toStringAsFixed(2)} CHF/mois',
+                                                    '${((_price! - _estimatedPrice!) / 0.05).round() * 0.05 >= 0 ? '+' : ''}${(((_price! - _estimatedPrice!) / 0.05).round() * 0.05).toStringAsFixed(2)} CHF/month',
                                                     style: TextStyle(
                                                       color:
                                                           (_price! >
