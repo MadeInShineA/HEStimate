@@ -9,7 +9,8 @@ import 'new_listing_page.dart';
 import 'profile.dart';
 import 'about_page.dart';
 import 'home.dart'; // DashboardPage lives here
-import 'owner_management.dart'; // OwnerManagementPage lives here
+import 'owner_management.dart';
+import 'student_management.dart';
 
 /// Pages add this mixin to provide menu metadata while staying Stateless/Stateful.
 mixin MenuPageMeta {
@@ -196,6 +197,7 @@ class HomeMenuPage extends StatefulWidget {
 
 class _HomeMenuPageState extends State<HomeMenuPage> {
   bool _isHomeowner = false;
+  bool _isStudent = false;
 
   @override
   void initState() {
@@ -214,6 +216,7 @@ class _HomeMenuPageState extends State<HomeMenuPage> {
         final userData = doc.data();
         setState(() {
           _isHomeowner = userData?['role'] == "homeowner" ? true: false;
+          _isStudent = userData?['role'] == "student" ? true: false;
         });
       }
     }
@@ -232,6 +235,9 @@ class _HomeMenuPageState extends State<HomeMenuPage> {
         const MyListingsSection(),      // Index 2 (only for homeowners)
         const NewListingSection(),      // Index 3 (only for homeowners)
         const OwnerManagementSection()  // Index 4 (only for homeowners)
+      ],
+      if (_isStudent) ...[
+        const StudentManagementSection() // Index 2 (only for students)
       ],
       const ProfileSection(),       // Index 5 (or 2 for non-homeowners)
       const AboutSection(),         // Index 6 (or 3 for non-homeowners)
@@ -324,6 +330,22 @@ class OwnerManagementSection extends StatelessWidget with MenuPageMeta {
   
   @override
   Widget build(BuildContext context) => const OwnerManagementPage();
+}
+
+class StudentManagementSection extends StatelessWidget with MenuPageMeta {
+  const StudentManagementSection({super.key});
+  
+  @override
+  String get menuLabel => 'Manage';
+  
+  @override
+  IconData get menuIcon => Icons.manage_accounts_outlined;
+  
+  @override
+  IconData? get menuSelectedIcon => Icons.manage_accounts;
+  
+  @override
+  Widget build(BuildContext context) => const StudentManagementPage();
 }
 
 class AboutSection extends StatelessWidget with MenuPageMeta {

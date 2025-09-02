@@ -769,7 +769,7 @@ class _ListingCard extends StatelessWidget {
 
     final ratingsPreview = StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
       stream: FirebaseFirestore.instance
-          .collection('ratings')
+          .collection('listing_reviews') // Changé de 'ratings' à 'listing_reviews'
           .where('listingId', isEqualTo: listingId)
           .snapshots(),
       builder: (context, snap) {
@@ -781,7 +781,7 @@ class _ListingCard extends StatelessWidget {
           if (count > 0) {
             final sum = docs.fold<double>(
               0.0,
-              (acc, d) => acc + ((d.data()['stars'] as num?)?.toDouble() ?? 0.0),
+              (acc, d) => acc + ((d.data()['rating'] as num?)?.toDouble() ?? 0.0), // Changé de 'stars' à 'rating'
             );
             avg = sum / count;
           }

@@ -6,8 +6,10 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:moon_design/moon_design.dart';
 import 'package:http/http.dart' as http;
 import 'package:phone_numbers_parser/phone_numbers_parser.dart';
+import 'rate_listing_page.dart';
 
 import 'edit_listing_page.dart';
+// import 'rate_listing_page.dart'; // Add this import for RateListingPage
 
 class ViewListingPage extends StatefulWidget {
   final String listingId;
@@ -79,12 +81,34 @@ class _ViewListingPageState extends State<ViewListingPage> {
   bool get _isStudent => 
       FirebaseAuth.instance.currentUser != null && !_isOwner;
 
+  int _rating = 0;
+
+  Future<void> _loadMyExistingReviewIfAny() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    // Chercher une review existante de cet utilisateur pour ce listing
+    final query = await FirebaseFirestore.instance
+        .collection('listing_reviews')
+        .where('listingId', isEqualTo: widget.listingId)
+        .where('studentUid', isEqualTo: user.uid)
+        .get();
+
+    if (query.docs.isNotEmpty) {
+      final data = query.docs.first.data();
+      setState(() {
+        _rating = (data['rating'] as num?)?.toInt() ?? 0;
+      });
+    }
+  }
+
   @override
   void initState() {
     super.initState();
     _photoCtrl = PageController(viewportFraction: 0.92);
     _phoneController.addListener(_validatePhoneNumber);
     _load();
+    _loadMyExistingReviewIfAny();
   }
 
   @override
@@ -438,6 +462,74 @@ class _ViewListingPageState extends State<ViewListingPage> {
     }
 
     return items;
+  }
+
+  // Ratings widgets
+  Widget _starsRow(BuildContext context, int value, double avg, int count) {
+    final cs = Theme.of(context).colorScheme;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        ...List.generate(5, (i) {
+          final idx = i + 1;
+          final filled = idx <= avg.round(); // Utilisez avg.round() au lieu de value
+          final icon = filled ? Icons.star_rounded : Icons.star_border_rounded;
+          final color = filled ? cs.primary : cs.onSurface.withOpacity(.35);
+          return Icon(icon, size: 16, color: color);
+        }),
+        const SizedBox(width: 6),
+        Text(
+          count == 0 ? 'No ratings' : '${avg.toStringAsFixed(1)} ($count)',
+          style: TextStyle(
+            fontSize: 12,
+            color: cs.onSurface.withOpacity(.8),
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      ],
+    );
+  }
+
+
+  Widget _buildRatingsPreview(BuildContext context) {
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: FirebaseFirestore.instance
+          .collection('listing_reviews') // Changez 'ratings' en 'listing_reviews'
+          .where('listingId', isEqualTo: widget.listingId)
+          .snapshots(),
+      builder: (context, snap) {
+        double avg = 0;
+        int count = 0;
+        if (snap.hasData) {
+          final docs = snap.data!.docs;
+          count = docs.length;
+          if (count > 0) {
+            final sum = docs.fold<double>(
+              0.0,
+              (acc, d) => acc + ((d.data()['rating'] as num?)?.toDouble() ?? 0.0), // Changez 'stars' en 'rating'
+            );
+            avg = sum / count;
+          }
+        }
+        return InkWell(
+          onTap: () {
+            Navigator.of(context).push(
+              MaterialPageRoute(
+                  builder: (_) => RateListingPage(
+                  listingId: widget.listingId,
+                  allowAdd: false, 
+                ),
+              ),
+            );
+          },
+          borderRadius: BorderRadius.circular(8),
+          child: Padding(
+            padding: const EdgeInsets.only(top: 6.0, bottom: 2.0),
+            child: _starsRow(context, avg.round(), avg, count), // Passez avg.round() comme value
+          ),
+        );
+      },
+    );
   }
 
   Widget _buildBookingPanel(BuildContext context) {
@@ -862,7 +954,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
 
                             const SizedBox(height: 16),
 
-                            // Header + bouton Edit (si propriétaire)
+                            // Header + bouton Edit (si propriétaire) + Ratings
                             _MoonCard(
                               isDark: isDark,
                               child: Column(
@@ -897,6 +989,9 @@ class _ViewListingPageState extends State<ViewListingPage> {
                                                 ),
                                               ),
                                             ),
+                                            const SizedBox(height: 8),
+                                            // Add the ratings preview here
+                                            _buildRatingsPreview(context),
                                           ],
                                         ),
                                       ),

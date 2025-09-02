@@ -5,7 +5,6 @@ import 'package:moon_design/moon_design.dart';
 
 class RateListingPage extends StatefulWidget {
   final String listingId;
-  
   final bool allowAdd;
 
   const RateListingPage({
@@ -19,8 +18,10 @@ class RateListingPage extends StatefulWidget {
 }
 
 class _RateListingPageState extends State<RateListingPage> {
-  int _stars = 0;
+  int _rating = 0;
   final _commentCtrl = TextEditingController();
+  bool _wasClean = true;
+  bool _ownerWasHelpful = true;
   bool _saving = false;
   String? _err;
 
@@ -30,20 +31,25 @@ class _RateListingPageState extends State<RateListingPage> {
     super.dispose();
   }
 
-  String _ratingDocIdFor(String listingId, String userId) => '${listingId}_$userId';
-
-  Future<void> _loadMyExistingRatingIfAny() async {
+  Future<void> _loadMyExistingReviewIfAny() async {
     if (!widget.allowAdd) return; 
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
 
-    final docId = _ratingDocIdFor(widget.listingId, user.uid);
-    final doc = await FirebaseFirestore.instance.collection('ratings').doc(docId).get();
-    if (doc.exists) {
-      final m = doc.data()!;
+    // Chercher une review existante de cet utilisateur pour ce listing
+    final query = await FirebaseFirestore.instance
+        .collection('listing_reviews')
+        .where('listingId', isEqualTo: widget.listingId)
+        .where('studentUid', isEqualTo: user.uid)
+        .get();
+
+    if (query.docs.isNotEmpty) {
+      final data = query.docs.first.data();
       setState(() {
-        _stars = (m['stars'] as num?)?.toInt() ?? 0;
-        _commentCtrl.text = (m['comment'] ?? '').toString();
+        _rating = (data['rating'] as num?)?.toInt() ?? 0;
+        _commentCtrl.text = (data['comment'] ?? '').toString();
+        _wasClean = data['wasClean'] ?? true;
+        _ownerWasHelpful = data['ownerWasHelpful'] ?? true;
       });
     }
   }
@@ -51,12 +57,12 @@ class _RateListingPageState extends State<RateListingPage> {
   @override
   void initState() {
     super.initState();
-    _loadMyExistingRatingIfAny();
+    _loadMyExistingReviewIfAny();
   }
 
   Future<void> _submit() async {
     if (!widget.allowAdd) return;
-    if (_stars < 1 || _stars > 5) {
+    if (_rating < 1 || _rating > 5) {
       setState(() => _err = 'Please select a rating (1–5 stars).');
       return;
     }
@@ -71,29 +77,58 @@ class _RateListingPageState extends State<RateListingPage> {
         throw Exception('You must be signed in to rate.');
       }
 
-      final docId = _ratingDocIdFor(widget.listingId, user.uid);
-      final data = <String, dynamic>{
+      // Récupérer le nom de l'utilisateur
+      final userDoc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .get();
+      
+      final studentName = userDoc.exists 
+          ? (userDoc.data()?['name'] ?? 'Anonymous') 
+          : 'Anonymous';
+
+      // Récupérer l'ownerUid depuis le listing
+      final listingDoc = await FirebaseFirestore.instance
+          .collection('listings')
+          .doc(widget.listingId)
+          .get();
+      
+      if (!listingDoc.exists) {
+        throw Exception('Listing not found.');
+      }
+      
+      final ownerUid = listingDoc.data()?['ownerUid'];
+      if (ownerUid == null) {
+        throw Exception('Owner information not found.');
+      }
+
+      // Chercher une review existante
+      final existingQuery = await FirebaseFirestore.instance
+          .collection('listing_reviews')
+          .where('listingId', isEqualTo: widget.listingId)
+          .where('studentUid', isEqualTo: user.uid)
+          .get();
+
+      final reviewData = {
         'listingId': widget.listingId,
-        'userId': user.uid,
-        'stars': _stars,
+        'ownerUid': ownerUid,
+        'studentUid': user.uid,
+        'studentName': studentName,
+        'rating': _rating,
+        'wasClean': _wasClean,
+        'ownerWasHelpful': _ownerWasHelpful,
         'comment': _commentCtrl.text.trim(),
-        'updatedAt': FieldValue.serverTimestamp(),
-        'createdAt': FieldValue.serverTimestamp(), 
+        'createdAt': Timestamp.now(),
       };
 
-      final docRef = FirebaseFirestore.instance.collection('ratings').doc(docId);
-      final snap = await docRef.get();
-
-      if (snap.exists) {
-        // Update only (garde createdAt)
-        final existing = snap.data()!;
-        await docRef.update({
-          ...data,
-          'createdAt': existing['createdAt'] ?? FieldValue.serverTimestamp(),
-        });
+      if (existingQuery.docs.isNotEmpty) {
+        // Mettre à jour la review existante
+        await existingQuery.docs.first.reference.update(reviewData);
       } else {
-        // Create
-        await docRef.set(data);
+        // Créer une nouvelle review
+        await FirebaseFirestore.instance
+            .collection('listing_reviews')
+            .add(reviewData);
       }
 
       if (mounted) {
@@ -109,11 +144,11 @@ class _RateListingPageState extends State<RateListingPage> {
     }
   }
 
-  Stream<QuerySnapshot<Map<String, dynamic>>> _ratingsStream() {
+  Stream<QuerySnapshot<Map<String, dynamic>>> _reviewsStream() {
     return FirebaseFirestore.instance
-        .collection('ratings')
+        .collection('listing_reviews')
         .where('listingId', isEqualTo: widget.listingId)
-        .orderBy('updatedAt', descending: true)
+        .orderBy('createdAt', descending: true)
         .snapshots();
   }
 
@@ -130,7 +165,7 @@ class _RateListingPageState extends State<RateListingPage> {
           return Icon(icon, size: size, color: color);
         }
         return InkWell(
-          onTap: () => setState(() => _stars = idx),
+          onTap: () => setState(() => _rating = idx),
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 2),
             child: Icon(icon, size: size, color: color),
@@ -157,7 +192,7 @@ class _RateListingPageState extends State<RateListingPage> {
           const SizedBox(width: 8),
           Expanded(
             child: Text(
-              'Ratings are read-only on this screen.',
+              'Reviews are read-only on this screen.',
               style: TextStyle(color: cs.onSurface),
             ),
           ),
@@ -187,26 +222,26 @@ class _RateListingPageState extends State<RateListingPage> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Ratings'),
+        title: const Text('Reviews'),
       ),
       body: Container(
         decoration: bg,
         child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-          stream: _ratingsStream(),
+          stream: _reviewsStream(),
           builder: (context, snap) {
             final docs = snap.data?.docs ?? [];
             final count = docs.length;
             final avg = count == 0
                 ? 0.0
                 : docs
-                        .map((d) => (d.data()['stars'] as num?)?.toDouble() ?? 0.0)
+                        .map((d) => (d.data()['rating'] as num?)?.toDouble() ?? 0.0)
                         .fold<double>(0.0, (a, b) => a + b) /
                     count;
 
             return ListView(
               padding: const EdgeInsets.all(16),
               children: [
-                
+                // Résumé des notes
                 Container(
                   padding: const EdgeInsets.all(16),
                   decoration: BoxDecoration(
@@ -220,7 +255,7 @@ class _RateListingPageState extends State<RateListingPage> {
                       const SizedBox(width: 12),
                       Text(
                         count == 0
-                            ? 'No ratings yet'
+                            ? 'No reviews yet'
                             : '${avg.toStringAsFixed(1)} / 5 · $count review${count > 1 ? 's' : ''}',
                         style: TextStyle(
                           fontWeight: FontWeight.w700,
@@ -233,10 +268,10 @@ class _RateListingPageState extends State<RateListingPage> {
 
                 const SizedBox(height: 16),
 
-                
+                // Bannière read-only
                 _readOnlyBanner(),
 
-                
+                // Formulaire d'ajout de review
                 if (widget.allowAdd) ...[
                   Container(
                     padding: const EdgeInsets.all(16),
@@ -248,22 +283,83 @@ class _RateListingPageState extends State<RateListingPage> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text('Your rating',
+                        Text('Your review',
                             style: TextStyle(
                               fontSize: 16,
                               fontWeight: FontWeight.w800,
                               color: cs.onSurface,
                             )),
+                        const SizedBox(height: 16),
+                        
+                        // Rating stars
+                        Text('Overall rating', style: TextStyle(
+                          fontWeight: FontWeight.w600,
+                          color: cs.onSurface,
+                        )),
                         const SizedBox(height: 8),
-                        _starsRow(_stars, size: 32, interactive: true),
-                        const SizedBox(height: 12),
+                        _starsRow(_rating, size: 32, interactive: true),
+                        const SizedBox(height: 16),
+                        
+                        // Was clean question
+                        Text('Was the property clean?', style: TextStyle(
+                          fontWeight: FontWeight.w600,
+                          color: cs.onSurface,
+                        )),
+                        const SizedBox(height: 8),
+                        Row(
+                          children: [
+                            Radio<bool>(
+                              value: true,
+                              groupValue: _wasClean,
+                              onChanged: (value) => setState(() => _wasClean = value!),
+                            ),
+                            const Text('Yes'),
+                            const SizedBox(width: 16),
+                            Radio<bool>(
+                              value: false,
+                              groupValue: _wasClean,
+                              onChanged: (value) => setState(() => _wasClean = value!),
+                            ),
+                            const Text('No'),
+                          ],
+                        ),
+                        const SizedBox(height: 16),
+                        
+                        // Owner helpful question
+                        Text('Was the owner helpful?', style: TextStyle(
+                          fontWeight: FontWeight.w600,
+                          color: cs.onSurface,
+                        )),
+                        const SizedBox(height: 8),
+                        Row(
+                          children: [
+                            Radio<bool>(
+                              value: true,
+                              groupValue: _ownerWasHelpful,
+                              onChanged: (value) => setState(() => _ownerWasHelpful = value!),
+                            ),
+                            const Text('Yes'),
+                            const SizedBox(width: 16),
+                            Radio<bool>(
+                              value: false,
+                              groupValue: _ownerWasHelpful,
+                              onChanged: (value) => setState(() => _ownerWasHelpful = value!),
+                            ),
+                            const Text('No'),
+                          ],
+                        ),
+                        const SizedBox(height: 16),
+                        
+                        // Comment
                         MoonFormTextInput(
                           hasFloatingLabel: false,
-                          hintText: 'Add a short comment (optional)',
+                          hintText: 'Add a comment (optional)',
                           controller: _commentCtrl,
                           maxLines: 4,
                         ),
                         const SizedBox(height: 10),
+                        
+                        // Error message
                         if (_err != null)
                           Padding(
                             padding: const EdgeInsets.only(bottom: 8),
@@ -275,6 +371,8 @@ class _RateListingPageState extends State<RateListingPage> {
                               ),
                             ),
                           ),
+                        
+                        // Submit button
                         MoonFilledButton(
                           isFullWidth: true,
                           onTap: _saving ? null : _submit,
@@ -285,7 +383,7 @@ class _RateListingPageState extends State<RateListingPage> {
                                   child: CircularProgressIndicator(strokeWidth: 2),
                                 )
                               : const Icon(Icons.send_rounded),
-                          label: Text(_saving ? 'Saving…' : 'Submit rating'),
+                          label: Text(_saving ? 'Saving…' : 'Submit review'),
                         ),
                       ],
                     ),
@@ -293,7 +391,7 @@ class _RateListingPageState extends State<RateListingPage> {
                   const SizedBox(height: 16),
                 ],
 
-                // Liste des avis
+                // Liste des reviews
                 Container(
                   padding: const EdgeInsets.all(16),
                   decoration: BoxDecoration(
@@ -301,64 +399,148 @@ class _RateListingPageState extends State<RateListingPage> {
                     borderRadius: BorderRadius.circular(16),
                     border: Border.all(color: cs.primary.withOpacity(.12)),
                   ),
-                  child: snap.connectionState == ConnectionState.waiting
-                      ? const Center(child: Padding(
-                          padding: EdgeInsets.all(12.0),
-                          child: CircularProgressIndicator(),
-                        ))
-                      : (docs.isEmpty
-                          ? Text(
-                              widget.allowAdd
-                                  ? 'Be the first to leave a rating.'
-                                  : 'No ratings yet.',
-                              style: TextStyle(color: cs.onSurface.withOpacity(.7)),
-                            )
-                          : Column(
-                              children: docs.map((d) {
-                                final m = d.data();
-                                final stars = (m['stars'] as num?)?.toInt() ?? 0;
-                                final comment = (m['comment'] ?? '').toString();
-                                final ts = m['updatedAt'] as Timestamp?;
-                                final dateStr = ts == null
-                                    ? ''
-                                    : '${ts.toDate().year}-${ts.toDate().month.toString().padLeft(2, '0')}-${ts.toDate().day.toString().padLeft(2, '0')}';
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('All Reviews', style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w800,
+                        color: cs.onSurface,
+                      )),
+                      const SizedBox(height: 12),
+                      snap.connectionState == ConnectionState.waiting
+                          ? const Center(child: Padding(
+                              padding: EdgeInsets.all(12.0),
+                              child: CircularProgressIndicator(),
+                            ))
+                          : (docs.isEmpty
+                              ? Text(
+                                  widget.allowAdd
+                                      ? 'Be the first to leave a review.'
+                                      : 'No reviews yet.',
+                                  style: TextStyle(color: cs.onSurface.withOpacity(.7)),
+                                )
+                              : Column(
+                                  children: docs.map((d) {
+                                    final data = d.data();
+                                    final rating = (data['rating'] as num?)?.toInt() ?? 0;
+                                    final comment = (data['comment'] ?? '').toString();
+                                    final studentName = (data['studentName'] ?? 'Anonymous').toString();
+                                    final wasClean = data['wasClean'] ?? true;
+                                    final ownerWasHelpful = data['ownerWasHelpful'] ?? true;
+                                    final ts = data['createdAt'] as Timestamp?;
+                                    final dateStr = ts == null
+                                        ? ''
+                                        : '${ts.toDate().day.toString().padLeft(2, '0')}/${ts.toDate().month.toString().padLeft(2, '0')}/${ts.toDate().year}';
 
-                                return Container(
-                                  margin: const EdgeInsets.only(bottom: 12),
-                                  padding: const EdgeInsets.all(12),
-                                  decoration: BoxDecoration(
-                                    borderRadius: BorderRadius.circular(12),
-                                    border: Border.all(color: cs.primary.withOpacity(.10)),
-                                  ),
-                                  child: Row(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      _starsRow(stars, size: 18),
-                                      const SizedBox(width: 12),
-                                      Expanded(
-                                        child: Column(
-                                          crossAxisAlignment: CrossAxisAlignment.start,
-                                          children: [
-                                            if (comment.isNotEmpty)
+                                    return Container(
+                                      margin: const EdgeInsets.only(bottom: 12),
+                                      padding: const EdgeInsets.all(12),
+                                      decoration: BoxDecoration(
+                                        borderRadius: BorderRadius.circular(12),
+                                        border: Border.all(color: cs.primary.withOpacity(.10)),
+                                      ),
+                                      child: Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          // Header with stars and name
+                                          Row(
+                                            children: [
+                                              _starsRow(rating, size: 18),
+                                              const Spacer(),
                                               Text(
-                                                comment,
-                                                style: TextStyle(color: cs.onSurface),
+                                                studentName,
+                                                style: TextStyle(
+                                                  fontWeight: FontWeight.w600,
+                                                  color: cs.onSurface,
+                                                ),
                                               ),
+                                            ],
+                                          ),
+                                          const SizedBox(height: 8),
+                                          
+                                          // Clean and helpful indicators
+                                          Row(
+                                            children: [
+                                              Container(
+                                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                                decoration: BoxDecoration(
+                                                  color: wasClean ? Colors.green.withOpacity(0.1) : Colors.red.withOpacity(0.1),
+                                                  borderRadius: BorderRadius.circular(12),
+                                                ),
+                                                child: Row(
+                                                  mainAxisSize: MainAxisSize.min,
+                                                  children: [
+                                                    Icon(
+                                                      wasClean ? Icons.check : Icons.close,
+                                                      size: 12,
+                                                      color: wasClean ? Colors.green : Colors.red,
+                                                    ),
+                                                    const SizedBox(width: 4),
+                                                    Text(
+                                                      'Clean',
+                                                      style: TextStyle(
+                                                        fontSize: 11,
+                                                        color: wasClean ? Colors.green : Colors.red,
+                                                      ),
+                                                    ),
+                                                  ],
+                                                ),
+                                              ),
+                                              const SizedBox(width: 8),
+                                              Container(
+                                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                                decoration: BoxDecoration(
+                                                  color: ownerWasHelpful ? Colors.green.withOpacity(0.1) : Colors.red.withOpacity(0.1),
+                                                  borderRadius: BorderRadius.circular(12),
+                                                ),
+                                                child: Row(
+                                                  mainAxisSize: MainAxisSize.min,
+                                                  children: [
+                                                    Icon(
+                                                      ownerWasHelpful ? Icons.check : Icons.close,
+                                                      size: 12,
+                                                      color: ownerWasHelpful ? Colors.green : Colors.red,
+                                                    ),
+                                                    const SizedBox(width: 4),
+                                                    Text(
+                                                      'Helpful Owner',
+                                                      style: TextStyle(
+                                                        fontSize: 11,
+                                                        color: ownerWasHelpful ? Colors.green : Colors.red,
+                                                      ),
+                                                    ),
+                                                  ],
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                          
+                                          // Comment
+                                          if (comment.isNotEmpty) ...[
+                                            const SizedBox(height: 8),
                                             Text(
-                                              dateStr,
-                                              style: TextStyle(
-                                                color: cs.onSurface.withOpacity(.6),
-                                                fontSize: 12,
-                                              ),
+                                              comment,
+                                              style: TextStyle(color: cs.onSurface),
                                             ),
                                           ],
-                                        ),
+                                          
+                                          // Date
+                                          const SizedBox(height: 8),
+                                          Text(
+                                            dateStr,
+                                            style: TextStyle(
+                                              color: cs.onSurface.withOpacity(.6),
+                                              fontSize: 12,
+                                            ),
+                                          ),
+                                        ],
                                       ),
-                                    ],
-                                  ),
-                                );
-                              }).toList(),
-                            )),
+                                    );
+                                  }).toList(),
+                                )),
+                    ],
+                  ),
                 ),
               ],
             );
