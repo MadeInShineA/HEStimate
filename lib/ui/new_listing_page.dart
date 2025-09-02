@@ -429,9 +429,9 @@ class _NewListingPageState extends State<NewListingPage> {
     required double destLng,
     String mode = 'driving',
   }) async {
-    final mapsKey = dotenv.env['GOOGLE_MAPS_KEY'] ?? '';
+    final mapsKey = dotenv.env['GOOGLE_API_KEY'] ?? '';
     if (mapsKey.isEmpty) {
-      throw Exception('GOOGLE_MAPS_KEY missing. Add it in .env and load dotenv.');
+      throw Exception('GOOGLE_API_KEY missing. Add it in .env and load dotenv.');
     }
 
     final uri = Uri.parse('https://maps.googleapis.com/maps/api/directions/json')
