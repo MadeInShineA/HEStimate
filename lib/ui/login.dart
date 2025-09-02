@@ -150,6 +150,7 @@ class _LoginPageState extends State<LoginPage> {
                     ),
                     const SizedBox(height: 24),
                     MoonFormTextInput(
+                      controller: _emailCtrl,
                       hintText: 'Email',
                       keyboardType: TextInputType.emailAddress,
                       textInputAction: TextInputAction.next,
@@ -161,10 +162,10 @@ class _LoginPageState extends State<LoginPage> {
                         if (!re.hasMatch(v)) return 'Enter a valid email';
                         return null;
                       },
-                      onChanged: (v) => _emailCtrl.text = v,
                     ),
                     const SizedBox(height: 12),
                     MoonFormTextInput(
+                      controller: _passwordCtrl,
                       hintText: 'Password',
                       obscureText: _obscurePw,
                       textInputAction: TextInputAction.done,
@@ -178,9 +179,9 @@ class _LoginPageState extends State<LoginPage> {
                         if (v.isEmpty) return 'Password is required';
                         return null;
                       },
-                      onChanged: (v) => _passwordCtrl.text = v,
+
                     ),
-                    const SizedBox(height: 20),
+                    const SizedBox(height: 12),
                     SizedBox(
                       height: 48,
                       child: MoonFilledButton(
@@ -194,12 +195,29 @@ class _LoginPageState extends State<LoginPage> {
                             : const Text('Sign in'),
                       ),
                     ),
-                    const SizedBox(height: 12),
+                    const SizedBox(height: 8),
                     Align(
                       alignment: Alignment.center,
                       child: TextButton(
                         onPressed: () => Navigator.of(context).pushReplacementNamed('/register'),
-                        child: const Text("Don't have an account? Register"),
+                        child: Text(
+                          "Don't have an account? Register",
+                          style: TextStyle(
+                            color: theme?.tokens.colors.piccolo,
+                          ),
+                        ),
+                      ),
+                    ),
+                    Align(
+                      alignment: Alignment.center,
+                      child: TextButton(
+                        onPressed: () => Navigator.of(context).pushNamed('/forgot-password'),
+                        child: Text(
+                          'Forgot Password?',
+                          style: TextStyle(
+                            color: theme?.tokens.colors.piccolo,
+                          ),
+                        ),
                       ),
                     ),
 
