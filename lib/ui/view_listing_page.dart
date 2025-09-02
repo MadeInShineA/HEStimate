@@ -10,15 +10,13 @@ import 'package:http/http.dart' as http;
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:phone_numbers_parser/phone_numbers_parser.dart';
+
 import 'rate_listing_page.dart';
-
 import 'edit_listing_page.dart';
-// import 'rate_listing_page.dart'; // Add this import for RateListingPage
 
-// ✅ Use the same key you verified via curl (Directions + Places v1 enabled, billing on)
+// Clé Google (Directions + Places)
 final _googleMapsApiKey = dotenv.env['GOOGLE_API_KEY'] ?? '';
 
-// ✅ Your campuses are stored in this collection
 const _hesCollection = 'schools';
 
 class ViewListingPage extends StatefulWidget {
@@ -55,8 +53,8 @@ class _ViewListingPageState extends State<ViewListingPage> {
 
   // HES (vol d’oiseau)
   double? _proximHesKm;
-  String? _nearestHesId; // Firestore doc id in `schools`
-  String? _nearestHesName; // From `name` field
+  String? _nearestHesId;   // id Firestore dans `schools`
+  String? _nearestHesName; // name résolu depuis `schools`
   bool _computingHes = false;
 
   // Transport public → HES (prochaines 2h)
@@ -64,7 +62,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
   String? _ptError;
   List<_TransitRoute> _ptRoutes = [];
 
-  // Nearby bars (Places API v1)
+  // Bars à proximité (Places API v1)
   bool _loadingBars = false;
   String? _barsError;
   List<_NearbyPlace> _bars = [];
@@ -87,14 +85,17 @@ class _ViewListingPageState extends State<ViewListingPage> {
   // Carrousels
   late final PageController _photoCtrl;
 
-  // Carousels & accordion state
-  // Full-width pages → no adjacent peek
+  // ---- Favoris (link-table `favorites`) ----
+  late final Stream<bool> _favStream;
+
+  // Carrousels PT & Bars + états
   late final PageController _ptCtrl = PageController(viewportFraction: 1.0);
   late final PageController _barsCtrl = PageController(viewportFraction: 1.0);
   int _ptPage = 0;
   int _barsPage = 0;
-  int? _expandedBarIndex; // null = none
-  // Booking system
+  int? _expandedBarIndex;
+
+  // Réservations (formulaire)
   List<Map<String, dynamic>> _bookedDates = [];
   final TextEditingController _messageController = TextEditingController();
   final TextEditingController _phoneController = TextEditingController();
@@ -103,25 +104,25 @@ class _ViewListingPageState extends State<ViewListingPage> {
   DateTime? _selectedStart;
   DateTime? _selectedEnd;
   bool _submittingBooking = false;
-  
-  // Phone validation
+
+  // Validation téléphone
   String? _phoneError;
   bool _isValidPhone = false;
+
+  // Notes
+  int _rating = 0;
 
   bool get _isOwner =>
       FirebaseAuth.instance.currentUser?.uid != null &&
       FirebaseAuth.instance.currentUser!.uid == _ownerUid;
 
-  bool get _isStudent => 
+  bool get _isStudent =>
       FirebaseAuth.instance.currentUser != null && !_isOwner;
-
-  int _rating = 0;
 
   Future<void> _loadMyExistingReviewIfAny() async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
 
-    // Chercher une review existante de cet utilisateur pour ce listing
     final query = await FirebaseFirestore.instance
         .collection('listing_reviews')
         .where('listingId', isEqualTo: widget.listingId)
@@ -140,6 +141,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
   void initState() {
     super.initState();
     _photoCtrl = PageController(viewportFraction: 0.92);
+    _favStream = _favoriteStream();
     _phoneController.addListener(_validatePhoneNumber);
     _load();
     _loadMyExistingReviewIfAny();
@@ -152,10 +154,54 @@ class _ViewListingPageState extends State<ViewListingPage> {
     _barsCtrl.dispose();
     _messageController.dispose();
     _phoneController.dispose();
+    _startDateController.dispose();
+    _endDateController.dispose();
     super.dispose();
   }
 
-  // Dots helper
+  // --- FAVORITES (link table) ------------------------------------------------
+  Stream<bool> _favoriteStream() {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return Stream.value(false);
+    final favDocId = '${uid}_${widget.listingId}';
+    return FirebaseFirestore.instance
+        .collection('favorites')
+        .doc(favDocId)
+        .snapshots()
+        .map((d) => d.exists);
+  }
+
+  Future<void> _toggleFavorite() async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Connecte-toi pour utiliser les favoris.')),
+      );
+      return;
+    }
+    final favRef = FirebaseFirestore.instance
+        .collection('favorites')
+        .doc('${uid}_${widget.listingId}');
+    try {
+      final snap = await favRef.get();
+      if (snap.exists) {
+        await favRef.delete();
+      } else {
+        await favRef.set({
+          'userUid': uid,
+          'listingId': widget.listingId,
+          'createdAt': FieldValue.serverTimestamp(),
+        });
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Erreur favoris: $e')),
+      );
+    }
+  }
+  // --------------------------------------------------------------------------
+
+  // Dots helper (PageView)
   Widget _dots(BuildContext context, {required int count, required int index}) {
     final cs = Theme.of(context).colorScheme;
     if (count <= 1) return const SizedBox.shrink();
@@ -181,27 +227,20 @@ class _ViewListingPageState extends State<ViewListingPage> {
 
   void _validatePhoneNumber() {
     final phoneText = _phoneController.text.trim();
-    
     if (phoneText.isEmpty) {
       setState(() {
         _phoneError = null;
-        _isValidPhone = true; // Phone is optional, so empty is valid
+        _isValidPhone = true; // optionnel → vide = ok
       });
       return;
     }
-
     try {
-      // Try to parse the phone number
-      // Assume Swiss context by default, but allow international format
       PhoneNumber phoneNumber;
-      
       if (phoneText.startsWith('+')) {
         phoneNumber = PhoneNumber.parse(phoneText);
       } else {
-        // Try Swiss format first
         phoneNumber = PhoneNumber.parse(phoneText, destinationCountry: IsoCode.CH);
       }
-      
       if (phoneNumber.isValid()) {
         setState(() {
           _phoneError = null;
@@ -213,7 +252,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
           _isValidPhone = false;
         });
       }
-    } catch (e) {
+    } catch (_) {
       setState(() {
         _phoneError = 'Invalid phone number format';
         _isValidPhone = false;
@@ -259,10 +298,10 @@ class _ViewListingPageState extends State<ViewListingPage> {
       _latitude = (m['latitude'] as num?)?.toDouble();
       _longitude = (m['longitude'] as num?)?.toDouble();
 
-      // persisted fields (keep same keys on the listing):
+      // Champs persistant
       _proximHesKm = (m['proxim_hesso_km'] as num?)?.toDouble();
       _nearestHesId = (m['nearest_hesso_id'] ?? '').toString();
-      _nearestHesName = null; // resolved later
+      _nearestHesName = null;
 
       final tsStart = m['availability_start'] as Timestamp?;
       final tsEnd = m['availability_end'] as Timestamp?;
@@ -272,7 +311,6 @@ class _ViewListingPageState extends State<ViewListingPage> {
       final List photos = (m['photos'] as List?) ?? const [];
       _photos = photos.map((e) => e.toString()).toList();
 
-      // Charger seulement les dates approuvées
       await _loadBookedDates();
 
       setState(() {
@@ -280,7 +318,6 @@ class _ViewListingPageState extends State<ViewListingPage> {
         if (_availStart != null) _shownMonth = _monthDate(_availStart!);
       });
 
-      // Auto-calc / resolve HES, then auto-load PT + bars (no buttons)
       await _ensureNearestSchool();
       _autoLoadSections();
     } catch (e) {
@@ -304,8 +341,8 @@ class _ViewListingPageState extends State<ViewListingPage> {
 
   void _autoLoadSections() {
     if (_latitude != null && _longitude != null) {
-      _loadPtRoutesNext2h(); // fire-and-forget
-      _loadNearbyBars(); // fire-and-forget
+      _loadPtRoutesNext2h();
+      _loadNearbyBars();
     }
   }
 
@@ -326,20 +363,16 @@ class _ViewListingPageState extends State<ViewListingPage> {
         };
       }).toList();
     } catch (e) {
-      print('Error loading booked dates: $e');
+      // ignore
     }
   }
 
   bool _isDateBooked(DateTime day) {
     final d = _dateOnly(day);
-    
     for (final booking in _bookedDates) {
       final start = _dateOnly(booking['startDate']);
       final end = _dateOnly(booking['endDate']);
-      
-      if (!d.isBefore(start) && !d.isAfter(end)) {
-        return true;
-      }
+      if (!d.isBefore(start) && !d.isAfter(end)) return true;
     }
     return false;
   }
@@ -348,7 +381,6 @@ class _ViewListingPageState extends State<ViewListingPage> {
     return _isAvailableOn(day) && !_isDateBooked(day);
   }
 
-  // Check if selected date range conflicts with any approved bookings
   Future<bool> _checkBookingConflict(DateTime startDate, DateTime endDate) async {
     try {
       final snapshot = await FirebaseFirestore.instance
@@ -363,17 +395,13 @@ class _ViewListingPageState extends State<ViewListingPage> {
         final existingEnd = _dateOnly((data['endDate'] as Timestamp).toDate());
         final reqStart = _dateOnly(startDate);
         final reqEnd = _dateOnly(endDate);
-        
-        // Check if dates overlap
         if (!(reqEnd.isBefore(existingStart) || reqStart.isAfter(existingEnd))) {
-          return true; // Conflict found
+          return true;
         }
       }
-      
-      return false; // No conflict
-    } catch (e) {
-      print('Error checking booking conflict: $e');
-      return true; // Assume conflict on error for safety
+      return false;
+    } catch (_) {
+      return true;
     }
   }
 
@@ -385,9 +413,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
         _floor == null ||
         _distTransportKm == null ||
         _proximHesKm == null) {
-      setState(() {
-        _estimateError = 'Missing data for estimation';
-      });
+      setState(() => _estimateError = 'Missing data for estimation');
       return;
     }
 
@@ -415,9 +441,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
       ];
 
       final response = await http.post(
-        Uri.parse(
-          'https://hestimate-api-production.up.railway.app/estimate-price',
-        ),
+        Uri.parse('https://hestimate-api-production.up.railway.app/estimate-price'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode(body),
       );
@@ -428,8 +452,8 @@ class _ViewListingPageState extends State<ViewListingPage> {
             data.isNotEmpty &&
             data[0]['predicted_price_chf'] != null) {
           setState(() {
-            _estimatedPrice = (data[0]['predicted_price_chf'] as num)
-                .toDouble();
+            _estimatedPrice =
+                (data[0]['predicted_price_chf'] as num).toDouble();
             _estimatingPrice = false;
           });
         } else {
@@ -452,7 +476,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
     }
   }
 
-  // --- HES helpers (use `schools`) ------------------------------------------
+  // --- HES helpers -----------------------------------------------------------
 
   double _deg2rad(double d) => d * math.pi / 180.0;
 
@@ -460,8 +484,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
     const earthRadiusKm = 6371.0;
     final dLat = _deg2rad(lat2 - lat1);
     final dLon = _deg2rad(lon2 - lon1);
-    final a =
-        math.sin(dLat / 2) * math.sin(dLat / 2) +
+    final a = math.sin(dLat / 2) * math.sin(dLat / 2) +
         math.cos(_deg2rad(lat1)) *
             math.cos(_deg2rad(lat2)) *
             math.sin(dLon / 2) *
@@ -486,9 +509,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
       } else {
         await _computeNearestHes(persist: true);
       }
-    } catch (_) {
-      /* no-op */
-    }
+    } catch (_) {/* no-op */}
   }
 
   Future<void> _computeNearestHes({bool persist = true}) async {
@@ -543,9 +564,9 @@ class _ViewListingPageState extends State<ViewListingPage> {
             .collection('listings')
             .doc(widget.listingId)
             .update({
-              'proxim_hesso_km': _proximHesKm,
-              'nearest_hesso_id': _nearestHesId,
-            });
+          'proxim_hesso_km': _proximHesKm,
+          'nearest_hesso_id': _nearestHesId,
+        });
       }
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -556,7 +577,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
     }
   }
 
-  // --- Directions (transit) for next 2 hours --------------------------------
+  // --- Directions (transit) next 2h -----------------------------------------
 
   Future<void> _loadPtRoutesNext2h() async {
     if (_latitude == null || _longitude == null) {
@@ -571,14 +592,10 @@ class _ViewListingPageState extends State<ViewListingPage> {
       }
     }
     if (_googleMapsApiKey.isEmpty) {
-      setState(
-        () => _ptError =
-            'Google Directions API key missing. Set _googleMapsApiKey.',
-      );
+      setState(() => _ptError = 'Google Directions API key missing.');
       return;
     }
 
-    // Load school coords from `schools`
     final hesDoc = await FirebaseFirestore.instance
         .collection(_hesCollection)
         .doc(_nearestHesId!)
@@ -586,22 +603,13 @@ class _ViewListingPageState extends State<ViewListingPage> {
 
     if (!hesDoc.exists) {
       await _computeNearestHes(persist: true);
-      final retryDoc = await FirebaseFirestore.instance
-          .collection(_hesCollection)
-          .doc(_nearestHesId!)
-          .get();
-      if (!retryDoc.exists) {
-        setState(() => _ptError = 'School doc not found in "$_hesCollection".');
-        return;
-      }
     }
-
     final docToUse = hesDoc.exists
         ? hesDoc
         : await FirebaseFirestore.instance
-              .collection(_hesCollection)
-              .doc(_nearestHesId!)
-              .get();
+            .collection(_hesCollection)
+            .doc(_nearestHesId!)
+            .get();
 
     final schoolData = docToUse.data()!;
     final hesLat = (schoolData['latitude'] as num?)?.toDouble();
@@ -634,17 +642,16 @@ class _ViewListingPageState extends State<ViewListingPage> {
       final results = <_TransitRoute>[];
       for (final dt in anchors) {
         final secs = (dt.millisecondsSinceEpoch / 1000).round();
-        final uri =
-            Uri.https('maps.googleapis.com', '/maps/api/directions/json', {
-              'origin': '${_latitude!},${_longitude!}',
-              'destination': '$hesLat,$hesLon',
-              'mode': 'transit',
-              'alternatives': 'true',
-              'transit_routing_preference': 'less_walking',
-              'language': 'en',
-              'departure_time': '$secs',
-              'key': _googleMapsApiKey,
-            });
+        final uri = Uri.https('maps.googleapis.com', '/maps/api/directions/json', {
+          'origin': '${_latitude!},${_longitude!}',
+          'destination': '$hesLat,$hesLon',
+          'mode': 'transit',
+          'alternatives': 'true',
+          'transit_routing_preference': 'less_walking',
+          'language': 'en',
+          'departure_time': '$secs',
+          'key': _googleMapsApiKey,
+        });
 
         final resp = await http.get(uri);
         if (resp.statusCode != 200) {
@@ -654,10 +661,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
         final jd = jsonDecode(resp.body);
         if (jd['status'] != 'OK' || jd['routes'] == null) {
           final em = (jd['error_message'] ?? '').toString();
-          setState(
-            () => _ptError =
-                'Directions status: ${jd['status']}${em.isNotEmpty ? ' • $em' : ''}',
-          );
+          setState(() => _ptError = 'Directions status: ${jd['status']}${em.isNotEmpty ? ' • $em' : ''}');
           continue;
         }
 
@@ -667,8 +671,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
           if (route == null) continue;
           if (route.departureTime.isAfter(horizon)) continue;
 
-          final key =
-              '${route.departureTime.millisecondsSinceEpoch}-${route.summary}';
+          final key = '${route.departureTime.millisecondsSinceEpoch}-${route.summary}';
           if (!results.any((x) => x._dedupeKey == key)) {
             results.add(route.._dedupeKey = key);
           }
@@ -700,10 +703,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
       return;
     }
     if (_googleMapsApiKey.isEmpty) {
-      setState(
-        () => _barsError =
-            'Google Places API key missing. Set _googleMapsApiKey.',
-      );
+      setState(() => _barsError = 'Google Places API key missing.');
       return;
     }
 
@@ -716,9 +716,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
     });
 
     try {
-      final url = Uri.parse(
-        'https://places.googleapis.com/v1/places:searchNearby',
-      );
+      final url = Uri.parse('https://places.googleapis.com/v1/places:searchNearby');
 
       final body = {
         "includedTypes": ["bar"],
@@ -726,7 +724,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
         "locationRestriction": {
           "circle": {
             "center": {"latitude": _latitude, "longitude": _longitude},
-            "radius": 1500.0, // meters
+            "radius": 1500.0,
           },
         },
       };
@@ -734,16 +732,11 @@ class _ViewListingPageState extends State<ViewListingPage> {
       final headers = {
         'Content-Type': 'application/json',
         'X-Goog-Api-Key': _googleMapsApiKey,
-        // Request only what we render to keep payload small
         'X-Goog-FieldMask':
             'places.displayName,places.formattedAddress,places.rating,places.userRatingCount,places.location,places.types',
       };
 
-      final resp = await http.post(
-        url,
-        headers: headers,
-        body: jsonEncode(body),
-      );
+      final resp = await http.post(url, headers: headers, body: jsonEncode(body));
 
       if (resp.statusCode != 200) {
         setState(() {
@@ -780,7 +773,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
         );
       }
 
-      // Deduplicate by (name,address)
+      // Dedup (name, address)
       final seen = <String>{};
       final deduped = <_NearbyPlace>[];
       for (final p in parsed) {
@@ -788,7 +781,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
         if (seen.add(k)) deduped.add(p);
       }
 
-      // Sort by rating desc, then ratingCount desc, then distance asc
+      // Sort by rating desc, then count desc, then distance asc
       deduped.sort((a, b) {
         final ar = a.rating ?? -1.0;
         final br = b.rating ?? -1.0;
@@ -802,9 +795,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
       setState(() {
         _bars = deduped.take(20).toList();
         _loadingBars = false;
-        if (_bars.isEmpty) {
-          _barsError = 'No bars found nearby.';
-        }
+        if (_bars.isEmpty) _barsError = 'No bars found nearby.';
       });
     } catch (e) {
       setState(() {
@@ -841,11 +832,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
   List<Widget> _buildCalendar(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final firstOfMonth = DateTime(_shownMonth.year, _shownMonth.month, 1);
-    final int daysInMonth = DateTime(
-      _shownMonth.year,
-      _shownMonth.month + 1,
-      0,
-    ).day;
+    final int daysInMonth = DateTime(_shownMonth.year, _shownMonth.month + 1, 0).day;
 
     final int weekdayStart = firstOfMonth.weekday; // 1..7 (Mon..Sun)
     final int leadingEmpty = weekdayStart - 1;
@@ -890,21 +877,19 @@ class _ViewListingPageState extends State<ViewListingPage> {
       }
 
       items.add(
-        GestureDetector(
-          child: Container(
-            margin: const EdgeInsets.all(4),
-            decoration: BoxDecoration(
-              color: bgColor,
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: borderColor, width: 1),
-            ),
-            child: Center(
-              child: Text(
-                '$day',
-                style: TextStyle(
-                  fontWeight: FontWeight.w600,
-                  color: textColor,
-                ),
+        Container(
+          margin: const EdgeInsets.all(4),
+          decoration: BoxDecoration(
+            color: bgColor,
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: borderColor, width: 1),
+          ),
+          child: Center(
+            child: Text(
+              '$day',
+              style: TextStyle(
+                fontWeight: FontWeight.w600,
+                color: textColor,
               ),
             ),
           ),
@@ -915,7 +900,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
     return items;
   }
 
-  // Ratings widgets
+  // Ratings preview
   Widget _starsRow(BuildContext context, int value, double avg, int count) {
     final cs = Theme.of(context).colorScheme;
     return Row(
@@ -923,7 +908,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
       children: [
         ...List.generate(5, (i) {
           final idx = i + 1;
-          final filled = idx <= avg.round(); // Utilisez avg.round() au lieu de value
+          final filled = idx <= avg.round();
           final icon = filled ? Icons.star_rounded : Icons.star_border_rounded;
           final color = filled ? cs.primary : cs.onSurface.withOpacity(.35);
           return Icon(icon, size: 16, color: color);
@@ -941,11 +926,10 @@ class _ViewListingPageState extends State<ViewListingPage> {
     );
   }
 
-
   Widget _buildRatingsPreview(BuildContext context) {
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
       stream: FirebaseFirestore.instance
-          .collection('listing_reviews') // Changez 'ratings' en 'listing_reviews'
+          .collection('listing_reviews')
           .where('listingId', isEqualTo: widget.listingId)
           .snapshots(),
       builder: (context, snap) {
@@ -957,7 +941,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
           if (count > 0) {
             final sum = docs.fold<double>(
               0.0,
-              (acc, d) => acc + ((d.data()['rating'] as num?)?.toDouble() ?? 0.0), // Changez 'stars' en 'rating'
+              (acc, d) => acc + ((d.data()['rating'] as num?)?.toDouble() ?? 0.0),
             );
             avg = sum / count;
           }
@@ -966,9 +950,9 @@ class _ViewListingPageState extends State<ViewListingPage> {
           onTap: () {
             Navigator.of(context).push(
               MaterialPageRoute(
-                  builder: (_) => RateListingPage(
+                builder: (_) => RateListingPage(
                   listingId: widget.listingId,
-                  allowAdd: false, 
+                  allowAdd: false,
                 ),
               ),
             );
@@ -976,21 +960,20 @@ class _ViewListingPageState extends State<ViewListingPage> {
           borderRadius: BorderRadius.circular(8),
           child: Padding(
             padding: const EdgeInsets.only(top: 6.0, bottom: 2.0),
-            child: _starsRow(context, avg.round(), avg, count), // Passez avg.round() comme value
+            child: _starsRow(context, avg.round(), avg, count),
           ),
         );
       },
     );
   }
 
-  // --- Open place in Maps (cross-platform & robust) --------------------------
+  // --- Open place in Maps ----------------------------------------------------
 
   Future<void> _openPlaceInMaps(_NearbyPlace p) async {
     final lat = p.latitude.toStringAsFixed(6);
     final lon = p.longitude.toStringAsFixed(6);
     final encodedQuery = Uri.encodeComponent('${p.name}, ${p.address}');
 
-    // Build candidates in priority order per platform
     final List<Uri> candidates;
     if (kIsWeb) {
       candidates = [
@@ -999,7 +982,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
     } else if (Platform.isIOS) {
       candidates = [
         Uri.parse('comgooglemaps://?q=$lat,$lon&center=$lat,$lon&zoom=16'),
-        Uri.parse('maps://?q=$encodedQuery&ll=$lat,$lon'), // Apple Maps
+        Uri.parse('maps://?q=$encodedQuery&ll=$lat,$lon'),
         Uri.parse('https://www.google.com/maps/search/?api=1&query=$lat,$lon'),
       ];
     } else if (Platform.isAndroid) {
@@ -1017,15 +1000,11 @@ class _ViewListingPageState extends State<ViewListingPage> {
       try {
         final launched = await launchUrl(
           uri,
-          mode: kIsWeb
-              ? LaunchMode.platformDefault
-              : LaunchMode.externalApplication,
+          mode: kIsWeb ? LaunchMode.platformDefault : LaunchMode.externalApplication,
           webOnlyWindowName: kIsWeb ? '_blank' : null,
         );
         if (launched) return;
-      } catch (_) {
-        // try next candidate
-      }
+      } catch (_) {}
     }
 
     if (mounted) {
@@ -1034,7 +1013,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
       );
     }
   }
-  
+
   Widget _buildBookingPanel(BuildContext context) {
     return Container(
       padding: const EdgeInsets.all(16),
@@ -1063,8 +1042,8 @@ class _ViewListingPageState extends State<ViewListingPage> {
             ),
           ),
           const SizedBox(height: 16),
-          
-          // Start Date Picker
+
+          // Start Date
           TextField(
             readOnly: true,
             controller: _startDateController,
@@ -1086,7 +1065,6 @@ class _ViewListingPageState extends State<ViewListingPage> {
                 setState(() {
                   _selectedStart = picked;
                   _startDateController.text = _fmt(picked);
-                  // Reset end date si elle est avant start
                   if (_selectedEnd != null && _selectedEnd!.isBefore(picked)) {
                     _selectedEnd = null;
                     _endDateController.text = '';
@@ -1097,7 +1075,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
           ),
           const SizedBox(height: 12),
 
-          // End Date Picker
+          // End Date
           TextField(
             readOnly: true,
             controller: _endDateController,
@@ -1114,7 +1092,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
                 );
                 return;
               }
-              
+
               final picked = await showDatePicker(
                 context: context,
                 initialDate: _selectedEnd ?? _selectedStart!.add(const Duration(days: 1)),
@@ -1131,7 +1109,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
             },
           ),
 
-          // Message to owner
+          // Message
           const SizedBox(height: 12),
           TextField(
             controller: _messageController,
@@ -1146,7 +1124,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
             ),
           ),
 
-          // Phone number with validation
+          // Phone
           const SizedBox(height: 12),
           TextField(
             controller: _phoneController,
@@ -1169,7 +1147,9 @@ class _ViewListingPageState extends State<ViewListingPage> {
               focusedBorder: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(8),
                 borderSide: BorderSide(
-                  color: _phoneError != null ? Colors.red : Theme.of(context).colorScheme.primary,
+                  color: _phoneError != null
+                      ? Colors.red
+                      : Theme.of(context).colorScheme.primary,
                 ),
               ),
               contentPadding: const EdgeInsets.all(12),
@@ -1183,7 +1163,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
             ),
           ),
 
-          // Submit button
+          // Submit
           const SizedBox(height: 16),
           MoonFilledButton(
             isFullWidth: true,
@@ -1194,7 +1174,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
                     !_submittingBooking
                 ? () => _submitBookingRequestWithDates(_selectedStart!, _selectedEnd!)
                 : null,
-            leading: _submittingBooking 
+            leading: _submittingBooking
                 ? const SizedBox(
                     width: 16,
                     height: 16,
@@ -1215,7 +1195,6 @@ class _ViewListingPageState extends State<ViewListingPage> {
     setState(() => _submittingBooking = true);
 
     try {
-      // Check for conflicts before submitting
       final hasConflict = await _checkBookingConflict(start, end);
       if (hasConflict) {
         if (mounted) {
@@ -1236,7 +1215,6 @@ class _ViewListingPageState extends State<ViewListingPage> {
           .get();
       final userData = userDoc.data() ?? {};
 
-      // Format the phone number properly if provided
       String? formattedPhone;
       if (_phoneController.text.trim().isNotEmpty) {
         try {
@@ -1244,10 +1222,13 @@ class _ViewListingPageState extends State<ViewListingPage> {
           if (_phoneController.text.trim().startsWith('+')) {
             phoneNumber = PhoneNumber.parse(_phoneController.text.trim());
           } else {
-            phoneNumber = PhoneNumber.parse(_phoneController.text.trim(), destinationCountry: IsoCode.CH);
+            phoneNumber = PhoneNumber.parse(
+              _phoneController.text.trim(),
+              destinationCountry: IsoCode.CH,
+            );
           }
           formattedPhone = phoneNumber.international;
-        } catch (e) {
+        } catch (_) {
           formattedPhone = _phoneController.text.trim();
         }
       }
@@ -1324,15 +1305,26 @@ class _ViewListingPageState extends State<ViewListingPage> {
                 if (canPop) {
                   Navigator.of(context).pop();
                 } else {
-                  Navigator.of(
-                    context,
-                  ).pushNamedAndRemoveUntil('/home', (route) => false);
+                  Navigator.of(context).pushNamedAndRemoveUntil('/home', (route) => false);
                 }
               },
             );
           },
         ),
         actions: [
+          // Bouton favori (live)
+          StreamBuilder<bool>(
+            stream: _favStream,
+            builder: (context, snap) {
+              final isFav = snap.data ?? false;
+              return IconButton(
+                tooltip: isFav ? 'Retirer des favoris' : 'Ajouter aux favoris',
+                icon: Icon(isFav ? Icons.favorite : Icons.favorite_border),
+                color: isFav ? Colors.redAccent : null,
+                onPressed: _toggleFavorite,
+              );
+            },
+          ),
           if (!_loading && _isOwner)
             IconButton(
               tooltip: 'Edit',
@@ -1340,8 +1332,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
                 Navigator.of(context)
                     .push(
                       MaterialPageRoute(
-                        builder: (_) =>
-                            EditListingPage(listingId: widget.listingId),
+                        builder: (_) => EditListingPage(listingId: widget.listingId),
                       ),
                     )
                     .then((_) => _load());
@@ -1353,737 +1344,612 @@ class _ViewListingPageState extends State<ViewListingPage> {
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : _error != null
-          ? Center(
-              child: Text(
-                _error!,
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                  color: Colors.redAccent,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-            )
-          : LayoutBuilder(
-              builder: (context, constraints) {
-                final isWide = constraints.maxWidth >= 900;
-                const contentMax = 1000.0;
-
-                final horizontalPad = math.max(
-                  16.0,
-                  (constraints.maxWidth - contentMax) / 2 + 16.0,
-                );
-
-                return Container(
-                  decoration: bg,
-                  child: SingleChildScrollView(
-                    padding: EdgeInsets.symmetric(
-                      horizontal: isWide ? horizontalPad : 16.0,
-                      vertical: 16.0,
+              ? Center(
+                  child: Text(
+                    _error!,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      color: Colors.redAccent,
+                      fontWeight: FontWeight.w700,
                     ),
-                    child: Center(
-                      child: ConstrainedBox(
-                        constraints: const BoxConstraints(maxWidth: contentMax),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            // Photos
-                            _MoonCard(
-                              isDark: isDark,
-                              child: _photos.isEmpty
-                                  ? Container(
-                                      height: 180,
-                                      alignment: Alignment.center,
-                                      child: Text(
-                                        'No photos',
-                                        style: TextStyle(
-                                          color: cs.onSurface.withOpacity(.7),
-                                        ),
-                                      ),
-                                    )
-                                  : SizedBox(
-                                      height: 220,
-                                      child: PageView.builder(
-                                        controller: _photoCtrl,
-                                        padEnds: false,
-                                        itemCount: _photos.length,
-                                        itemBuilder: (_, i) {
-                                          return Padding(
-                                            padding: const EdgeInsets.symmetric(
-                                              horizontal: 6,
+                  ),
+                )
+              : LayoutBuilder(
+                  builder: (context, constraints) {
+                    final isWide = constraints.maxWidth >= 900;
+                    const contentMax = 1000.0;
+
+                    final horizontalPad = math.max(
+                      16.0,
+                      (constraints.maxWidth - contentMax) / 2 + 16.0,
+                    );
+
+                    return Container(
+                      decoration: bg,
+                      child: SingleChildScrollView(
+                        padding: EdgeInsets.symmetric(
+                          horizontal: isWide ? horizontalPad : 16.0,
+                          vertical: 16.0,
+                        ),
+                        child: Center(
+                          child: ConstrainedBox(
+                            constraints: const BoxConstraints(maxWidth: contentMax),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: [
+                                // Photos
+                                _MoonCard(
+                                  isDark: isDark,
+                                  child: _photos.isEmpty
+                                      ? Container(
+                                          height: 180,
+                                          alignment: Alignment.center,
+                                          child: Text(
+                                            'No photos',
+                                            style: TextStyle(
+                                              color: cs.onSurface.withOpacity(.7),
                                             ),
-                                            child: ClipRRect(
-                                              borderRadius:
-                                                  BorderRadius.circular(14),
-                                              child: Stack(
-                                                fit: StackFit.expand,
-                                                children: [
-                                                  Image.network(
-                                                    _photos[i],
-                                                    fit: BoxFit.cover,
-                                                  ),
-                                                  Positioned(
-                                                    right: 8,
-                                                    bottom: 8,
-                                                    child: Container(
-                                                      padding:
-                                                          const EdgeInsets.symmetric(
+                                          ),
+                                        )
+                                      : SizedBox(
+                                          height: 220,
+                                          child: PageView.builder(
+                                            controller: _photoCtrl,
+                                            padEnds: false,
+                                            itemCount: _photos.length,
+                                            itemBuilder: (_, i) {
+                                              return Padding(
+                                                padding: const EdgeInsets.symmetric(horizontal: 6),
+                                                child: ClipRRect(
+                                                  borderRadius: BorderRadius.circular(14),
+                                                  child: Stack(
+                                                    fit: StackFit.expand,
+                                                    children: [
+                                                      Image.network(
+                                                        _photos[i],
+                                                        fit: BoxFit.cover,
+                                                      ),
+                                                      Positioned(
+                                                        right: 8,
+                                                        bottom: 8,
+                                                        child: Container(
+                                                          padding: const EdgeInsets.symmetric(
                                                             horizontal: 8,
                                                             vertical: 4,
                                                           ),
-                                                      decoration: BoxDecoration(
-                                                        color: Colors.black54,
-                                                        borderRadius:
-                                                            BorderRadius.circular(
-                                                              12,
+                                                          decoration: BoxDecoration(
+                                                            color: Colors.black54,
+                                                            borderRadius: BorderRadius.circular(12),
+                                                          ),
+                                                          child: Text(
+                                                            '${i + 1}/${_photos.length}',
+                                                            style: const TextStyle(
+                                                              color: Colors.white,
+                                                              fontSize: 12,
                                                             ),
-                                                      ),
-                                                      child: Text(
-                                                        '${i + 1}/${_photos.length}',
-                                                        style: const TextStyle(
-                                                          color: Colors.white,
-                                                          fontSize: 12,
+                                                          ),
                                                         ),
                                                       ),
-                                                    ),
+                                                    ],
                                                   ),
-                                                ],
-                                              ),
-                                            ),
-                                          );
-                                        },
-                                      ),
-                                    ),
-                            ),
-
-                            const SizedBox(height: 16),
-
-                            // Header + bouton Edit
-                            _MoonCard(
-                              isDark: isDark,
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Row(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Expanded(
-                                        child: Column(
-                                          crossAxisAlignment:
-                                              CrossAxisAlignment.start,
-                                          children: [
-                                            Text(
-                                              _type == 'entire_home'
-                                                  ? 'Entire home'
-                                                  : 'Single room',
-                                              style: TextStyle(
-                                                fontSize: 18,
-                                                fontWeight: FontWeight.w800,
-                                                color: cs.onSurface,
-                                              ),
-                                            ),
-                                            const SizedBox(height: 4),
-                                            Text(
-                                              '$_address, $_npa $_city',
-                                              style: TextStyle(
-                                                fontSize: 14,
-                                                color: cs.onSurface.withOpacity(
-                                                  .8,
                                                 ),
-                                              ),
-                                            ),
-                                            const SizedBox(height: 8),
-                                            // Add the ratings preview here
-                                            _buildRatingsPreview(context),
-                                          ],
-                                        ),
-                                      ),
-                                      if (_isOwner)
-                                        MoonButton(
-                                          onTap: () async {
-                                            await Navigator.of(context).push(
-                                              MaterialPageRoute(
-                                                builder: (_) => EditListingPage(
-                                                  listingId: widget.listingId,
-                                                ),
-                                              ),
-                                            );
-                                            _load();
-                                          },
-                                          leading: const Icon(Icons.edit),
-                                          label: const Text('Edit'),
-                                        ),
-                                    ],
-                                  ),
-                                  const SizedBox(height: 12),
-                                  Wrap(
-                                    spacing: 16,
-                                    runSpacing: 8,
-                                    children: [
-                                      _chip(
-                                        context,
-                                        icon: Icons.price_change_outlined,
-                                        text: _price != null
-                                            ? '${_price!.toStringAsFixed(0)} CHF/mo'
-                                            : '—',
-                                      ),
-                                      _chip(
-                                        context,
-                                        icon: Icons.square_foot_outlined,
-                                        text: _surface != null
-                                            ? '${_surface!.toStringAsFixed(0)} m²'
-                                            : '—',
-                                      ),
-                                      _chip(
-                                        context,
-                                        icon: Icons.meeting_room_outlined,
-                                        text: _rooms != null
-                                            ? '$_rooms rooms'
-                                            : '—',
-                                      ),
-                                      _chip(
-                                        context,
-                                        icon: Icons.unfold_more_outlined,
-                                        text: _floor != null
-                                            ? 'Floor $_floor'
-                                            : '—',
-                                      ),
-                                      _chip(
-                                        context,
-                                        icon: Icons.directions_bus_outlined,
-                                        text: _distTransportKm != null
-                                            ? '${_distTransportKm!.toStringAsFixed(1)} km PT'
-                                            : '—',
-                                      ),
-                                      if (_proximHesKm != null)
-                                        _chip(
-                                          context,
-                                          icon: Icons.school_outlined,
-                                          text:
-                                              _nearestHesName != null &&
-                                                  _nearestHesName!
-                                                      .trim()
-                                                      .isNotEmpty
-                                              ? '${_proximHesKm!.toStringAsFixed(1)} km • $_nearestHesName'
-                                              : '${_proximHesKm!.toStringAsFixed(1)} km HES',
-                                        )
-                                      else
-                                        MoonButton(
-                                          isFullWidth: false,
-                                          onTap: _computingHes
-                                              ? null
-                                              : () => _computeNearestHes(
-                                                  persist: true,
-                                                ),
-                                          leading: _computingHes
-                                              ? const SizedBox(
-                                                  width: 16,
-                                                  height: 16,
-                                                  child:
-                                                      CircularProgressIndicator(
-                                                        strokeWidth: 2,
-                                                      ),
-                                                )
-                                              : const Icon(
-                                                  Icons.school_outlined,
-                                                ),
-                                          label: const Text('Nearest HES'),
-                                        ),
-                                    ],
-                                  ),
-                                ],
-                              ),
-                            ),
-
-                            const SizedBox(height: 16),
-
-                            // Amenities
-                            _MoonCard(
-                              isDark: isDark,
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      const Icon(Icons.tune, size: 20),
-                                      const SizedBox(width: 8),
-                                      Text(
-                                        'Amenities',
-                                        style: TextStyle(
-                                          fontSize: 18,
-                                          fontWeight: FontWeight.w800,
-                                          color: cs.onSurface,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                  const SizedBox(height: 10),
-                                  Wrap(
-                                    spacing: 8,
-                                    runSpacing: 8,
-                                    children: [
-                                      _amenityPill(
-                                        context,
-                                        'Furnished',
-                                        _isFurnish,
-                                      ),
-                                      _amenityPill(
-                                        context,
-                                        'Wi-Fi included',
-                                        _wifiIncl,
-                                      ),
-                                      _amenityPill(
-                                        context,
-                                        'Charges included',
-                                        _chargesIncl,
-                                      ),
-                                      _amenityPill(
-                                        context,
-                                        'Car park',
-                                        _carPark,
-                                      ),
-                                    ],
-                                  ),
-                                ],
-                              ),
-                            ),
-
-                            const SizedBox(height: 16),
-
-                            // Price estimation
-                            _MoonCard(
-                              isDark: isDark,
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      const Icon(
-                                        Icons.analytics_outlined,
-                                        size: 20,
-                                      ),
-                                      const SizedBox(width: 8),
-                                      Text(
-                                        'Price estimation',
-                                        style: TextStyle(
-                                          fontSize: 18,
-                                          fontWeight: FontWeight.w800,
-                                          color: cs.onSurface,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                  const SizedBox(height: 12),
-                                  if (_estimatedPrice != null) ...[
-                                    Container(
-                                      padding: const EdgeInsets.all(16),
-                                      decoration: BoxDecoration(
-                                        borderRadius: BorderRadius.circular(12),
-                                        border: Border.all(
-                                          color: cs.primary.withOpacity(0.12),
-                                          width: 1,
-                                        ),
-                                      ),
-                                      child: Row(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          Icon(
-                                            Icons.trending_up,
-                                            color: cs.primary,
-                                            size: 24,
+                                              );
+                                            },
                                           ),
-                                          const SizedBox(width: 12),
+                                        ),
+                                ),
+
+                                const SizedBox(height: 16),
+
+                                // Header + bouton Edit + ratings
+                                _MoonCard(
+                                  isDark: isDark,
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Row(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
                                           Expanded(
                                             child: Column(
-                                              crossAxisAlignment:
-                                                  CrossAxisAlignment.start,
+                                              crossAxisAlignment: CrossAxisAlignment.start,
                                               children: [
                                                 Text(
-                                                  'Estimated price',
+                                                  _type == 'entire_home' ? 'Entire home' : 'Single room',
                                                   style: TextStyle(
-                                                    color: cs.onSurface
-                                                        .withOpacity(.8),
-                                                    fontSize: 14,
-                                                  ),
-                                                ),
-                                                Text(
-                                                  '${((_estimatedPrice! / 0.05).round() * 0.05).toStringAsFixed(2)} CHF/month',
-                                                  style: const TextStyle(
                                                     fontSize: 18,
                                                     fontWeight: FontWeight.w800,
+                                                    color: cs.onSurface,
                                                   ),
-                                                  overflow:
-                                                      TextOverflow.ellipsis,
+                                                ),
+                                                const SizedBox(height: 4),
+                                                Text(
+                                                  '$_address, $_npa $_city',
+                                                  style: TextStyle(
+                                                    fontSize: 14,
+                                                    color: cs.onSurface.withOpacity(.8),
+                                                  ),
+                                                ),
+                                                const SizedBox(height: 8),
+                                                _buildRatingsPreview(context),
+                                              ],
+                                            ),
+                                          ),
+                                          if (_isOwner)
+                                            MoonButton(
+                                              onTap: () async {
+                                                await Navigator.of(context).push(
+                                                  MaterialPageRoute(
+                                                    builder: (_) => EditListingPage(
+                                                      listingId: widget.listingId,
+                                                    ),
+                                                  ),
+                                                );
+                                                _load();
+                                              },
+                                              leading: const Icon(Icons.edit),
+                                              label: const Text('Edit'),
+                                            ),
+                                        ],
+                                      ),
+                                      const SizedBox(height: 12),
+                                      Wrap(
+                                        spacing: 16,
+                                        runSpacing: 8,
+                                        children: [
+                                          _chip(
+                                            context,
+                                            icon: Icons.price_change_outlined,
+                                            text: _price != null ? '${_price!.toStringAsFixed(0)} CHF/mo' : '—',
+                                          ),
+                                          _chip(
+                                            context,
+                                            icon: Icons.square_foot_outlined,
+                                            text: _surface != null ? '${_surface!.toStringAsFixed(0)} m²' : '—',
+                                          ),
+                                          _chip(
+                                            context,
+                                            icon: Icons.meeting_room_outlined,
+                                            text: _rooms != null ? '$_rooms rooms' : '—',
+                                          ),
+                                          _chip(
+                                            context,
+                                            icon: Icons.unfold_more_outlined,
+                                            text: _floor != null ? 'Floor $_floor' : '—',
+                                          ),
+                                          _chip(
+                                            context,
+                                            icon: Icons.directions_bus_outlined,
+                                            text: _distTransportKm != null
+                                                ? '${_distTransportKm!.toStringAsFixed(1)} km PT'
+                                                : '—',
+                                          ),
+                                          if (_proximHesKm != null)
+                                            _chip(
+                                              context,
+                                              icon: Icons.school_outlined,
+                                              text: _nearestHesName != null && _nearestHesName!.trim().isNotEmpty
+                                                  ? '${_proximHesKm!.toStringAsFixed(1)} km • $_nearestHesName'
+                                                  : '${_proximHesKm!.toStringAsFixed(1)} km HES',
+                                            )
+                                          else
+                                            MoonButton(
+                                              isFullWidth: false,
+                                              onTap: _computingHes ? null : () => _computeNearestHes(persist: true),
+                                              leading: _computingHes
+                                                  ? const SizedBox(
+                                                      width: 16,
+                                                      height: 16,
+                                                      child: CircularProgressIndicator(strokeWidth: 2),
+                                                    )
+                                                  : const Icon(Icons.school_outlined),
+                                              label: const Text('Nearest HES'),
+                                            ),
+                                        ],
+                                      ),
+                                    ],
+                                  ),
+                                ),
+
+                                const SizedBox(height: 16),
+
+                                // Amenities
+                                _MoonCard(
+                                  isDark: isDark,
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          const Icon(Icons.tune, size: 20),
+                                          const SizedBox(width: 8),
+                                          Text(
+                                            'Amenities',
+                                            style: TextStyle(
+                                              fontSize: 18,
+                                              fontWeight: FontWeight.w800,
+                                              color: cs.onSurface,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                      const SizedBox(height: 10),
+                                      Wrap(
+                                        spacing: 8,
+                                        runSpacing: 8,
+                                        children: [
+                                          _amenityPill(context, 'Furnished', _isFurnish),
+                                          _amenityPill(context, 'Wi-Fi included', _wifiIncl),
+                                          _amenityPill(context, 'Charges included', _chargesIncl),
+                                          _amenityPill(context, 'Car park', _carPark),
+                                        ],
+                                      ),
+                                    ],
+                                  ),
+                                ),
+
+                                const SizedBox(height: 16),
+
+                                // Price estimation
+                                _MoonCard(
+                                  isDark: isDark,
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          const Icon(Icons.analytics_outlined, size: 20),
+                                          const SizedBox(width: 8),
+                                          Text(
+                                            'Price estimation',
+                                            style: TextStyle(
+                                              fontSize: 18,
+                                              fontWeight: FontWeight.w800,
+                                              color: cs.onSurface,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                      const SizedBox(height: 12),
+                                      if (_estimatedPrice != null) ...[
+                                        Container(
+                                          padding: const EdgeInsets.all(16),
+                                          decoration: BoxDecoration(
+                                            borderRadius: BorderRadius.circular(12),
+                                            border: Border.all(
+                                              color: cs.primary.withOpacity(0.12),
+                                              width: 1,
+                                            ),
+                                          ),
+                                          child: Row(
+                                            crossAxisAlignment: CrossAxisAlignment.start,
+                                            children: [
+                                              Icon(Icons.trending_up, color: cs.primary, size: 24),
+                                              const SizedBox(width: 12),
+                                              Expanded(
+                                                child: Column(
+                                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                                  children: [
+                                                    Text(
+                                                      'Estimated price',
+                                                      style: TextStyle(
+                                                        color: cs.onSurface.withOpacity(.8),
+                                                        fontSize: 14,
+                                                      ),
+                                                    ),
+                                                    Text(
+                                                      '${((_estimatedPrice! / 0.05).round() * 0.05).toStringAsFixed(2)} CHF/month',
+                                                      style: const TextStyle(
+                                                        fontSize: 18,
+                                                        fontWeight: FontWeight.w800,
+                                                      ),
+                                                      overflow: TextOverflow.ellipsis,
+                                                    ),
+                                                  ],
+                                                ),
+                                              ),
+                                              if (_price != null) ...[
+                                                const SizedBox(width: 12),
+                                                Expanded(
+                                                  child: Column(
+                                                    crossAxisAlignment: CrossAxisAlignment.end,
+                                                    children: [
+                                                      Text(
+                                                        'Actual price',
+                                                        style: TextStyle(
+                                                          color: cs.onSurface.withOpacity(.8),
+                                                          fontSize: 14,
+                                                        ),
+                                                      ),
+                                                      Text(
+                                                        '${((_price! / 0.05).round() * 0.05).toStringAsFixed(2)} CHF/month',
+                                                        style: TextStyle(
+                                                          color: cs.onSurface,
+                                                          fontSize: 16,
+                                                          fontWeight: FontWeight.w600,
+                                                        ),
+                                                        overflow: TextOverflow.ellipsis,
+                                                      ),
+                                                      Text(
+                                                        '${((_price! - _estimatedPrice!) / 0.05).round() * 0.05 >= 0 ? '+' : ''}${(((_price! - _estimatedPrice!) / 0.05).round() * 0.05).toStringAsFixed(2)} CHF/month',
+                                                        style: TextStyle(
+                                                          color: (_price! > _estimatedPrice!) ? Colors.red : Colors.green,
+                                                          fontSize: 12,
+                                                          fontWeight: FontWeight.w600,
+                                                        ),
+                                                        overflow: TextOverflow.ellipsis,
+                                                      ),
+                                                    ],
+                                                  ),
+                                                ),
+                                              ],
+                                            ],
+                                          ),
+                                        ),
+                                        const SizedBox(height: 12),
+                                      ],
+                                      if (_estimateError != null) ...[
+                                        Container(
+                                          padding: const EdgeInsets.all(12),
+                                          decoration: BoxDecoration(
+                                            color: Colors.red.withOpacity(.1),
+                                            borderRadius: BorderRadius.circular(8),
+                                          ),
+                                          child: Row(
+                                            children: [
+                                              const Icon(Icons.error_outline, color: Colors.red, size: 20),
+                                              const SizedBox(width: 8),
+                                              Expanded(
+                                                child: Text(
+                                                  _estimateError!,
+                                                  style: const TextStyle(color: Colors.red),
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                        const SizedBox(height: 12),
+                                      ],
+                                      MoonFilledButton(
+                                        onTap: _estimatingPrice ? null : _estimatePrice,
+                                        isFullWidth: true,
+                                        leading: _estimatingPrice
+                                            ? const SizedBox(
+                                                width: 16,
+                                                height: 16,
+                                                child: CircularProgressIndicator(strokeWidth: 2),
+                                              )
+                                            : const Icon(Icons.calculate_outlined),
+                                        label: Text(_estimatingPrice ? 'Estimating...' : 'Estimate price'),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+
+                                const SizedBox(height: 16),
+
+                                // Public transport → HES
+                                _MoonCard(
+                                  isDark: isDark,
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Row(
+                                        mainAxisAlignment: MainAxisAlignment.start,
+                                        children: const [
+                                          Icon(Icons.alt_route_outlined, size: 20),
+                                          SizedBox(width: 8),
+                                        ],
+                                      ),
+                                      Text(
+                                        'Public transport to HES (next 2h)',
+                                        style: TextStyle(
+                                          fontSize: 18,
+                                          fontWeight: FontWeight.w800,
+                                          color: cs.onSurface,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 8),
+                                      Text(
+                                        'Swipe horizontally to browse routes.',
+                                        style: TextStyle(
+                                          fontSize: 12,
+                                          fontStyle: FontStyle.italic,
+                                          color: cs.onSurface.withOpacity(.7),
+                                        ),
+                                      ),
+                                      const SizedBox(height: 8),
+                                      if (_nearestHesName != null)
+                                        Text(
+                                          'Destination: $_nearestHesName',
+                                          style: TextStyle(
+                                            color: cs.onSurface.withOpacity(.8),
+                                          ),
+                                        ),
+                                      const SizedBox(height: 8),
+                                      if (_ptError != null)
+                                        Text(
+                                          _ptError!,
+                                          style: const TextStyle(
+                                            color: Colors.redAccent,
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                        )
+                                      else if (_loadingPt)
+                                        const Padding(
+                                          padding: EdgeInsets.all(8.0),
+                                          child: LinearProgressIndicator(),
+                                        )
+                                      else if (_ptRoutes.isEmpty)
+                                        Text(
+                                          'No routes found in the next 2 hours.',
+                                          style: TextStyle(
+                                            color: cs.onSurface.withOpacity(.7),
+                                          ),
+                                        )
+                                      else ...[
+                                        Builder(
+                                          builder: (ctx) {
+                                            final pvHeight =
+                                                math.min(MediaQuery.of(ctx).size.height * 0.5, 420.0);
+                                            return SizedBox(
+                                              height: pvHeight,
+                                              child: PageView.builder(
+                                                controller: _ptCtrl,
+                                                padEnds: true,
+                                                itemCount: _ptRoutes.length,
+                                                onPageChanged: (i) => setState(() => _ptPage = i),
+                                                itemBuilder: (ctx, i) {
+                                                  final r = _ptRoutes[i];
+                                                  return _routeCard(context, r);
+                                                },
+                                              ),
+                                            );
+                                          },
+                                        ),
+                                        _dots(context, count: _ptRoutes.length, index: _ptPage),
+                                      ],
+                                    ],
+                                  ),
+                                ),
+
+                                const SizedBox(height: 16),
+
+                                // Bars à proximité
+                                _MoonCard(
+                                  isDark: isDark,
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Row(
+                                        mainAxisAlignment: MainAxisAlignment.start,
+                                        children: const [
+                                          Icon(Icons.local_bar_outlined, size: 20),
+                                          SizedBox(width: 8),
+                                        ],
+                                      ),
+                                      Text(
+                                        'Nearby bars (best rated first)',
+                                        style: TextStyle(
+                                          fontSize: 18,
+                                          fontWeight: FontWeight.w800,
+                                          color: cs.onSurface,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 8),
+                                      Text(
+                                        'Swipe horizontally. Tap a card to expand details.',
+                                        style: TextStyle(
+                                          fontSize: 12,
+                                          fontStyle: FontStyle.italic,
+                                          color: cs.onSurface.withOpacity(.7),
+                                        ),
+                                      ),
+                                      const SizedBox(height: 8),
+                                      if (_barsError != null)
+                                        Text(
+                                          _barsError!,
+                                          style: const TextStyle(
+                                            color: Colors.redAccent,
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                        )
+                                      else if (_loadingBars)
+                                        const Padding(
+                                          padding: EdgeInsets.all(8.0),
+                                          child: LinearProgressIndicator(),
+                                        )
+                                      else if (_bars.isEmpty)
+                                        Text(
+                                          'No bars found nearby.',
+                                          style: TextStyle(
+                                            color: cs.onSurface.withOpacity(.7),
+                                          ),
+                                        )
+                                      else ...[
+                                        SizedBox(
+                                          height: 170,
+                                          child: PageView.builder(
+                                            controller: _barsCtrl,
+                                            padEnds: true,
+                                            itemCount: _bars.length,
+                                            onPageChanged: (i) => setState(() {
+                                              _barsPage = i;
+                                              _expandedBarIndex = null;
+                                            }),
+                                            itemBuilder: (ctx, i) {
+                                              final p = _bars[i];
+                                              final expanded = _expandedBarIndex == i;
+                                              return _barCard(
+                                                context,
+                                                p,
+                                                index: i,
+                                                expanded: expanded,
+                                                onTap: () {
+                                                  setState(() {
+                                                    _expandedBarIndex = expanded ? null : i;
+                                                  });
+                                                },
+                                              );
+                                            },
+                                          ),
+                                        ),
+                                        _dots(context, count: _bars.length, index: _barsPage),
+                                        if (_bars.length > 1)
+                                          Padding(
+                                            padding: const EdgeInsets.only(top: 6),
+                                            child: Text(
+                                              '${_barsPage + 1} / ${_bars.length}',
+                                              textAlign: TextAlign.center,
+                                              style: TextStyle(
+                                                color: cs.onSurface.withOpacity(.6),
+                                                fontSize: 12,
+                                              ),
+                                            ),
+                                          ),
+                                      ],
+                                    ],
+                                  ),
+                                ),
+
+                                const SizedBox(height: 16),
+
+                                // Calendrier disponibilité
+                                _MoonCard(
+                                  isDark: isDark,
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                                    children: [
+                                      Row(
+                                        children: [
+                                          Expanded(
+                                            child: Row(
+                                              mainAxisSize: MainAxisSize.min,
+                                              children: [
+                                                const Icon(Icons.calendar_today_outlined, size: 20),
+                                                const SizedBox(width: 8),
+                                                Flexible(
+                                                  child: Text(
+                                                    'Availability',
+                                                    style: TextStyle(
+                                                      fontSize: 18,
+                                                      fontWeight: FontWeight.w800,
+                                                      color: cs.onSurface,
+                                                    ),
+                                                    overflow: TextOverflow.ellipsis,
+                                                  ),
                                                 ),
                                               ],
                                             ),
                                           ),
-                                          if (_price != null) ...[
-                                            const SizedBox(width: 12),
-                                            Expanded(
-                                              child: Column(
-                                                crossAxisAlignment:
-                                                    CrossAxisAlignment.end,
-                                                children: [
-                                                  Text(
-                                                    'Actual price',
-                                                    style: TextStyle(
-                                                      color: cs.onSurface
-                                                          .withOpacity(.8),
-                                                      fontSize: 14,
-                                                    ),
-                                                  ),
-                                                  Text(
-                                                    '${((_price! / 0.05).round() * 0.05).toStringAsFixed(2)} CHF/month',
-                                                    style: TextStyle(
-                                                      color: cs.onSurface,
-                                                      fontSize: 16,
-                                                      fontWeight:
-                                                          FontWeight.w600,
-                                                    ),
-                                                    overflow:
-                                                        TextOverflow.ellipsis,
-                                                  ),
-                                                  Text(
-                                                    '${((_price! - _estimatedPrice!) / 0.05).round() * 0.05 >= 0 ? '+' : ''}${(((_price! - _estimatedPrice!) / 0.05).round() * 0.05).toStringAsFixed(2)} CHF/month',
-                                                    style: TextStyle(
-                                                      color:
-                                                          (_price! >
-                                                              _estimatedPrice!)
-                                                          ? Colors.red
-                                                          : Colors.green,
-                                                      fontSize: 12,
-                                                      fontWeight:
-                                                          FontWeight.w600,
-                                                    ),
-                                                    overflow:
-                                                        TextOverflow.ellipsis,
-                                                  ),
-                                                ],
-                                              ),
-                                            ),
-                                          ],
-                                        ],
-                                      ),
-                                    ),
-                                    const SizedBox(height: 12),
-                                  ],
-                                  if (_estimateError != null) ...[
-                                    Container(
-                                      padding: const EdgeInsets.all(12),
-                                      decoration: BoxDecoration(
-                                        color: Colors.red.withOpacity(.1),
-                                        borderRadius: BorderRadius.circular(8),
-                                      ),
-                                      child: Row(
-                                        children: [
-                                          const Icon(
-                                            Icons.error_outline,
-                                            color: Colors.red,
-                                            size: 20,
-                                          ),
-                                          const SizedBox(width: 8),
-                                          Expanded(
-                                            child: Text(
-                                              _estimateError!,
-                                              style: const TextStyle(
-                                                color: Colors.red,
-                                              ),
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                    const SizedBox(height: 12),
-                                  ],
-                                  MoonFilledButton(
-                                    onTap: _estimatingPrice
-                                        ? null
-                                        : _estimatePrice,
-                                    isFullWidth: true,
-                                    leading: _estimatingPrice
-                                        ? const SizedBox(
-                                            width: 16,
-                                            height: 16,
-                                            child: CircularProgressIndicator(
-                                              strokeWidth: 2,
-                                            ),
-                                          )
-                                        : const Icon(Icons.calculate_outlined),
-                                    label: Text(
-                                      _estimatingPrice
-                                          ? 'Estimating...'
-                                          : 'Estimate price',
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-
-                            const SizedBox(height: 16),
-
-                            // Public transport → HES (PageView full-width + dots, overflow-safe)
-                            _MoonCard(
-                              isDark: isDark,
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Row(
-                                    mainAxisAlignment: MainAxisAlignment.start,
-                                    children: [
-                                      const Icon(
-                                        Icons.alt_route_outlined,
-                                        size: 20,
-                                      ),
-                                      const SizedBox(width: 8),
-                                    ],
-                                  ),
-                                  Text(
-                                    'Public transport to HES (next 2h)',
-                                    style: TextStyle(
-                                      fontSize: 18,
-                                      fontWeight: FontWeight.w800,
-                                      color: cs.onSurface,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 8),
-                                  Text(
-                                    'Swipe horizontally to browse routes.',
-                                    style: TextStyle(
-                                      fontSize: 12,
-                                      fontStyle: FontStyle.italic,
-                                      color: cs.onSurface.withOpacity(.7),
-                                    ),
-                                  ),
-                                  const SizedBox(height: 8),
-                                  if (_nearestHesName != null)
-                                    Text(
-                                      'Destination: $_nearestHesName',
-                                      style: TextStyle(
-                                        color: cs.onSurface.withOpacity(.8),
-                                      ),
-                                    ),
-                                  const SizedBox(height: 8),
-
-                                  if (_ptError != null)
-                                    Text(
-                                      _ptError!,
-                                      style: const TextStyle(
-                                        color: Colors.redAccent,
-                                        fontWeight: FontWeight.w600,
-                                      ),
-                                    )
-                                  else if (_loadingPt)
-                                    const Padding(
-                                      padding: EdgeInsets.all(8.0),
-                                      child: LinearProgressIndicator(),
-                                    )
-                                  else if (_ptRoutes.isEmpty)
-                                    Text(
-                                      'No routes found in the next 2 hours.',
-                                      style: TextStyle(
-                                        color: cs.onSurface.withOpacity(.7),
-                                      ),
-                                    )
-                                  else ...[
-                                    Builder(
-                                      builder: (ctx) {
-                                        final pvHeight = math.min(
-                                          MediaQuery.of(ctx).size.height * 0.5,
-                                          420.0,
-                                        );
-                                        return SizedBox(
-                                          height: pvHeight,
-                                          child: PageView.builder(
-                                            controller: _ptCtrl,
-                                            padEnds: true,
-                                            itemCount: _ptRoutes.length,
-                                            onPageChanged: (i) =>
-                                                setState(() => _ptPage = i),
-                                            itemBuilder: (ctx, i) {
-                                              final r = _ptRoutes[i];
-                                              return _routeCard(context, r);
-                                            },
-                                          ),
-                                        );
-                                      },
-                                    ),
-                                    _dots(
-                                      context,
-                                      count: _ptRoutes.length,
-                                      index: _ptPage,
-                                    ),
-                                  ],
-                                ],
-                              ),
-                            ),
-
-                            const SizedBox(height: 16),
-
-                            // Nearby Bars (PageView full-width + dots + accordion; sorted by rating desc)
-                            _MoonCard(
-                              isDark: isDark,
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Row(
-                                    mainAxisAlignment: MainAxisAlignment.start,
-                                    children: [
-                                      const Icon(
-                                        Icons.local_bar_outlined,
-                                        size: 20,
-                                      ),
-                                      const SizedBox(width: 8),
-                                    ],
-                                  ),
-                                  Text(
-                                    'Nearby bars (best rated first)',
-                                    style: TextStyle(
-                                      fontSize: 18,
-                                      fontWeight: FontWeight.w800,
-                                      color: cs.onSurface,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 8),
-                                  Text(
-                                    'Swipe horizontally. Tap a card to expand details.',
-                                    style: TextStyle(
-                                      fontSize: 12,
-                                      fontStyle: FontStyle.italic,
-                                      color: cs.onSurface.withOpacity(.7),
-                                    ),
-                                  ),
-                                  const SizedBox(height: 8),
-
-                                  if (_barsError != null)
-                                    Text(
-                                      _barsError!,
-                                      style: const TextStyle(
-                                        color: Colors.redAccent,
-                                        fontWeight: FontWeight.w600,
-                                      ),
-                                    )
-                                  else if (_loadingBars)
-                                    const Padding(
-                                      padding: EdgeInsets.all(8.0),
-                                      child: LinearProgressIndicator(),
-                                    )
-                                  else if (_bars.isEmpty)
-                                    Text(
-                                      'No bars found nearby.',
-                                      style: TextStyle(
-                                        color: cs.onSurface.withOpacity(.7),
-                                      ),
-                                    )
-                                  else ...[
-                                    // ✅ Inline PageView (no const, uses parent state)
-                                    SizedBox(
-                                      height:
-                                          170, // compact, enough to show accordion content
-                                      child: PageView.builder(
-                                        controller: _barsCtrl,
-                                        padEnds: true,
-                                        itemCount: _bars.length,
-                                        onPageChanged: (i) => setState(() {
-                                          _barsPage = i;
-                                          _expandedBarIndex =
-                                              null; // collapse on swipe
-                                        }),
-                                        itemBuilder: (ctx, i) {
-                                          final p = _bars[i];
-                                          final expanded =
-                                              _expandedBarIndex == i;
-                                          return _barCard(
-                                            context,
-                                            p,
-                                            index: i,
-                                            expanded: expanded,
-                                            onTap: () {
-                                              setState(() {
-                                                _expandedBarIndex = expanded
-                                                    ? null
-                                                    : i;
-                                              });
-                                            },
-                                          );
-                                        },
-                                      ),
-                                    ),
-                                    _dots(
-                                      context,
-                                      count: _bars.length,
-                                      index: _barsPage,
-                                    ),
-                                    if (_bars.length > 1)
-                                      Padding(
-                                        padding: const EdgeInsets.only(top: 6),
-                                        child: Text(
-                                          '${_barsPage + 1} / ${_bars.length}',
-                                          textAlign: TextAlign.center,
-                                          style: TextStyle(
-                                            color: cs.onSurface.withOpacity(.6),
-                                            fontSize: 12,
-                                          ),
-                                        ),
-                                      ),
-                                  ],
-                                ],
-                              ),
-                            ),
-
-                            const SizedBox(height: 16),
-
-                            // Calendrier disponibilité
-                            _MoonCard(
-                              isDark: isDark,
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.stretch,
-                                children: [
-                                  Row(
-                                    mainAxisAlignment:
-                                        MainAxisAlignment.spaceBetween,
-                                    children: [
-                                      Expanded(
-                                        child: Row(
-                                          mainAxisSize: MainAxisSize.min,
-                                          children: [
-                                            const Icon(
-                                              Icons.calendar_today_outlined,
-                                              size: 20,
-                                            ),
-                                            const SizedBox(width: 8),
-                                            Flexible(
-                                              child: Text(
-                                                'Availability',
-                                                style: TextStyle(
-                                                  fontSize: 18,
-                                                  fontWeight: FontWeight.w800,
-                                                  color: cs.onSurface,
-                                                ),
-                                                overflow: TextOverflow.ellipsis,
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                      Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
                                           IconButton(
                                             tooltip: 'Previous month',
                                             onPressed: _prevMonth,
-                                            icon: const Icon(
-                                              Icons.chevron_left,
-                                              size: 20,
-                                            ),
+                                            icon: const Icon(Icons.chevron_left, size: 20),
                                             padding: const EdgeInsets.all(8),
-                                            constraints: const BoxConstraints(
-                                              minWidth: 36,
-                                              minHeight: 36,
-                                            ),
+                                            constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
                                           ),
                                           Container(
                                             constraints: const BoxConstraints(minWidth: 80),
@@ -2100,105 +1966,93 @@ class _ViewListingPageState extends State<ViewListingPage> {
                                           IconButton(
                                             tooltip: 'Next month',
                                             onPressed: _nextMonth,
-                                            icon: const Icon(
-                                              Icons.chevron_right,
-                                              size: 20,
-                                            ),
+                                            icon: const Icon(Icons.chevron_right, size: 20),
                                             padding: const EdgeInsets.all(8),
-                                            constraints: const BoxConstraints(
-                                              minWidth: 36,
-                                              minHeight: 36,
-                                            ),
+                                            constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
                                           ),
                                         ],
                                       ),
+                                      const SizedBox(height: 6),
+                                      if (_availStart == null)
+                                        Text(
+                                          'No availability information.',
+                                          style: TextStyle(
+                                            color: cs.onSurface.withOpacity(.7),
+                                          ),
+                                        )
+                                      else ...[
+                                        GridView.count(
+                                          shrinkWrap: true,
+                                          physics: const NeverScrollableScrollPhysics(),
+                                          crossAxisCount: 7,
+                                          children: _buildCalendar(context),
+                                        ),
+                                        const SizedBox(height: 8),
+                                        // Légende calendrier
+                                        Wrap(
+                                          spacing: 16,
+                                          runSpacing: 8,
+                                          children: [
+                                            _buildLegendItem(
+                                              context,
+                                              'Available',
+                                              cs.primary.withOpacity(.25),
+                                              cs.primary.withOpacity(.6),
+                                            ),
+                                            _buildLegendItem(
+                                              context,
+                                              'Booked',
+                                              Colors.red.withOpacity(.2),
+                                              Colors.red.withOpacity(.5),
+                                            ),
+                                          ],
+                                        ),
+                                        const SizedBox(height: 8),
+                                        Row(
+                                          children: [
+                                            Text(
+                                              _availEnd == null
+                                                  ? 'From ${_fmt(_availStart!)} • no end'
+                                                  : '${_fmt(_availStart!)} → ${_fmt(_availEnd!)}',
+                                              style: TextStyle(
+                                                color: cs.onSurface.withOpacity(.8),
+                                                fontStyle: FontStyle.italic,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ],
                                     ],
                                   ),
-                                  const SizedBox(height: 6),
-                                  if (_availStart == null)
-                                    Text(
-                                      'No availability information.',
-                                      style: TextStyle(
-                                        color: cs.onSurface.withOpacity(.7),
-                                      ),
-                                    )
-                                  else ...[
-                                    GridView.count(
-                                      shrinkWrap: true,
-                                      physics:
-                                          const NeverScrollableScrollPhysics(),
-                                      crossAxisCount: 7,
-                                      children: _buildCalendar(context),
-                                    ),
-                                    const SizedBox(height: 8),
-                                    // Légende du calendrier
-                                    Wrap(
-                                      spacing: 16,
-                                      runSpacing: 8,
-                                      children: [
-                                        _buildLegendItem(
-                                          context, 
-                                          'Available', 
-                                          cs.primary.withOpacity(.25),
-                                          cs.primary.withOpacity(.6),
+                                ),
+
+                                // Formulaire de réservation (étudiant)
+                                if (_isStudent) _buildBookingPanel(context),
+
+                                const SizedBox(height: 24),
+
+                                if (_isOwner)
+                                  MoonFilledButton(
+                                    isFullWidth: true,
+                                    onTap: () async {
+                                      await Navigator.of(context).push(
+                                        MaterialPageRoute(
+                                          builder: (_) => EditListingPage(listingId: widget.listingId),
                                         ),
-                                        _buildLegendItem(
-                                          context, 
-                                          'Booked', 
-                                          Colors.red.withOpacity(.2),
-                                          Colors.red.withOpacity(.5),
-                                        ),
-                                      ],
-                                    ),
-                                    const SizedBox(height: 8),
-                                    Row(
-                                      children: [
-                                        Text(
-                                          _availEnd == null
-                                              ? 'From ${_fmt(_availStart!)} • no end'
-                                              : '${_fmt(_availStart!)} → ${_fmt(_availEnd!)}',
-                                          style: TextStyle(
-                                            color: cs.onSurface.withOpacity(.8),
-                                            fontStyle: FontStyle.italic,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ],
-                                ],
-                              ),
+                                      );
+                                      _load();
+                                    },
+                                    leading: const Icon(Icons.edit),
+                                    label: const Text('Edit listing'),
+                                  ),
+                              ],
                             ),
-
-                            // Formulaire de réservation pour les étudiants (toujours affiché)
-                            if (_isStudent) 
-                              _buildBookingPanel(context),
-
-                            const SizedBox(height: 24),
-
-                            if (_isOwner)
-                              MoonFilledButton(
-                                isFullWidth: true,
-                                onTap: () async {
-                                  await Navigator.of(context).push(
-                                    MaterialPageRoute(
-                                      builder: (_) => EditListingPage(
-                                        listingId: widget.listingId,
-                                      ),
-                                    ),
-                                  );
-                                  _load();
-                                },
-                                leading: const Icon(Icons.edit),
-                                label: const Text('Edit listing'),
-                              ),
-                          ],
+                          ),
                         ),
                       ),
-                    ),
-                  ),
-                );
-              },
-            ),
+                    );
+                  },
+                ),
     );
   }
 
@@ -2269,9 +2123,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
-        color: on
-            ? cs.primary.withOpacity(.15)
-            : Theme.of(context).cardColor.withOpacity(.85),
+        color: on ? cs.primary.withOpacity(.15) : Theme.of(context).cardColor.withOpacity(.85),
         borderRadius: BorderRadius.circular(999),
         border: Border.all(
           color: on ? cs.primary.withOpacity(.5) : cs.primary.withOpacity(.12),
@@ -2292,7 +2144,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
     );
   }
 
-  // --- UI: transit route card (scrollable to avoid overflow) -----------------
+  // --- UI: transit route card ------------------------------------------------
 
   Widget _routeCard(BuildContext context, _TransitRoute r) {
     final cs = Theme.of(context).colorScheme;
@@ -2383,8 +2235,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
                               ),
                           ] else ...[
                             Text(
-                              '${s.transitLine ?? 'Transit'} • ${s.transitHeadsign ?? ''}'
-                                  .trim(),
+                              '${s.transitLine ?? 'Transit'} • ${s.transitHeadsign ?? ''}'.trim(),
                               style: const TextStyle(
                                 fontWeight: FontWeight.w700,
                               ),
@@ -2429,7 +2280,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
     );
   }
 
-  // --- UI: nearby bar card (tap to expand/collapse) --------------------------
+  // --- UI: nearby bar card ---------------------------------------------------
 
   Widget _barCard(
     BuildContext context,
@@ -2440,13 +2291,12 @@ class _ViewListingPageState extends State<ViewListingPage> {
   }) {
     final cs = Theme.of(context).colorScheme;
 
-    // Travel time estimates (derived from distance)
-    final walkMins = (p.distanceKm / 4.5 * 60).round(); // ~4.5 km/h
-    final bikeMins = (p.distanceKm / 14.0 * 60).round(); // ~14 km/h
+    final walkMins = (p.distanceKm / 4.5 * 60).round();
+    final bikeMins = (p.distanceKm / 14.0 * 60).round();
 
     return InkWell(
       borderRadius: BorderRadius.circular(12),
-      onTap: onTap, // toggles accordion
+      onTap: onTap,
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 180),
         curve: Curves.easeOut,
@@ -2460,9 +2310,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
         child: LayoutBuilder(
           builder: (ctx, constraints) {
             return SingleChildScrollView(
-              physics: expanded
-                  ? const BouncingScrollPhysics()
-                  : const NeverScrollableScrollPhysics(),
+              physics: expanded ? const BouncingScrollPhysics() : const NeverScrollableScrollPhysics(),
               child: ConstrainedBox(
                 constraints: BoxConstraints(minHeight: constraints.maxHeight),
                 child: Column(
@@ -2477,9 +2325,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
                         fontSize: 16,
                       ),
                       maxLines: expanded ? 3 : 1,
-                      overflow: expanded
-                          ? TextOverflow.visible
-                          : TextOverflow.ellipsis,
+                      overflow: expanded ? TextOverflow.visible : TextOverflow.ellipsis,
                     ),
                     const SizedBox(height: 4),
 
@@ -2496,9 +2342,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
                               color: cs.onSurface.withOpacity(.8),
                             ),
                             maxLines: expanded ? null : 2,
-                            overflow: expanded
-                                ? TextOverflow.visible
-                                : TextOverflow.ellipsis,
+                            overflow: expanded ? TextOverflow.visible : TextOverflow.ellipsis,
                           ),
                         ),
                       ],
@@ -2509,11 +2353,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
                     if (p.rating != null)
                       Row(
                         children: [
-                          Icon(
-                            Icons.star_rate_rounded,
-                            size: 16,
-                            color: cs.primary,
-                          ),
+                          Icon(Icons.star_rate_rounded, size: 16, color: cs.primary),
                           const SizedBox(width: 4),
                           Text(
                             '${p.rating!.toStringAsFixed(1)}'
@@ -2531,14 +2371,13 @@ class _ViewListingPageState extends State<ViewListingPage> {
                         style: TextStyle(color: cs.onSurface.withOpacity(.6)),
                       ),
 
-                    // Extra details (only expanded)
+                    // Extra (expanded)
                     AnimatedCrossFade(
                       duration: const Duration(milliseconds: 180),
                       sizeCurve: Curves.easeOut,
                       alignment: Alignment.topLeft,
-                      crossFadeState: expanded
-                          ? CrossFadeState.showSecond
-                          : CrossFadeState.showFirst,
+                      crossFadeState:
+                          expanded ? CrossFadeState.showSecond : CrossFadeState.showFirst,
                       firstChild: const SizedBox.shrink(),
                       secondChild: Padding(
                         padding: const EdgeInsets.only(top: 10),
@@ -2547,9 +2386,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
                           decoration: BoxDecoration(
                             color: cs.primary.withOpacity(.06),
                             borderRadius: BorderRadius.circular(10),
-                            border: Border.all(
-                              color: cs.primary.withOpacity(.15),
-                            ),
+                            border: Border.all(color: cs.primary.withOpacity(.15)),
                           ),
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
@@ -2580,11 +2417,10 @@ class _ViewListingPageState extends State<ViewListingPage> {
                               ),
                               const SizedBox(height: 8),
 
-                              // Google Maps link (tap here should NOT close the accordion)
+                              // Open in Maps
                               GestureDetector(
                                 behavior: HitTestBehavior.opaque,
                                 onTap: () => _openPlaceInMaps(p),
-                                onTapDown: (_) {}, // eagerly claim the gesture
                                 child: Row(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
@@ -2664,15 +2500,15 @@ class _TransitStep {
   final DateTime? arrivalTime;
 
   _TransitStep.walk({this.instruction, this.distanceText, this.durationText})
-    : type = _StepType.walk,
-      transitLine = null,
-      transitHeadsign = null,
-      departureStop = null,
-      arrivalStop = null,
-      platform = null,
-      numStops = null,
-      departureTime = null,
-      arrivalTime = null;
+      : type = _StepType.walk,
+        transitLine = null,
+        transitHeadsign = null,
+        departureStop = null,
+        arrivalStop = null,
+        platform = null,
+        numStops = null,
+        departureTime = null,
+        arrivalTime = null;
 
   _TransitStep.transit({
     this.transitLine,
@@ -2685,8 +2521,8 @@ class _TransitStep {
     this.arrivalTime,
     this.distanceText,
     this.durationText,
-  }) : type = _StepType.transit,
-       instruction = null;
+  })  : type = _StepType.transit,
+        instruction = null;
 }
 
 class _TransitRoute {
@@ -2721,10 +2557,9 @@ class _TransitRoute {
         if (travelMode == 'WALKING') {
           steps.add(
             _TransitStep.walk(
-              instruction: (s['html_instructions'] ?? '').toString().replaceAll(
-                RegExp(r'<[^>]+>'),
-                '',
-              ),
+              instruction: (s['html_instructions'] ?? '')
+                  .toString()
+                  .replaceAll(RegExp(r'<[^>]+>'), ''),
               distanceText: (s['distance']?['text'] ?? '').toString(),
               durationText: (s['duration']?['text'] ?? '').toString(),
             ),
@@ -2735,8 +2570,7 @@ class _TransitRoute {
           final depStop = td['departure_stop']?['name']?.toString();
           final arrStop = td['arrival_stop']?['name']?.toString();
           final headsign = (td['headsign'] ?? '').toString();
-          final lineName = (line['short_name'] ?? line['name'] ?? '')
-              .toString();
+          final lineName = (line['short_name'] ?? line['name'] ?? '').toString();
           final numStops = (td['num_stops'] as num?)?.toInt();
           final depTime = _parseGoogleTime(td['departure_time']);
           final arrTime = _parseGoogleTime(td['arrival_time']);
@@ -2745,9 +2579,7 @@ class _TransitRoute {
           steps.add(
             _TransitStep.transit(
               transitLine: lineName.isEmpty ? null : lineName,
-              transitHeadsign: headsign is String && headsign.isNotEmpty
-                  ? headsign
-                  : null,
+              transitHeadsign: headsign.isNotEmpty ? headsign : null,
               departureStop: depStop,
               arrivalStop: arrStop,
               numStops: numStops,
@@ -2777,10 +2609,7 @@ class _TransitRoute {
     if (obj == null) return null;
     final v = obj['value'];
     if (v is int) {
-      return DateTime.fromMillisecondsSinceEpoch(
-        v * 1000,
-        isUtc: false,
-      ).toLocal();
+      return DateTime.fromMillisecondsSinceEpoch(v * 1000, isUtc: false).toLocal();
     }
     return null;
   }
