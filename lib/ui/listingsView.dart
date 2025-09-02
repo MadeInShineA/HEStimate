@@ -7,7 +7,6 @@ import 'package:firebase_auth/firebase_auth.dart';
 
 import 'view_listing_page.dart';
 
-
 enum ListingsMode {
   all,      // Show all listings
   owner,    // Show only current user's listings
@@ -28,6 +27,13 @@ class ListingsPage extends StatefulWidget {
 class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClientMixin {
   final _searchCtrl = TextEditingController();
   
+  // Pagination
+  static const int _itemsPerPage = 12; // Nombre d'items par page
+  int _currentPage = 0;
+  bool _isLoadingMore = false;
+  bool _hasMoreData = true;
+  List<QueryDocumentSnapshot<Map<String, dynamic>>> _allDocs = [];
+  List<QueryDocumentSnapshot<Map<String, dynamic>>> _displayedDocs = [];
 
   // Filters
   int _typeIndex = -1; // -1 = all, 0 = entire_home, 1 = room
@@ -42,7 +48,6 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
   double? _maxPrice;
 
   @override
-  // TODO: implement wantKeepAlive
   bool get wantKeepAlive => true;
 
   late final Stream<QuerySnapshot<Map<String, dynamic>>> _listingsStream;
@@ -50,11 +55,9 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
   Future<void> _fetchPriceBounds() async {
     Query<Map<String, dynamic>> baseQuery = FirebaseFirestore.instance.collection('listings');
     
-    // Si on est en mode "owner", on filtre par l'utilisateur courant
     if (widget.mode == ListingsMode.owner) {
       final uid = FirebaseAuth.instance.currentUser?.uid;
       if (uid == null) {
-        // Pas d'utilisateur connecté, pas de propriétés
         setState(() {
           _globalMinPrice = 0;
           _globalMaxPrice = 10000;
@@ -82,7 +85,6 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
     setState(() {
       _globalMinPrice = minPrice;
       _globalMaxPrice = maxPrice;
-      // initialise la sélection utilisateur
       _minPrice = minPrice;
       _maxPrice = maxPrice;
     });
@@ -175,7 +177,7 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
       filtered = filtered.where((d) => d.data()['car_park'] == true).toList();
     }
 
-        if (_minPrice != null && _maxPrice != null) {
+    if (_minPrice != null && _maxPrice != null) {
       filtered = filtered.where((d) {
         final price = (d.data()['price'] ?? 0).toDouble();
         return price >= _minPrice! && price <= _maxPrice!;
@@ -204,6 +206,53 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
     }
 
     return filtered;
+  }
+
+  // Nouvelle méthode pour gérer la pagination
+  void _updateDisplayedItems(List<QueryDocumentSnapshot<Map<String, dynamic>>> filteredDocs) {
+    _allDocs = filteredDocs;
+    _currentPage = 0;
+    _hasMoreData = filteredDocs.length > _itemsPerPage;
+    _displayedDocs = filteredDocs.take(_itemsPerPage).toList();
+  }
+
+  // Méthode pour charger plus d'items
+  void _loadMoreItems(List<QueryDocumentSnapshot<Map<String, dynamic>>> allFilteredDocs) {
+    if (_isLoadingMore || !_hasMoreData) return;
+
+    setState(() {
+      _isLoadingMore = true;
+    });
+
+    // Simuler un petit délai pour l'UX
+    Future.delayed(const Duration(milliseconds: 300), () {
+      if (mounted) {
+        setState(() {
+          _currentPage++;
+          final startIndex = _currentPage * _itemsPerPage;
+          final endIndex = startIndex + _itemsPerPage;
+          
+          if (startIndex < allFilteredDocs.length) {
+            final newItems = allFilteredDocs.skip(startIndex).take(_itemsPerPage).toList();
+            _displayedDocs.addAll(newItems);
+            _hasMoreData = endIndex < allFilteredDocs.length;
+          } else {
+            _hasMoreData = false;
+          }
+          
+          _isLoadingMore = false;
+        });
+      }
+    });
+  }
+
+  // Méthode pour reset la pagination quand les filtres changent
+  void _resetPagination() {
+    setState(() {
+      _currentPage = 0;
+      _displayedDocs.clear();
+      _hasMoreData = true;
+    });
   }
 
   String _generateTitle(Map<String, dynamic> data) {
@@ -278,7 +327,10 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
           IconButton(
             tooltip: 'Clear search',
             onPressed: () {
-              if (_searchCtrl.text.isNotEmpty) setState(() => _searchCtrl.clear());
+              if (_searchCtrl.text.isNotEmpty) {
+                setState(() => _searchCtrl.clear());
+                _resetPagination();
+              }
             },
             icon: const Icon(Icons.refresh),
           ),
@@ -321,25 +373,29 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
                       wifiOnly: _wifiOnly,
                       chargesInclOnly: _chargesInclOnly,
                       carParkOnly: _carParkOnly,
-                      minPrice: _minPrice ?? (_globalMinPrice ?? 0), // fallback in case null
+                      minPrice: _minPrice ?? (_globalMinPrice ?? 0),
                       maxPrice: _maxPrice ?? (_globalMaxPrice ?? 10000),
                       globalMinPrice: _globalMinPrice,
                       globalMaxPrice: _globalMaxPrice,
-                      onChanged: (f) => setState(() {
-                        _typeIndex = f.typeIndex;
-                        _sortIndex = f.sortIndex;
-                        _furnishedOnly = f.furnishedOnly;
-                        _wifiOnly = f.wifiOnly;
-                        _chargesInclOnly = f.chargesInclOnly;
-                        _carParkOnly = f.carParkOnly;
-                        _minPrice = f.minPrice;
-                        _maxPrice = f.maxPrice;
-                      }),
+                      onChanged: (f) {
+                        setState(() {
+                          _typeIndex = f.typeIndex;
+                          _sortIndex = f.sortIndex;
+                          _furnishedOnly = f.furnishedOnly;
+                          _wifiOnly = f.wifiOnly;
+                          _chargesInclOnly = f.chargesInclOnly;
+                          _carParkOnly = f.carParkOnly;
+                          // Garder les prix si ils sont fournis, sinon garder les valeurs actuelles
+                          if (f.minPrice != null) _minPrice = f.minPrice;
+                          if (f.maxPrice != null) _maxPrice = f.maxPrice;
+                        });
+                        _resetPagination();
+                      },
                     ),
                   ),
                 ),
                 StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                  stream: _listingsStream, // <-- ici on ne recrée plus le stream
+                  stream: _listingsStream,
                   builder: (context, snapshot) {
                     if (snapshot.connectionState == ConnectionState.waiting) {
                       return const SliverFillRemaining(
@@ -358,6 +414,32 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
 
                     final docs = snapshot.data?.docs ?? [];
                     final filtered = _applyClientSideFilters(docs);
+                    
+                    // Calculer les items à afficher directement sans setState
+                    List<QueryDocumentSnapshot<Map<String, dynamic>>> itemsToDisplay;
+                    bool hasMore;
+                    
+                    if (_displayedDocs.isEmpty) {
+                      // Première charge ou après reset
+                      itemsToDisplay = filtered.take(_itemsPerPage).toList();
+                      hasMore = filtered.length > _itemsPerPage;
+                      
+                      // Mettre à jour les variables d'état après le build
+                      WidgetsBinding.instance.addPostFrameCallback((_) {
+                        if (mounted) {
+                          setState(() {
+                            _allDocs = filtered;
+                            _displayedDocs = itemsToDisplay;
+                            _hasMoreData = hasMore;
+                            _currentPage = 0;
+                          });
+                        }
+                      });
+                    } else {
+                      // Utiliser les données déjà affichées
+                      itemsToDisplay = _displayedDocs;
+                      hasMore = _hasMoreData;
+                    }
 
                     if (filtered.isEmpty) {
                       return SliverFillRemaining(
@@ -372,7 +454,7 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
 
                     // Responsive grid avec aspect ratio ajusté
                     int crossAxisCount = 1;
-                    double childAspectRatio = 1.1; // Augmenté pour plus de hauteur
+                    double childAspectRatio = 1.1;
                     final w = constraints.maxWidth;
                     if (w >= 1400) {
                       crossAxisCount = 4;
@@ -390,26 +472,64 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
                         horizontal: isXL ? (constraints.maxWidth - 1200) / 2 + 16 : 16,
                         vertical: 8,
                       ),
-                      sliver: SliverGrid(
-                        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                          crossAxisCount: crossAxisCount,
-                          crossAxisSpacing: 16,
-                          mainAxisSpacing: 16,
-                          childAspectRatio: childAspectRatio,
-                        ),
-                        delegate: SliverChildBuilderDelegate(
-                          (context, i) {
-                            final doc = filtered[i];
-                            final data = doc.data();
-                            final title = _generateTitle(data);
-                            return _ListingCard(
-                              listingId: doc.id,
-                              data: data,
-                              title: title,
-                            );
-                          },
-                          childCount: filtered.length,
-                        ),
+                      sliver: SliverList(
+                        delegate: SliverChildListDelegate([
+                          // Informations sur la pagination
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 16),
+                            child: Text(
+                              'Showing ${itemsToDisplay.length} of ${filtered.length} properties',
+                              style: TextStyle(
+                                color: cs.onSurface.withOpacity(0.7),
+                                fontSize: 14,
+                              ),
+                            ),
+                          ),
+                          
+                          // Grid des propriétés
+                          GridView.builder(
+                            shrinkWrap: true,
+                            physics: const NeverScrollableScrollPhysics(),
+                            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                              crossAxisCount: crossAxisCount,
+                              crossAxisSpacing: 16,
+                              mainAxisSpacing: 16,
+                              childAspectRatio: childAspectRatio,
+                            ),
+                            itemCount: itemsToDisplay.length,
+                            itemBuilder: (context, i) {
+                              final doc = itemsToDisplay[i];
+                              final data = doc.data();
+                              final title = _generateTitle(data);
+                              return _ListingCard(
+                                listingId: doc.id,
+                                data: data,
+                                title: title,
+                              );
+                            },
+                          ),
+
+                          // Bouton "Load More" en bas si il y a plus de données
+                          if (hasMore) ...[
+                            const SizedBox(height: 24),
+                            Center(
+                              child: ElevatedButton.icon(
+                                onPressed: _isLoadingMore ? null : () => _loadMoreItems(filtered),
+                                icon: _isLoadingMore 
+                                    ? const SizedBox(
+                                        width: 20,
+                                        height: 20,
+                                        child: CircularProgressIndicator(strokeWidth: 2),
+                                      )
+                                    : const Icon(Icons.add),
+                                label: Text(_isLoadingMore ? 'Loading more...' : 'Load More Properties'),
+                                style: ElevatedButton.styleFrom(
+                                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ]),
                       ),
                     );
                   },
@@ -424,6 +544,7 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
   }
 }
 
+// Le reste des classes reste identique (_FilterBar, _BoolChip, _EmptyState, _ListingCard, _Filters)
 class _FilterBar extends StatelessWidget {
   final TextEditingController searchCtrl;
   final int typeIndex;
@@ -477,6 +598,8 @@ class _FilterBar extends StatelessWidget {
                     wifiOnly: wifiOnly,
                     chargesInclOnly: chargesInclOnly,
                     carParkOnly: carParkOnly,
+                    minPrice: minPrice,
+                    maxPrice: maxPrice,
                   ),
                 ),
               ),
@@ -495,14 +618,13 @@ class _FilterBar extends StatelessWidget {
             ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 480),
               child: MoonSegmentedControl(
-                initialIndex: typeIndex < 0 ? 2 : typeIndex, // hack to allow All
+                initialIndex: typeIndex < 0 ? 2 : typeIndex,
                 segments: const [
                   Segment(label: Text('Entire home')),
                   Segment(label: Text('Single room')),
                   Segment(label: Text('All')),
                 ],
                 onSegmentChanged: (i) {
-                  // If user taps All (index 2), map to -1
                   final mapped = i == 2 ? -1 : i;
                   onChanged(
                     _Filters(
@@ -512,6 +634,8 @@ class _FilterBar extends StatelessWidget {
                       wifiOnly: wifiOnly,
                       chargesInclOnly: chargesInclOnly,
                       carParkOnly: carParkOnly,
+                      minPrice: minPrice,
+                      maxPrice: maxPrice,
                     ),
                   );
                 },
@@ -537,6 +661,8 @@ class _FilterBar extends StatelessWidget {
                     wifiOnly: wifiOnly,
                     chargesInclOnly: chargesInclOnly,
                     carParkOnly: carParkOnly,
+                    minPrice: minPrice,
+                    maxPrice: maxPrice,
                   ),
                 ),
                 isExpanded: false,
@@ -555,6 +681,8 @@ class _FilterBar extends StatelessWidget {
                   wifiOnly: wifiOnly,
                   chargesInclOnly: chargesInclOnly,
                   carParkOnly: carParkOnly,
+                  minPrice: minPrice,
+                  maxPrice: maxPrice,
                 ),
               ),
             ),
@@ -569,6 +697,8 @@ class _FilterBar extends StatelessWidget {
                   wifiOnly: v,
                   chargesInclOnly: chargesInclOnly,
                   carParkOnly: carParkOnly,
+                  minPrice: minPrice,
+                  maxPrice: maxPrice,
                 ),
               ),
             ),
@@ -583,6 +713,8 @@ class _FilterBar extends StatelessWidget {
                   wifiOnly: wifiOnly,
                   chargesInclOnly: v,
                   carParkOnly: carParkOnly,
+                  minPrice: minPrice,
+                  maxPrice: maxPrice,
                 ),
               ),
             ),
@@ -597,6 +729,8 @@ class _FilterBar extends StatelessWidget {
                   wifiOnly: wifiOnly,
                   chargesInclOnly: chargesInclOnly,
                   carParkOnly: v,
+                  minPrice: minPrice,
+                  maxPrice: maxPrice,
                 ),
               ),
             ),
@@ -725,7 +859,6 @@ class _EmptyState extends StatelessWidget {
           const SizedBox(height: 16),
           ElevatedButton.icon(
             onPressed: () {
-              // Navigate to new listing page
               Navigator.of(context).pushNamed('/newListing');
             },
             icon: const Icon(Icons.add),
