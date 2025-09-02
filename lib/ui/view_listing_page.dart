@@ -60,7 +60,6 @@ class _ViewListingPageState extends State<ViewListingPage> {
 
   // Booking system
   List<Map<String, dynamic>> _bookedDates = [];
-  bool _showBookingPanel = false;
   final TextEditingController _messageController = TextEditingController();
   final TextEditingController _phoneController = TextEditingController();
   final TextEditingController _startDateController = TextEditingController();
@@ -236,6 +235,39 @@ class _ViewListingPageState extends State<ViewListingPage> {
     return false;
   }
 
+  bool _isDateAvailableForSelection(DateTime day) {
+    return _isAvailableOn(day) && !_isDateBooked(day);
+  }
+
+  // Check if selected date range conflicts with any approved bookings
+  Future<bool> _checkBookingConflict(DateTime startDate, DateTime endDate) async {
+    try {
+      final snapshot = await FirebaseFirestore.instance
+          .collection('booking_requests')
+          .where('listingId', isEqualTo: widget.listingId)
+          .where('status', isEqualTo: 'approved')
+          .get();
+
+      for (final doc in snapshot.docs) {
+        final data = doc.data();
+        final existingStart = _dateOnly((data['startDate'] as Timestamp).toDate());
+        final existingEnd = _dateOnly((data['endDate'] as Timestamp).toDate());
+        final reqStart = _dateOnly(startDate);
+        final reqEnd = _dateOnly(endDate);
+        
+        // Check if dates overlap
+        if (!(reqEnd.isBefore(existingStart) || reqStart.isAfter(existingEnd))) {
+          return true; // Conflict found
+        }
+      }
+      
+      return false; // No conflict
+    } catch (e) {
+      print('Error checking booking conflict: $e');
+      return true; // Assume conflict on error for safety
+    }
+  }
+
   Future<void> _estimatePrice() async {
     // Vérifier que nous avons les données nécessaires
     if (_latitude == null || 
@@ -409,155 +441,177 @@ class _ViewListingPageState extends State<ViewListingPage> {
   }
 
   Widget _buildBookingPanel(BuildContext context) {
-    return StatefulBuilder(
-    builder: (context, setState) {
-      return AnimatedContainer(
-        duration: const Duration(milliseconds: 300),
-        padding: const EdgeInsets.all(16),
-        margin: const EdgeInsets.only(top: 16),
-        decoration: BoxDecoration(
-          color: Theme.of(context).cardColor,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: Theme.of(context).colorScheme.primary.withOpacity(0.3)),
-          boxShadow: [
-            BoxShadow(
-              color: Theme.of(context).colorScheme.primary.withOpacity(0.1),
-              blurRadius: 10,
-              offset: const Offset(0, 4),
+    return Container(
+      padding: const EdgeInsets.all(16),
+      margin: const EdgeInsets.only(top: 16),
+      decoration: BoxDecoration(
+        color: Theme.of(context).cardColor,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Theme.of(context).colorScheme.primary.withOpacity(0.3)),
+        boxShadow: [
+          BoxShadow(
+            color: Theme.of(context).colorScheme.primary.withOpacity(0.1),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            'Book your stay',
+            style: TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.w800,
+              color: Theme.of(context).colorScheme.onSurface,
             ),
-          ],
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            // Start Date Picker
-            TextField(
-              readOnly: true,
-              controller: _startDateController,
-              decoration: InputDecoration(
-                labelText: 'Start Date',
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-                contentPadding: const EdgeInsets.all(12),
-                suffixIcon: const Icon(Icons.calendar_today),
-              ),
-              onTap: () async {
-                final picked = await showDatePicker(
-                  context: context,
-                  initialDate: _selectedStart ?? DateTime.now(),
-                  firstDate: _availStart ?? DateTime.now(),
-                  lastDate: _availEnd ?? DateTime.now().add(const Duration(days: 365)),
+          ),
+          const SizedBox(height: 16),
+          
+          // Start Date Picker
+          TextField(
+            readOnly: true,
+            controller: _startDateController,
+            decoration: InputDecoration(
+              labelText: 'Start Date',
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+              contentPadding: const EdgeInsets.all(12),
+              suffixIcon: const Icon(Icons.calendar_today),
+            ),
+            onTap: () async {
+              final picked = await showDatePicker(
+                context: context,
+                initialDate: _selectedStart ?? (_availStart ?? DateTime.now()),
+                firstDate: _availStart ?? DateTime.now(),
+                lastDate: _availEnd ?? DateTime.now().add(const Duration(days: 365)),
+                selectableDayPredicate: _isDateAvailableForSelection,
+              );
+              if (picked != null) {
+                setState(() {
+                  _selectedStart = picked;
+                  _startDateController.text = _fmt(picked);
+                  // Reset end date si elle est avant start
+                  if (_selectedEnd != null && _selectedEnd!.isBefore(picked)) {
+                    _selectedEnd = null;
+                    _endDateController.text = '';
+                  }
+                });
+              }
+            },
+          ),
+          const SizedBox(height: 12),
+
+          // End Date Picker
+          TextField(
+            readOnly: true,
+            controller: _endDateController,
+            decoration: InputDecoration(
+              labelText: 'End Date',
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+              contentPadding: const EdgeInsets.all(12),
+              suffixIcon: const Icon(Icons.calendar_today),
+            ),
+            onTap: () async {
+              if (_selectedStart == null) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Please select a start date first')),
                 );
-                if (picked != null) {
-                  setState(() {
-                    _selectedStart = picked;
-                    _startDateController.text = _fmt(picked);
-                    // Reset end date si elle est avant start
-                    if (_selectedEnd != null && _selectedEnd!.isBefore(picked)) {
-                      _selectedEnd = null;
-                      _endDateController.text = '';
-                    }
-                  });
-                }
-              },
-            ),
-            const SizedBox(height: 12),
+                return;
+              }
+              
+              final picked = await showDatePicker(
+                context: context,
+                initialDate: _selectedEnd ?? _selectedStart!.add(const Duration(days: 1)),
+                firstDate: _selectedStart!.add(const Duration(days: 1)),
+                lastDate: _availEnd ?? DateTime.now().add(const Duration(days: 365)),
+                selectableDayPredicate: _isDateAvailableForSelection,
+              );
+              if (picked != null) {
+                setState(() {
+                  _selectedEnd = picked;
+                  _endDateController.text = _fmt(picked);
+                });
+              }
+            },
+          ),
 
-            // End Date Picker
-            TextField(
-              readOnly: true,
-              controller: _endDateController,
-              decoration: InputDecoration(
-                labelText: 'End Date',
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-                contentPadding: const EdgeInsets.all(12),
-                suffixIcon: const Icon(Icons.calendar_today),
+          // Message to owner
+          const SizedBox(height: 12),
+          TextField(
+            controller: _messageController,
+            maxLines: 3,
+            decoration: InputDecoration(
+              labelText: 'Message to owner *',
+              hintText: 'Tell the owner about yourself...',
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
               ),
-              onTap: () async {
-                final picked = await showDatePicker(
-                  context: context,
-                  initialDate: _selectedEnd ?? (_selectedStart ?? DateTime.now()),
-                  firstDate: _selectedStart ?? DateTime.now(),
-                  lastDate: _availEnd ?? DateTime.now().add(const Duration(days: 365)),
-                );
-                if (picked != null) {
-                  setState(() {
-                    _selectedEnd = picked;
-                    _endDateController.text = _fmt(picked);
-                  });
-                }
-              },
+              contentPadding: const EdgeInsets.all(12),
             ),
+          ),
 
-            // Message to owner
-            const SizedBox(height: 12),
-            TextField(
-              controller: _messageController,
-              maxLines: 3,
-              decoration: InputDecoration(
-                labelText: 'Message to owner *',
-                hintText: 'Tell the owner about yourself...',
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(8),
+          // Phone number with validation
+          const SizedBox(height: 12),
+          TextField(
+            controller: _phoneController,
+            keyboardType: TextInputType.phone,
+            decoration: InputDecoration(
+              labelText: 'Phone number (optional)',
+              hintText: '+41 79 123 45 67 or 079 123 45 67',
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+                borderSide: BorderSide(
+                  color: _phoneError != null ? Colors.red : Colors.grey,
                 ),
-                contentPadding: const EdgeInsets.all(12),
               ),
-            ),
-
-            // Phone number with validation
-            const SizedBox(height: 12),
-            TextField(
-              controller: _phoneController,
-              keyboardType: TextInputType.phone,
-              decoration: InputDecoration(
-                labelText: 'Phone number (optional)',
-                hintText: '+41 79 123 45 67 or 079 123 45 67',
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(8),
-                  borderSide: BorderSide(
-                    color: _phoneError != null ? Colors.red : Colors.grey,
-                  ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+                borderSide: BorderSide(
+                  color: _phoneError != null ? Colors.red : Colors.grey,
                 ),
-                enabledBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(8),
-                  borderSide: BorderSide(
-                    color: _phoneError != null ? Colors.red : Colors.grey,
-                  ),
-                ),
-                focusedBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(8),
-                  borderSide: BorderSide(
-                    color: _phoneError != null ? Colors.red : Theme.of(context).colorScheme.primary,
-                  ),
-                ),
-                contentPadding: const EdgeInsets.all(12),
-                errorText: _phoneError,
-                suffixIcon: _phoneController.text.isNotEmpty
-                    ? Icon(
-                        _isValidPhone ? Icons.check_circle : Icons.error,
-                        color: _isValidPhone ? Colors.green : Colors.red,
-                      )
-                    : null,
               ),
-            ),
-
-            // Submit button
-            const SizedBox(height: 16),
-            MoonFilledButton(
-              isFullWidth: true,
-              onTap: _selectedStart != null &&
-                      _selectedEnd != null &&
-                      _messageController.text.isNotEmpty &&
-                      _isValidPhone
-                  ? () => _submitBookingRequestWithDates(_selectedStart!, _selectedEnd!)
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+                borderSide: BorderSide(
+                  color: _phoneError != null ? Colors.red : Theme.of(context).colorScheme.primary,
+                ),
+              ),
+              contentPadding: const EdgeInsets.all(12),
+              errorText: _phoneError,
+              suffixIcon: _phoneController.text.isNotEmpty
+                  ? Icon(
+                      _isValidPhone ? Icons.check_circle : Icons.error,
+                      color: _isValidPhone ? Colors.green : Colors.red,
+                    )
                   : null,
-              label: const Text('Send booking request'),
             ),
-          ],
-        ),
-      );
-    },
-  );
-}
+          ),
+
+          // Submit button
+          const SizedBox(height: 16),
+          MoonFilledButton(
+            isFullWidth: true,
+            onTap: _selectedStart != null &&
+                    _selectedEnd != null &&
+                    _messageController.text.isNotEmpty &&
+                    _isValidPhone &&
+                    !_submittingBooking
+                ? () => _submitBookingRequestWithDates(_selectedStart!, _selectedEnd!)
+                : null,
+            leading: _submittingBooking 
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                  )
+                : const Icon(Icons.send),
+            label: Text(_submittingBooking ? 'Sending...' : 'Send booking request'),
+          ),
+        ],
+      ),
+    );
+  }
 
   Future<void> _submitBookingRequestWithDates(DateTime start, DateTime end) async {
     final user = FirebaseAuth.instance.currentUser;
@@ -566,6 +620,21 @@ class _ViewListingPageState extends State<ViewListingPage> {
     setState(() => _submittingBooking = true);
 
     try {
+      // Check for conflicts before submitting
+      final hasConflict = await _checkBookingConflict(start, end);
+      if (hasConflict) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Selected dates are no longer available. Please choose different dates.'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+        setState(() => _submittingBooking = false);
+        return;
+      }
+
       final userDoc = await FirebaseFirestore.instance
           .collection('users')
           .doc(user.uid)
@@ -604,7 +673,6 @@ class _ViewListingPageState extends State<ViewListingPage> {
       });
 
       setState(() {
-        _showBookingPanel = false;
         _messageController.clear();
         _phoneController.clear();
         _startDateController.clear();
@@ -994,7 +1062,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
                                       children: [
                                         Icon(Icons.trending_up, color: cs.primary, size: 24),
                                         const SizedBox(width: 12),
-                                        Expanded( // ✅ ça permet au texte de se couper si nécessaire
+                                        Expanded(
                                           child: Column(
                                             crossAxisAlignment: CrossAxisAlignment.start,
                                             children: [
@@ -1011,14 +1079,14 @@ class _ViewListingPageState extends State<ViewListingPage> {
                                                   fontSize: 18,
                                                   fontWeight: FontWeight.w800,
                                                 ),
-                                                overflow: TextOverflow.ellipsis, // ✅ coupe si trop long
+                                                overflow: TextOverflow.ellipsis,
                                               ),
                                             ],
                                           ),
                                         ),
                                         if (_price != null) ...[
                                           const SizedBox(width: 12),
-                                          Expanded( // ✅ pareil pour la partie "Actual price"
+                                          Expanded(
                                             child: Column(
                                               crossAxisAlignment: CrossAxisAlignment.end,
                                               children: [
@@ -1098,7 +1166,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
 
                             const SizedBox(height: 16),
 
-                            // Calendrier disponibilité + Booking pour étudiants
+                            // Calendrier disponibilité
                             _MoonCard(
                               isDark: isDark,
                               child: Column(
@@ -1119,7 +1187,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
                                             const SizedBox(width: 8),
                                             Flexible(
                                               child: Text(
-                                                _isStudent ? 'Book your stay' : 'Availability',
+                                                'Availability',
                                                 style: TextStyle(
                                                   fontSize: 18,
                                                   fontWeight: FontWeight.w800,
@@ -1231,23 +1299,8 @@ class _ViewListingPageState extends State<ViewListingPage> {
                               ),
                             ),
 
-                            // Booking button pour les étudiants
-                            if (_isStudent) ...[
-                              const SizedBox(height: 16),
-                              MoonFilledButton(
-                                isFullWidth: true,
-                                onTap: () {
-                                  setState(() {
-                                    _showBookingPanel = !_showBookingPanel;
-                                  });
-                                },
-                                leading: const Icon(Icons.book_online),
-                                label: const Text('Book this property'),
-                              ),
-                            ],
-
-                            // Panneau de réservation
-                            if (_showBookingPanel)
+                            // Formulaire de réservation pour les étudiants (toujours affiché)
+                            if (_isStudent) 
                               _buildBookingPanel(context),
 
                             const SizedBox(height: 24),

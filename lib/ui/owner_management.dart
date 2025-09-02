@@ -1142,8 +1142,3 @@ class _StudentsTabState extends State<StudentsTab> with AutomaticKeepAliveClient
     return '${date.day.toString().padLeft(2, '0')}/${date.month.toString().padLeft(2, '0')}/${date.year}';
   }
 }
-
-/* 
-Gérer les conflit rare avec un user sur la page management et un autre en même temps qui book 
-Pagination
- */
