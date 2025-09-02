@@ -1,7 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:moon_design/moon_design.dart';
-import 'package:moon_icons/moon_icons.dart';
 import 'package:intl/intl.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
@@ -44,6 +43,26 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
   bool get wantKeepAlive => true;
 
   late final Stream<QuerySnapshot<Map<String, dynamic>>> _listingsStream;
+  late final Stream<Set<String>> _favoritesStream;
+
+  // --- FAVORITES STREAM (user ↔ listing link table) ---
+  Stream<Set<String>> _userFavoritesStream() {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return Stream.value(<String>{});
+    return FirebaseFirestore.instance
+        .collection('favorites')
+        .where('userUid', isEqualTo: uid)
+        .snapshots()
+        .map((snap) => snap.docs
+            .map((d) {
+              final m = d.data() as Map<String, dynamic>;
+              // listingId stocké en champ; si absent, fallback sur parsing éventuel de l'id
+              final lid = (m['listingId'] ?? '').toString();
+              return lid.isNotEmpty ? lid : d.id.split('_').last;
+            })
+            .where((id) => id.isNotEmpty)
+            .toSet());
+  }
 
   Future<void> _fetchPriceBounds() async {
     Query<Map<String, dynamic>> baseQuery = FirebaseFirestore.instance.collection('listings');
@@ -80,6 +99,7 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
   void initState() {
     super.initState();
     _listingsStream = _baseQuery().snapshots();
+    _favoritesStream = _userFavoritesStream();
     _fetchPriceBounds();
   }
 
@@ -119,6 +139,7 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
 
   List<QueryDocumentSnapshot<Map<String, dynamic>>> _applyClientSideFilters(
     List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
+    Set<String> favIds,
   ) {
     var filtered = docs;
 
@@ -163,9 +184,9 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
       filtered = filtered.where((d) => d.data()['car_park'] == true).toList();
     }
 
-    // Favorites filter
+    // Favorites filter via link-table
     if (_favoritesOnly) {
-      filtered = filtered.where((d) => d.data()['is_favorite'] == true).toList();
+      filtered = filtered.where((d) => favIds.contains(d.id)).toList();
     }
 
     // Price range
@@ -176,7 +197,7 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
       }).toList();
     }
 
-    // Re-sort if any filter applied
+    // Re-sort if any filter applied (including favorites)
     final hasFilters = _typeIndex >= 0 ||
         _furnishedOnly ||
         _wifiOnly ||
@@ -264,6 +285,34 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
     }
   }
 
+  Future<void> _toggleFavorite(String listingId, bool isCurrentlyFavorite) async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Connecte-toi pour utiliser les favoris.')),
+      );
+      return;
+    }
+    final favDocId = '${uid}_$listingId';
+    final ref = FirebaseFirestore.instance.collection('favorites').doc(favDocId);
+
+    try {
+      if (isCurrentlyFavorite) {
+        await ref.delete();
+      } else {
+        await ref.set({
+          'userUid': uid,
+          'listingId': listingId,
+          'createdAt': FieldValue.serverTimestamp(),
+        });
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Erreur favoris: $e')),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     super.build(context);
@@ -338,88 +387,102 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
                     ),
                   ),
                 ),
+
+                // Listings stream
                 StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
                   stream: _listingsStream,
-                  builder: (context, snapshot) {
-                    if (snapshot.connectionState == ConnectionState.waiting) {
+                  builder: (context, listingsSnap) {
+                    if (listingsSnap.connectionState == ConnectionState.waiting) {
                       return const SliverFillRemaining(
                         hasScrollBody: false,
                         child: Center(child: CircularProgressIndicator()),
                       );
                     }
-                    if (snapshot.hasError) {
+                    if (listingsSnap.hasError) {
                       return SliverToBoxAdapter(
                         child: Padding(
                           padding: const EdgeInsets.all(24),
-                          child: Text('Error: ${snapshot.error}'),
+                          child: Text('Error: ${listingsSnap.error}'),
                         ),
                       );
                     }
 
-                    final docs = snapshot.data?.docs ?? [];
-                    final filtered = _applyClientSideFilters(docs);
+                    final docs = listingsSnap.data?.docs ?? [];
 
-                    if (filtered.isEmpty) {
-                      return SliverFillRemaining(
-                        hasScrollBody: false,
-                        child: _EmptyState(
-                          message: _emptyStateMessage,
-                          subMessage: _emptyStateSubMessage,
-                          mode: widget.mode,
-                        ),
-                      );
-                    }
+                    // Favorites stream (user link table)
+                    return StreamBuilder<Set<String>>(
+                      stream: _favoritesStream,
+                      builder: (context, favSnap) {
+                        final favIds = favSnap.data ?? <String>{};
 
-                    // Responsive grid
-                    int crossAxisCount = 1;
-                    double childAspectRatio = 1.1;
-                    final w = constraints.maxWidth;
-                    if (w >= 1400) {
-                      crossAxisCount = 4;
-                      childAspectRatio = 0.95;
-                    } else if (w >= 1000) {
-                      crossAxisCount = 3;
-                      childAspectRatio = 1.0;
-                    } else if (w >= 700) {
-                      crossAxisCount = 2;
-                      childAspectRatio = 1.05;
-                    }
+                        final filtered = _applyClientSideFilters(docs, favIds);
 
-                    return SliverPadding(
-                      padding: EdgeInsets.symmetric(
-                        horizontal: isXL ? (constraints.maxWidth - 1200) / 2 + 16 : 16,
-                        vertical: 8,
-                      ),
-                      sliver: SliverGrid(
-                        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                          crossAxisCount: crossAxisCount,
-                          crossAxisSpacing: 16,
-                          mainAxisSpacing: 16,
-                          childAspectRatio: childAspectRatio,
-                        ),
-                        delegate: SliverChildBuilderDelegate(
-                          (context, i) {
-                            final doc = filtered[i];
-                            final data = doc.data();
-                            final title = _generateTitle(data);
-                            return _ListingCard(
-                              key: ValueKey(doc.id), // <-- clé stable
-                              listingId: doc.id,
-                              data: data,
-                              title: title,
-                            );
-                          },
-                          childCount: filtered.length,
-                          // <-- assure la bonne correspondance Key <-> index
-                          findChildIndexCallback: (Key key) {
-                            final id = (key as ValueKey<String>).value;
-                            final index = filtered.indexWhere((d) => d.id == id);
-                            return index == -1 ? null : index;
-                          },
-                          addAutomaticKeepAlives: false,
-                          addRepaintBoundaries: true,
-                        ),
-                      ),
+                        if (filtered.isEmpty) {
+                          return SliverFillRemaining(
+                            hasScrollBody: false,
+                            child: _EmptyState(
+                              message: _emptyStateMessage,
+                              subMessage: _emptyStateSubMessage,
+                              mode: widget.mode,
+                            ),
+                          );
+                        }
+
+                        // Responsive grid
+                        int crossAxisCount = 1;
+                        double childAspectRatio = 1.1;
+                        final w = constraints.maxWidth;
+                        if (w >= 1400) {
+                          crossAxisCount = 4;
+                          childAspectRatio = 0.95;
+                        } else if (w >= 1000) {
+                          crossAxisCount = 3;
+                          childAspectRatio = 1.0;
+                        } else if (w >= 700) {
+                          crossAxisCount = 2;
+                          childAspectRatio = 1.05;
+                        }
+
+                        return SliverPadding(
+                          padding: EdgeInsets.symmetric(
+                            horizontal: isXL ? (constraints.maxWidth - 1200) / 2 + 16 : 16,
+                            vertical: 8,
+                          ),
+                          sliver: SliverGrid(
+                            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                              crossAxisCount: crossAxisCount,
+                              crossAxisSpacing: 16,
+                              mainAxisSpacing: 16,
+                              childAspectRatio: childAspectRatio,
+                            ),
+                            delegate: SliverChildBuilderDelegate(
+                              (context, i) {
+                                final doc = filtered[i];
+                                final data = doc.data();
+                                final title = _generateTitle(data);
+                                final isFav = favIds.contains(doc.id);
+
+                                return _ListingCard(
+                                  key: ValueKey(doc.id),
+                                  listingId: doc.id,
+                                  data: data,
+                                  title: title,
+                                  isFavorite: isFav,
+                                  onToggleFavorite: () => _toggleFavorite(doc.id, isFav),
+                                );
+                              },
+                              childCount: filtered.length,
+                              findChildIndexCallback: (Key key) {
+                                final id = (key as ValueKey<String>).value;
+                                final index = filtered.indexWhere((d) => d.id == id);
+                                return index == -1 ? null : index;
+                              },
+                              addAutomaticKeepAlives: false,
+                              addRepaintBoundaries: true,
+                            ),
+                          ),
+                        );
+                      },
                     );
                   },
                 ),
@@ -772,95 +835,51 @@ class _EmptyState extends StatelessWidget {
   }
 }
 
-class _ListingCard extends StatefulWidget {
+class _ListingCard extends StatelessWidget {
   final String listingId;
   final Map<String, dynamic> data;
   final String title;
+  final bool isFavorite;
+  final VoidCallback onToggleFavorite;
 
   const _ListingCard({
-    super.key, // <-- accepte une Key
+    super.key,
     required this.listingId,
     required this.data,
     required this.title,
+    required this.isFavorite,
+    required this.onToggleFavorite,
   });
-
-  @override
-  State<_ListingCard> createState() => _ListingCardState();
-}
-
-class _ListingCardState extends State<_ListingCard> {
-  bool? _localFavorite; // null => utilise la valeur serveur depuis widget.data
-
-  @override
-  void initState() {
-    super.initState();
-    _localFavorite = (widget.data['is_favorite'] == true);
-  }
-
-  // Resync simplifiée : si la valeur serveur diffère, on l'applique
-  @override
-  void didUpdateWidget(covariant _ListingCard oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    final serverFav = (widget.data['is_favorite'] == true);
-    if (serverFav != _localFavorite) {
-      setState(() {
-        _localFavorite = serverFav;
-      });
-    }
-  }
-
-  Future<void> _toggleFavorite(BuildContext context) async {
-    final current = _localFavorite ?? (widget.data['is_favorite'] == true);
-    final next = !current;
-
-    // Optimistic UI
-    setState(() => _localFavorite = next);
-
-    try {
-      await FirebaseFirestore.instance
-          .collection('listings')
-          .doc(widget.listingId)
-          .update({'is_favorite': next});
-    } catch (e) {
-      // Revert
-      setState(() => _localFavorite = current);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Erreur lors de la mise à jour du favori: $e')),
-      );
-    }
-  }
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
 
-    final price = (widget.data['price'] ?? 0).toDouble();
+    final price = (data['price'] ?? 0).toDouble();
     final currency = NumberFormat.currency(symbol: 'CHF', decimalDigits: 0);
     final priceStr = currency.format(price);
 
-    final city = (widget.data['city'] ?? '').toString();
-    final npa = (widget.data['npa'] ?? '').toString();
-    final surface = (widget.data['surface'] ?? 0).toString();
-    final rooms = (widget.data['num_rooms'] ?? '').toString();
-    final type = (widget.data['type'] ?? '').toString();
+    final city = (data['city'] ?? '').toString();
+    final npa = (data['npa'] ?? '').toString();
+    final surface = (data['surface'] ?? 0).toString();
+    final rooms = (data['num_rooms'] ?? '').toString();
+    final type = (data['type'] ?? '').toString();
 
-    final photos = (widget.data['photos'] as List?)?.cast<String>() ?? const <String>[];
+    final photos = (data['photos'] as List?)?.cast<String>() ?? const <String>[];
     final imageUrl = photos.isNotEmpty ? photos.first : null;
 
     final amenities = <String>[
-      if (widget.data['is_furnish'] == true) 'Furnished',
-      if (widget.data['wifi_incl'] == true) 'Wi-Fi',
-      if (widget.data['charges_incl'] == true) 'Charges incl.',
-      if (widget.data['car_park'] == true) 'Car park',
+      if (data['is_furnish'] == true) 'Furnished',
+      if (data['wifi_incl'] == true) 'Wi-Fi',
+      if (data['charges_incl'] == true) 'Charges incl.',
+      if (data['car_park'] == true) 'Car park',
     ];
-
-    final isFavorite = _localFavorite ?? (widget.data['is_favorite'] == true);
 
     return InkWell(
       onTap: () {
         Navigator.of(context).push(
           MaterialPageRoute(
-            builder: (_) => ViewListingPage(listingId: widget.listingId),
+            builder: (_) => ViewListingPage(listingId: listingId),
           ),
         );
       },
@@ -920,7 +939,7 @@ class _ListingCardState extends State<_ListingCard> {
                           icon: Icon(isFavorite ? Icons.favorite : Icons.favorite_border),
                           color: isFavorite ? Colors.redAccent : Colors.white,
                           tooltip: isFavorite ? 'Retirer des favoris' : 'Ajouter aux favoris',
-                          onPressed: () => _toggleFavorite(context),
+                          onPressed: onToggleFavorite,
                         ),
                       ),
                     ),
@@ -939,7 +958,7 @@ class _ListingCardState extends State<_ListingCard> {
                   children: [
                     Flexible(
                       child: Text(
-                        widget.title,
+                        title,
                         style: const TextStyle(
                           fontSize: 15,
                           fontWeight: FontWeight.bold,
