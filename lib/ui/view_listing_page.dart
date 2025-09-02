@@ -5,6 +5,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:moon_design/moon_design.dart';
 import 'package:http/http.dart' as http;
+import 'package:phone_numbers_parser/phone_numbers_parser.dart';
 
 import 'edit_listing_page.dart';
 
@@ -58,7 +59,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
   late final PageController _photoCtrl;
 
   // Booking system
-  List<Map<String, dynamic>> _bookingRequests = [];
+  List<Map<String, dynamic>> _bookedDates = [];
   bool _showBookingPanel = false;
   final TextEditingController _messageController = TextEditingController();
   final TextEditingController _phoneController = TextEditingController();
@@ -67,6 +68,10 @@ class _ViewListingPageState extends State<ViewListingPage> {
   DateTime? _selectedStart;
   DateTime? _selectedEnd;
   bool _submittingBooking = false;
+  
+  // Phone validation
+  String? _phoneError;
+  bool _isValidPhone = false;
 
   bool get _isOwner =>
       FirebaseAuth.instance.currentUser?.uid != null &&
@@ -79,6 +84,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
   void initState() {
     super.initState();
     _photoCtrl = PageController(viewportFraction: 0.92);
+    _phoneController.addListener(_validatePhoneNumber);
     _load();
   }
 
@@ -88,6 +94,48 @@ class _ViewListingPageState extends State<ViewListingPage> {
     _messageController.dispose();
     _phoneController.dispose();
     super.dispose();
+  }
+
+  void _validatePhoneNumber() {
+    final phoneText = _phoneController.text.trim();
+    
+    if (phoneText.isEmpty) {
+      setState(() {
+        _phoneError = null;
+        _isValidPhone = true; // Phone is optional, so empty is valid
+      });
+      return;
+    }
+
+    try {
+      // Try to parse the phone number
+      // Assume Swiss context by default, but allow international format
+      PhoneNumber phoneNumber;
+      
+      if (phoneText.startsWith('+')) {
+        phoneNumber = PhoneNumber.parse(phoneText);
+      } else {
+        // Try Swiss format first
+        phoneNumber = PhoneNumber.parse(phoneText, destinationCountry: IsoCode.CH);
+      }
+      
+      if (phoneNumber.isValid()) {
+        setState(() {
+          _phoneError = null;
+          _isValidPhone = true;
+        });
+      } else {
+        setState(() {
+          _phoneError = 'Invalid phone number format';
+          _isValidPhone = false;
+        });
+      }
+    } catch (e) {
+      setState(() {
+        _phoneError = 'Invalid phone number format';
+        _isValidPhone = false;
+      });
+    }
   }
 
   Future<void> _load() async {
@@ -138,8 +186,8 @@ class _ViewListingPageState extends State<ViewListingPage> {
       final List photos = (m['photos'] as List?) ?? const [];
       _photos = photos.map((e) => e.toString()).toList();
 
-      // Charger les demandes de réservation
-      await _loadBookingRequests();
+      // Charger seulement les dates approuvées
+      await _loadBookedDates();
 
       setState(() {
         _loading = false;
@@ -153,40 +201,39 @@ class _ViewListingPageState extends State<ViewListingPage> {
     }
   }
 
-  Future<void> _loadBookingRequests() async {
+  Future<void> _loadBookedDates() async {
     try {
       final snapshot = await FirebaseFirestore.instance
           .collection('booking_requests')
           .where('listingId', isEqualTo: widget.listingId)
-          .where('status', whereIn: ['pending', 'approved'])
+          .where('status', isEqualTo: 'approved')
           .get();
 
-      _bookingRequests = snapshot.docs.map((doc) {
+      _bookedDates = snapshot.docs.map((doc) {
         final data = doc.data();
         return {
           'id': doc.id,
           'startDate': (data['startDate'] as Timestamp).toDate(),
           'endDate': (data['endDate'] as Timestamp).toDate(),
-          'status': data['status'],
         };
       }).toList();
     } catch (e) {
-      print('Error loading booking requests: $e');
+      print('Error loading booked dates: $e');
     }
   }
 
-  String? _getDateStatus(DateTime day) {
+  bool _isDateBooked(DateTime day) {
     final d = _dateOnly(day);
     
-    for (final booking in _bookingRequests) {
+    for (final booking in _bookedDates) {
       final start = _dateOnly(booking['startDate']);
       final end = _dateOnly(booking['endDate']);
       
       if (!d.isBefore(start) && !d.isAfter(end)) {
-        return booking['status'];
+        return true;
       }
     }
-    return null;
+    return false;
   }
 
   Future<void> _estimatePrice() async {
@@ -319,20 +366,16 @@ class _ViewListingPageState extends State<ViewListingPage> {
     for (var day = 1; day <= daysInMonth; day++) {
       final date = DateTime(_shownMonth.year, _shownMonth.month, day);
       final available = _isAvailableOn(date);
-      final status = _getDateStatus(date);
+      final isBooked = _isDateBooked(date);
 
       Color bgColor = Colors.transparent;
       Color borderColor = cs.primary.withOpacity(.12);
       Color textColor = cs.onSurface;
 
-      if (status == 'approved') {
+      if (isBooked) {
         bgColor = Colors.red.withOpacity(.2);
         borderColor = Colors.red.withOpacity(.5);
         textColor = Colors.red;
-      } else if (status == 'pending') {
-        bgColor = Colors.orange.withOpacity(.2);
-        borderColor = Colors.orange.withOpacity(.5);
-        textColor = Colors.orange;
       } else if (available) {
         bgColor = cs.primary.withOpacity(.12);
         borderColor = cs.primary.withOpacity(.45);
@@ -432,7 +475,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
               onTap: () async {
                 final picked = await showDatePicker(
                   context: context,
-                  initialDate: _selectedEnd ?? _selectedStart ?? DateTime.now(),
+                  initialDate: _selectedEnd ?? (_selectedStart ?? DateTime.now()),
                   firstDate: _selectedStart ?? DateTime.now(),
                   lastDate: _availEnd ?? DateTime.now().add(const Duration(days: 365)),
                 );
@@ -460,17 +503,40 @@ class _ViewListingPageState extends State<ViewListingPage> {
               ),
             ),
 
-            // Phone number
+            // Phone number with validation
             const SizedBox(height: 12),
             TextField(
               controller: _phoneController,
+              keyboardType: TextInputType.phone,
               decoration: InputDecoration(
                 labelText: 'Phone number (optional)',
-                hintText: 'For contact purposes',
+                hintText: '+41 79 123 45 67 or 079 123 45 67',
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(8),
+                  borderSide: BorderSide(
+                    color: _phoneError != null ? Colors.red : Colors.grey,
+                  ),
+                ),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                  borderSide: BorderSide(
+                    color: _phoneError != null ? Colors.red : Colors.grey,
+                  ),
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                  borderSide: BorderSide(
+                    color: _phoneError != null ? Colors.red : Theme.of(context).colorScheme.primary,
+                  ),
                 ),
                 contentPadding: const EdgeInsets.all(12),
+                errorText: _phoneError,
+                suffixIcon: _phoneController.text.isNotEmpty
+                    ? Icon(
+                        _isValidPhone ? Icons.check_circle : Icons.error,
+                        color: _isValidPhone ? Colors.green : Colors.red,
+                      )
+                    : null,
               ),
             ),
 
@@ -480,7 +546,8 @@ class _ViewListingPageState extends State<ViewListingPage> {
               isFullWidth: true,
               onTap: _selectedStart != null &&
                       _selectedEnd != null &&
-                      _messageController.text.isNotEmpty
+                      _messageController.text.isNotEmpty &&
+                      _isValidPhone
                   ? () => _submitBookingRequestWithDates(_selectedStart!, _selectedEnd!)
                   : null,
               label: const Text('Send booking request'),
@@ -505,6 +572,22 @@ class _ViewListingPageState extends State<ViewListingPage> {
           .get();
       final userData = userDoc.data() ?? {};
 
+      // Format the phone number properly if provided
+      String? formattedPhone;
+      if (_phoneController.text.trim().isNotEmpty) {
+        try {
+          PhoneNumber phoneNumber;
+          if (_phoneController.text.trim().startsWith('+')) {
+            phoneNumber = PhoneNumber.parse(_phoneController.text.trim());
+          } else {
+            phoneNumber = PhoneNumber.parse(_phoneController.text.trim(), destinationCountry: IsoCode.CH);
+          }
+          formattedPhone = phoneNumber.international;
+        } catch (e) {
+          formattedPhone = _phoneController.text.trim();
+        }
+      }
+
       await FirebaseFirestore.instance.collection('booking_requests').add({
         'listingId': widget.listingId,
         'studentUid': user.uid,
@@ -514,18 +597,20 @@ class _ViewListingPageState extends State<ViewListingPage> {
         'message': _messageController.text.trim(),
         'studentName': userData['name'] ?? user.email,
         'studentEmail': user.email,
-        'studentPhone': _phoneController.text.trim().isEmpty ? null : _phoneController.text.trim(),
+        'studentPhone': formattedPhone,
         'status': 'pending',
         'createdAt': Timestamp.now(),
         'updatedAt': Timestamp.now(),
       });
 
-      await _loadBookingRequests();
-
       setState(() {
         _showBookingPanel = false;
         _messageController.clear();
         _phoneController.clear();
+        _startDateController.clear();
+        _endDateController.clear();
+        _selectedStart = null;
+        _selectedEnd = null;
         _submittingBooking = false;
       });
 
@@ -1013,7 +1098,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
 
                             const SizedBox(height: 16),
 
-                            // Calendrier disponibilité
+                            // Calendrier disponibilité + Booking pour étudiants
                             _MoonCard(
                               isDark: isDark,
                               child: Column(
@@ -1034,7 +1119,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
                                             const SizedBox(width: 8),
                                             Flexible(
                                               child: Text(
-                                                _isStudent ? 'Select dates to book' : 'Availability',
+                                                _isStudent ? 'Book your stay' : 'Availability',
                                                 style: TextStyle(
                                                   fontSize: 18,
                                                   fontWeight: FontWeight.w800,
@@ -1119,26 +1204,12 @@ class _ViewListingPageState extends State<ViewListingPage> {
                                           cs.primary.withOpacity(.25),
                                           cs.primary.withOpacity(.6),
                                         ),
-                                        if (_isStudent) ...[
-                                          _buildLegendItem(
-                                            context, 
-                                            'Pending', 
-                                            Colors.orange.withOpacity(.2),
-                                            Colors.orange.withOpacity(.5),
-                                          ),
-                                          _buildLegendItem(
-                                            context, 
-                                            'Booked', 
-                                            Colors.red.withOpacity(.2),
-                                            Colors.red.withOpacity(.5),
-                                          ),
-                                        ] else
-                                          _buildLegendItem(
-                                            context, 
-                                            'Booked/Pending', 
-                                            Colors.red.withOpacity(.2),
-                                            Colors.red.withOpacity(.5),
-                                          ),
+                                        _buildLegendItem(
+                                          context, 
+                                          'Booked', 
+                                          Colors.red.withOpacity(.2),
+                                          Colors.red.withOpacity(.5),
+                                        ),
                                       ],
                                     ),
                                     const SizedBox(height: 8),
@@ -1160,8 +1231,24 @@ class _ViewListingPageState extends State<ViewListingPage> {
                               ),
                             ),
 
-                            // Panneau de réservation (s'affiche quand des dates sont sélectionnées)
-                            _buildBookingPanel(context),
+                            // Booking button pour les étudiants
+                            if (_isStudent) ...[
+                              const SizedBox(height: 16),
+                              MoonFilledButton(
+                                isFullWidth: true,
+                                onTap: () {
+                                  setState(() {
+                                    _showBookingPanel = !_showBookingPanel;
+                                  });
+                                },
+                                leading: const Icon(Icons.book_online),
+                                label: const Text('Book this property'),
+                              ),
+                            ],
+
+                            // Panneau de réservation
+                            if (_showBookingPanel)
+                              _buildBookingPanel(context),
 
                             const SizedBox(height: 24),
 

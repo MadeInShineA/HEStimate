@@ -38,6 +38,7 @@ dependencies:
   path_provider: ^2.1.5
   url_launcher: ^6.0.0
   flutter_dotenv: ^5.0.2
+  phone_numbers_parser: ^8.3.0
   moon_design:
     git:
       url: https://github.com/coingaming/moon_flutter.git

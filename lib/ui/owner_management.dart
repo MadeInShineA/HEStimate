@@ -63,6 +63,39 @@ class _OwnerManagementPageState extends State<OwnerManagementPage>
   }
 }
 
+// Helper function to generate listing title (same as in ListingsPage)
+String _generateTitle(Map<String, dynamic> data) {
+  final type = (data['type'] ?? '').toString();
+  final rooms = (data['num_rooms'] ?? 0).toString();
+  final surface = (data['surface'] ?? 0).toString();
+  final city = (data['city'] ?? '').toString();
+  final furnished = data['is_furnish'] == true;
+
+  String title = '';
+
+  if (type == 'room') {
+    title = furnished ? 'Furnished Room' : 'Room';
+  } else if (type == 'entire_home') {
+    if (rooms == '1' || rooms == '1.0') {
+      title = furnished ? 'Furnished Studio' : 'Studio';
+    } else {
+      title = furnished ? 'Furnished ${rooms}-Room Apartment' : '${rooms}-Room Apartment';
+    }
+  } else {
+    title = furnished ? 'Furnished Property' : 'Property';
+  }
+
+  if (surface != '0' && surface.isNotEmpty) {
+    title += ' - ${surface}m²';
+  }
+
+  if (city.isNotEmpty) {
+    title += ' in $city';
+  }
+
+  return title;
+}
+
 // ============================================
 // ONGLET REQUESTS - Gestion des demandes de réservation
 // ============================================
@@ -91,8 +124,174 @@ class _RequestsTabState extends State<RequestsTab> with AutomaticKeepAliveClient
         .snapshots();
   }
 
-  Future<void> _updateBookingStatus(String bookingId, String status) async {
+  Future<List<Map<String, dynamic>>> _checkPendingConflicts(String listingId, DateTime startDate, DateTime endDate, String currentBookingId) async {
     try {
+      // Get ALL other pending bookings for the same listing (excluding the current one being approved)
+      final otherPendingBookings = await FirebaseFirestore.instance
+          .collection('booking_requests')
+          .where('listingId', isEqualTo: listingId)
+          .where('status', isEqualTo: 'pending')
+          .get();
+
+      List<Map<String, dynamic>> conflicts = [];
+
+      for (final doc in otherPendingBookings.docs) {
+        // Skip the current booking we're trying to approve
+        if (doc.id == currentBookingId) continue;
+
+        final data = doc.data();
+        final existingStart = (data['startDate'] as Timestamp).toDate();
+        final existingEnd = (data['endDate'] as Timestamp).toDate();
+
+        // Check if dates overlap (any overlap means conflict)
+        if (!(endDate.isBefore(existingStart) || startDate.isAfter(existingEnd))) {
+          conflicts.add({
+            'id': doc.id,
+            'studentName': data['studentName'],
+            'startDate': existingStart,
+            'endDate': existingEnd,
+          });
+        }
+      }
+
+      return conflicts;
+    } catch (e) {
+      print('Error checking pending conflicts: $e');
+      return [];
+    }
+  }
+
+  Future<void> _showConflictDialog(String bookingId, List<Map<String, dynamic>> conflicts) async {
+    return showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Row(
+          children: [
+            Icon(Icons.warning, color: Colors.orange),
+            const SizedBox(width: 8),
+            const Text('Date Conflict Warning'),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Accepting this booking will conflict with other pending requests:',
+              style: TextStyle(fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 12),
+            ...conflicts.map((conflict) => Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.orange.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.orange.withOpacity(0.3)),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      conflict['studentName'] ?? 'Unknown Student',
+                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    Text(
+                      '${_formatDate(conflict['startDate'])} - ${_formatDate(conflict['endDate'])}',
+                      style: TextStyle(
+                        color: Colors.orange[700],
+                        fontSize: 13,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            )).toList(),
+            const SizedBox(height: 12),
+            const Text(
+              'These pending requests will be automatically rejected if you proceed.',
+              style: TextStyle(
+                fontStyle: FontStyle.italic,
+                color: Colors.orange,
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancel'),
+          ),
+          MoonFilledButton(
+            backgroundColor: Colors.orange,
+            onTap: () async {
+              Navigator.of(context).pop();
+              await _approveBookingWithConflicts(bookingId, conflicts);
+            },
+            label: const Text('Approve Anyway', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _approveBookingWithConflicts(String bookingId, List<Map<String, dynamic>> conflicts) async {
+    try {
+      // First, reject all conflicting bookings
+      for (final conflict in conflicts) {
+        await FirebaseFirestore.instance
+            .collection('booking_requests')
+            .doc(conflict['id'])
+            .update({
+          'status': 'rejected',
+          'updatedAt': Timestamp.now(),
+          'rejectionReason': 'Date conflict with approved booking',
+        });
+      }
+
+      // Then approve the selected booking
+      await FirebaseFirestore.instance
+          .collection('booking_requests')
+          .doc(bookingId)
+          .update({
+        'status': 'approved',
+        'updatedAt': Timestamp.now(),
+      });
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              conflicts.isEmpty 
+                  ? 'Booking approved'
+                  : 'Booking approved and ${conflicts.length} conflicting booking${conflicts.length > 1 ? 's' : ''} rejected'
+            ),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
+  Future<void> _updateBookingStatus(String bookingId, String listingId, String status, DateTime? startDate, DateTime? endDate) async {
+    try {
+      if (status == 'approved' && startDate != null && endDate != null) {
+        // Check for conflicts with other pending requests before approving
+        final conflicts = await _checkPendingConflicts(listingId, startDate, endDate, bookingId);
+        
+        if (conflicts.isNotEmpty) {
+          _showConflictDialog(bookingId, conflicts);
+          return;
+        }
+      }
+
       await FirebaseFirestore.instance
           .collection('booking_requests')
           .doc(bookingId)
@@ -120,6 +319,7 @@ class _RequestsTabState extends State<RequestsTab> with AutomaticKeepAliveClient
 
   @override
   Widget build(BuildContext context) {
+    super.build(context); // AutomaticKeepAliveClientMixin
     final cs = Theme.of(context).colorScheme;
     
     return StreamBuilder<QuerySnapshot>(
@@ -160,6 +360,9 @@ class _RequestsTabState extends State<RequestsTab> with AutomaticKeepAliveClient
           itemBuilder: (context, index) {
             final doc = requests[index];
             final data = doc.data() as Map<String, dynamic>;
+            final listingId = data['listingId'];
+            final startDate = (data['startDate'] as Timestamp).toDate();
+            final endDate = (data['endDate'] as Timestamp).toDate();
             
             return Card(
               margin: const EdgeInsets.only(bottom: 16),
@@ -168,6 +371,45 @@ class _RequestsTabState extends State<RequestsTab> with AutomaticKeepAliveClient
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    // Listing info
+                    FutureBuilder<DocumentSnapshot>(
+                      future: FirebaseFirestore.instance
+                          .collection('listings')
+                          .doc(listingId)
+                          .get(),
+                      builder: (context, listingSnapshot) {
+                        String listingTitle = 'Loading...';
+                        if (listingSnapshot.hasData && listingSnapshot.data!.exists) {
+                          final listingData = listingSnapshot.data!.data() as Map<String, dynamic>;
+                          listingTitle = _generateTitle(listingData);
+                        }
+                        
+                        return Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: cs.primary.withOpacity(0.05),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: cs.primary.withOpacity(0.2)),
+                          ),
+                          child: Row(
+                            children: [
+                              Icon(Icons.home, size: 20, color: cs.primary),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  listingTitle,
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.w600,
+                                    color: cs.primary,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        );
+                      },
+                    ),
+                    const SizedBox(height: 12),
                     Row(
                       children: [
                         CircleAvatar(
@@ -211,7 +453,7 @@ class _RequestsTabState extends State<RequestsTab> with AutomaticKeepAliveClient
                               Icon(Icons.calendar_today, size: 16, color: cs.primary),
                               const SizedBox(width: 8),
                               Text(
-                                '${_formatDate((data['startDate'] as Timestamp).toDate())} - ${_formatDate((data['endDate'] as Timestamp).toDate())}',
+                                '${_formatDate(startDate)} - ${_formatDate(endDate)}',
                                 style: TextStyle(
                                   fontWeight: FontWeight.w600,
                                   color: cs.primary,
@@ -251,7 +493,13 @@ class _RequestsTabState extends State<RequestsTab> with AutomaticKeepAliveClient
                         Expanded(
                           child: MoonFilledButton(
                             backgroundColor: Colors.green,
-                            onTap: () => _updateBookingStatus(doc.id, 'approved'),
+                            onTap: () => _updateBookingStatus(
+                              doc.id, 
+                              listingId, 
+                              'approved', 
+                              startDate, 
+                              endDate
+                            ),
                             leading: const Icon(Icons.check, color: Colors.white),
                             label: const Text('Approve', style: TextStyle(color: Colors.white)),
                           ),
@@ -260,7 +508,7 @@ class _RequestsTabState extends State<RequestsTab> with AutomaticKeepAliveClient
                         Expanded(
                           child: MoonFilledButton(
                             backgroundColor: Colors.red,
-                            onTap: () => _updateBookingStatus(doc.id, 'rejected'),
+                            onTap: () => _updateBookingStatus(doc.id, listingId, 'rejected', null, null),
                             leading: const Icon(Icons.close, color: Colors.white),
                             label: const Text('Reject', style: TextStyle(color: Colors.white)),
                           ),
@@ -421,6 +669,7 @@ class _ReviewsTabState extends State<ReviewsTab> with AutomaticKeepAliveClientMi
 
   @override
   Widget build(BuildContext context) {
+    super.build(context); // AutomaticKeepAliveClientMixin
     final cs = Theme.of(context).colorScheme;
     
     return StreamBuilder<QuerySnapshot>(
@@ -470,6 +719,7 @@ class _ReviewsTabState extends State<ReviewsTab> with AutomaticKeepAliveClientMi
             final doc = completedBookings[index];
             final data = doc.data() as Map<String, dynamic>;
             final hasReview = data['reviewed'] == true;
+            final listingId = data['listingId'];
             
             return Card(
               margin: const EdgeInsets.only(bottom: 16),
@@ -478,6 +728,45 @@ class _ReviewsTabState extends State<ReviewsTab> with AutomaticKeepAliveClientMi
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    // Listing info
+                    FutureBuilder<DocumentSnapshot>(
+                      future: FirebaseFirestore.instance
+                          .collection('listings')
+                          .doc(listingId)
+                          .get(),
+                      builder: (context, listingSnapshot) {
+                        String listingTitle = 'Loading...';
+                        if (listingSnapshot.hasData && listingSnapshot.data!.exists) {
+                          final listingData = listingSnapshot.data!.data() as Map<String, dynamic>;
+                          listingTitle = _generateTitle(listingData);
+                        }
+                        
+                        return Container(
+                          padding: const EdgeInsets.all(12),
+                          margin: const EdgeInsets.only(bottom: 12),
+                          decoration: BoxDecoration(
+                            color: cs.primary.withOpacity(0.05),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: cs.primary.withOpacity(0.2)),
+                          ),
+                          child: Row(
+                            children: [
+                              Icon(Icons.home, size: 20, color: cs.primary),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  listingTitle,
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.w600,
+                                    color: cs.primary,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        );
+                      },
+                    ),
                     Row(
                       children: [
                         CircleAvatar(
@@ -636,6 +925,7 @@ class _StudentsTabState extends State<StudentsTab> with AutomaticKeepAliveClient
 
   @override
   Widget build(BuildContext context) {
+    super.build(context); // AutomaticKeepAliveClientMixin
     final cs = Theme.of(context).colorScheme;
     
     return StreamBuilder<QuerySnapshot>(
@@ -653,11 +943,11 @@ class _StudentsTabState extends State<StudentsTab> with AutomaticKeepAliveClient
         final now = DateTime.now();
         
         // Filtrer les réservations actuelles (en cours)
-      final currentBookings = bookings.where((doc) {
-        final data = doc.data() as Map<String, dynamic>;
-        final endDate = (data['endDate'] as Timestamp).toDate();
-        return endDate.isAfter(now) || endDate.isAtSameMomentAs(now);
-      }).toList();
+        final currentBookings = bookings.where((doc) {
+          final data = doc.data() as Map<String, dynamic>;
+          final endDate = (data['endDate'] as Timestamp).toDate();
+          return endDate.isAfter(now) || endDate.isAtSameMomentAs(now);
+        }).toList();
 
         if (currentBookings.isEmpty) {
           return Center(
@@ -688,6 +978,7 @@ class _StudentsTabState extends State<StudentsTab> with AutomaticKeepAliveClient
             final endDate = (data['endDate'] as Timestamp).toDate();
             final daysUntilStart = startDate.difference(now).inDays;
             final daysUntilEnd = endDate.difference(now).inDays;
+            final listingId = data['listingId'];
 
             String statusText;
             Color statusColor;
@@ -716,6 +1007,45 @@ class _StudentsTabState extends State<StudentsTab> with AutomaticKeepAliveClient
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
+                      // Listing info
+                      FutureBuilder<DocumentSnapshot>(
+                        future: FirebaseFirestore.instance
+                            .collection('listings')
+                            .doc(listingId)
+                            .get(),
+                        builder: (context, listingSnapshot) {
+                          String listingTitle = 'Loading...';
+                          if (listingSnapshot.hasData && listingSnapshot.data!.exists) {
+                            final listingData = listingSnapshot.data!.data() as Map<String, dynamic>;
+                            listingTitle = _generateTitle(listingData);
+                          }
+                          
+                          return Container(
+                            padding: const EdgeInsets.all(12),
+                            margin: const EdgeInsets.only(bottom: 12),
+                            decoration: BoxDecoration(
+                              color: cs.primary.withOpacity(0.05),
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(color: cs.primary.withOpacity(0.2)),
+                            ),
+                            child: Row(
+                              children: [
+                                Icon(Icons.home, size: 20, color: cs.primary),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    listingTitle,
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.w600,
+                                      color: cs.primary,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
                       Row(
                         children: [
                           CircleAvatar(
@@ -812,3 +1142,8 @@ class _StudentsTabState extends State<StudentsTab> with AutomaticKeepAliveClient
     return '${date.day.toString().padLeft(2, '0')}/${date.month.toString().padLeft(2, '0')}/${date.year}';
   }
 }
+
+/* 
+Gérer les conflit rare avec un user sur la page management et un autre en même temps qui book 
+Pagination
+ */
