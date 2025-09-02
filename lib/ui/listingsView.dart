@@ -5,6 +5,8 @@ import 'package:intl/intl.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
 import 'view_listing_page.dart';
+import 'rate_listing_page.dart'; 
+
 
 enum ListingsMode {
   all,      // Show all listings
@@ -25,15 +27,17 @@ class ListingsPage extends StatefulWidget {
 
 class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClientMixin {
   final _searchCtrl = TextEditingController();
+  
 
   // Filters
   int _typeIndex = -1; // -1 = all, 0 = entire_home, 1 = room
-  int _sortIndex = 0; // 0 = Newest, 1 = Price ↑, 2 = Price ↓
+  int _sortIndex = 0;  // 0 = Newest, 1 = Price ↑, 2 = Price ↓
   bool _furnishedOnly = false;
   bool _wifiOnly = false;
   bool _chargesInclOnly = false;
   bool _carParkOnly = false;
   bool _favoritesOnly = false;
+
   double? _globalMinPrice;
   double? _globalMaxPrice;
   double? _minPrice;
@@ -95,6 +99,47 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
     });
   }
 
+  Future<void> _fetchPriceBounds() async {
+    Query<Map<String, dynamic>> baseQuery = FirebaseFirestore.instance.collection('listings');
+    
+    // Si on est en mode "owner", on filtre par l'utilisateur courant
+    if (widget.mode == ListingsMode.owner) {
+      final uid = FirebaseAuth.instance.currentUser?.uid;
+      if (uid == null) {
+        // Pas d'utilisateur connecté, pas de propriétés
+        setState(() {
+          _globalMinPrice = 0;
+          _globalMaxPrice = 10000;
+          _minPrice = 0;
+          _maxPrice = 10000;
+        });
+        return;
+      }
+      baseQuery = baseQuery.where('ownerUid', isEqualTo: uid);
+    }
+
+    final minSnap = await baseQuery
+        .orderBy('price', descending: false)
+        .limit(1)
+        .get();
+
+    final maxSnap = await baseQuery
+        .orderBy('price', descending: true)
+        .limit(1)
+        .get();
+
+    final minPrice = minSnap.docs.isNotEmpty ? (minSnap.docs.first['price'] ?? 0).toDouble() : 0;
+    final maxPrice = maxSnap.docs.isNotEmpty ? (maxSnap.docs.first['price'] ?? 0).toDouble() : 10000;
+
+    setState(() {
+      _globalMinPrice = minPrice;
+      _globalMaxPrice = maxPrice;
+      // initialise la sélection utilisateur
+      _minPrice = minPrice;
+      _maxPrice = maxPrice;
+    });
+  }
+
   @override
   void initState() {
     super.initState();
@@ -143,7 +188,6 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
   ) {
     var filtered = docs;
 
-    // Search (city / npa)
     final query = _searchCtrl.text.trim().toLowerCase();
     if (query.isNotEmpty) {
       filtered = filtered.where((d) {
@@ -158,19 +202,12 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
 
     // Type
     if (_typeIndex == 0) {
-      filtered = filtered.where((d) {
-        final type = (d.data()['type'] ?? '').toString().trim();
-        return type == 'entire_home';
-      }).toList();
+      filtered = filtered.where((d) => (d.data()['type'] ?? '').toString().trim() == 'entire_home').toList();
     }
     if (_typeIndex == 1) {
-      filtered = filtered.where((d) {
-        final type = (d.data()['type'] ?? '').toString().trim();
-        return type == 'room';
-      }).toList();
+      filtered = filtered.where((d) => (d.data()['type'] ?? '').toString().trim() == 'room').toList();
     }
 
-    // Boolean filters
     if (_furnishedOnly) {
       filtered = filtered.where((d) => d.data()['is_furnish'] == true).toList();
     }
@@ -189,13 +226,13 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
       filtered = filtered.where((d) => favIds.contains(d.id)).toList();
     }
 
-    // Price range
     if (_minPrice != null && _maxPrice != null) {
       filtered = filtered.where((d) {
         final price = (d.data()['price'] ?? 0).toDouble();
         return price >= _minPrice! && price <= _maxPrice!;
       }).toList();
     }
+
 
     // Re-sort if any filter applied (including favorites)
     final hasFilters = _typeIndex >= 0 ||
@@ -204,6 +241,7 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
         _chargesInclOnly ||
         _carParkOnly ||
         _favoritesOnly;
+
     if (hasFilters) {
       switch (_sortIndex) {
         case 1:
@@ -219,7 +257,6 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
             final bCreated = b.data()['createdAt'] ?? '';
             return bCreated.compareTo(aCreated);
           });
-          break;
       }
     }
 
@@ -250,40 +287,15 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
     if (surface != '0' && surface.isNotEmpty) {
       title += ' - ${surface}m²';
     }
-
     if (city.isNotEmpty) {
       title += ' in $city';
     }
-
     return title;
   }
 
-  String get _pageTitle {
-    switch (widget.mode) {
-      case ListingsMode.all:
-        return 'All Properties';
-      case ListingsMode.owner:
-        return 'My Properties';
-    }
-  }
-
-  String get _emptyStateMessage {
-    switch (widget.mode) {
-      case ListingsMode.all:
-        return 'No listings match your filters';
-      case ListingsMode.owner:
-        return 'You have no listings yet';
-    }
-  }
-
-  String get _emptyStateSubMessage {
-    switch (widget.mode) {
-      case ListingsMode.all:
-        return 'Try adjusting filters or clearing the search.';
-      case ListingsMode.owner:
-        return 'Create your first listing to get started.';
-    }
-  }
+  String get _pageTitle => widget.mode == ListingsMode.all ? 'All Properties' : 'My Properties';
+  String get _emptyStateMessage => widget.mode == ListingsMode.all ? 'No listings match your filters' : 'You have no listings yet';
+  String get _emptyStateSubMessage => widget.mode == ListingsMode.all ? 'Try adjusting filters or clearing the search.' : 'Create your first listing to get started.';
 
   Future<void> _toggleFavorite(String listingId, bool isCurrentlyFavorite) async {
     final uid = FirebaseAuth.instance.currentUser?.uid;
@@ -368,8 +380,10 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
                       wifiOnly: _wifiOnly,
                       chargesInclOnly: _chargesInclOnly,
                       carParkOnly: _carParkOnly,
+
                       favoritesOnly: _favoritesOnly,
                       minPrice: _minPrice ?? (_globalMinPrice ?? 0),
+
                       maxPrice: _maxPrice ?? (_globalMaxPrice ?? 10000),
                       globalMinPrice: _globalMinPrice,
                       globalMaxPrice: _globalMaxPrice,
@@ -381,6 +395,7 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
                         _chargesInclOnly = f.chargesInclOnly;
                         _carParkOnly = f.carParkOnly;
                         _favoritesOnly = f.favoritesOnly;
+
                         _minPrice = f.minPrice;
                         _maxPrice = f.maxPrice;
                       }),
@@ -390,9 +405,11 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
 
                 // Listings stream
                 StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+
                   stream: _listingsStream,
                   builder: (context, listingsSnap) {
                     if (listingsSnap.connectionState == ConnectionState.waiting) {
+
                       return const SliverFillRemaining(
                         hasScrollBody: false,
                         child: Center(child: CircularProgressIndicator()),
@@ -416,6 +433,20 @@ class _ListingsPageState extends State<ListingsPage> with AutomaticKeepAliveClie
                         final favIds = favSnap.data ?? <String>{};
 
                         final filtered = _applyClientSideFilters(docs, favIds);
+                    // Responsive grid
+                    int crossAxisCount = 1;
+                    double childAspectRatio = 1.1;
+                    final w = constraints.maxWidth;
+                    if (w >= 1400) {
+                      crossAxisCount = 4;
+                      childAspectRatio = 0.95;
+                    } else if (w >= 1000) {
+                      crossAxisCount = 3;
+                      childAspectRatio = 1.0;
+                    } else if (w >= 700) {
+                      crossAxisCount = 2;
+                      childAspectRatio = 1.05;
+                    }
 
                         if (filtered.isEmpty) {
                           return SliverFillRemaining(
@@ -566,11 +597,11 @@ class _FilterBar extends StatelessWidget {
           runSpacing: 12,
           crossAxisAlignment: WrapCrossAlignment.center,
           children: [
-            // Type segmented
+            // Type
             ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 480),
               child: MoonSegmentedControl(
-                initialIndex: typeIndex < 0 ? 2 : typeIndex, // hack to allow All
+                initialIndex: typeIndex < 0 ? 2 : typeIndex, // All hack
                 segments: const [
                   Segment(label: Text('Entire home')),
                   Segment(label: Text('Single room')),
@@ -594,7 +625,7 @@ class _FilterBar extends StatelessWidget {
               ),
             ),
 
-            // Sort segmented
+            // Sort
             ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 520),
               child: MoonSegmentedControl(
@@ -705,6 +736,7 @@ class _FilterBar extends StatelessWidget {
           const Text(
             "Price range (CHF)",
             style: TextStyle(fontWeight: FontWeight.bold),
+
           ),
           RangeSlider(
             values: RangeValues(minPrice, maxPrice),
@@ -823,7 +855,6 @@ class _EmptyState extends StatelessWidget {
           const SizedBox(height: 16),
           ElevatedButton.icon(
             onPressed: () {
-              // Adapte selon ta navigation si tu n'utilises pas de routes nommées.
               Navigator.of(context).pushNamed('/newListing');
             },
             icon: const Icon(Icons.add),
@@ -875,6 +906,75 @@ class _ListingCard extends StatelessWidget {
       if (data['car_park'] == true) 'Car park',
     ];
 
+    Widget _starsRow(BuildContext context, double avg, int count) {
+      final cs = Theme.of(context).colorScheme;
+      final full = avg.round().clamp(0, 5);
+      return Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ...List.generate(5, (i) {
+            final filled = i < full;
+            return Padding(
+              padding: const EdgeInsets.only(right: 2),
+              child: Icon(
+                filled ? Icons.star_rounded : Icons.star_border_rounded,
+                size: 16,
+                color: filled ? cs.primary : cs.onSurface.withOpacity(.35),
+              ),
+            );
+          }),
+          const SizedBox(width: 6),
+          Text(
+            count == 0 ? 'No ratings' : '${avg.toStringAsFixed(1)} ($count)',
+            style: TextStyle(
+              fontSize: 12,
+              color: cs.onSurface.withOpacity(.8),
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      );
+    }
+
+    final ratingsPreview = StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: FirebaseFirestore.instance
+          .collection('listing_reviews') // Changé de 'ratings' à 'listing_reviews'
+          .where('listingId', isEqualTo: listingId)
+          .snapshots(),
+      builder: (context, snap) {
+        double avg = 0;
+        int count = 0;
+        if (snap.hasData) {
+          final docs = snap.data!.docs;
+          count = docs.length;
+          if (count > 0) {
+            final sum = docs.fold<double>(
+              0.0,
+              (acc, d) => acc + ((d.data()['rating'] as num?)?.toDouble() ?? 0.0), // Changé de 'stars' à 'rating'
+            );
+            avg = sum / count;
+          }
+        }
+        return InkWell(
+          onTap: () {
+            Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => RateListingPage(
+                  listingId: listingId,
+                  allowAdd: false, 
+                ),
+              ),
+            );
+          },
+          borderRadius: BorderRadius.circular(8),
+          child: Padding(
+            padding: const EdgeInsets.only(top: 6.0, bottom: 2.0),
+            child: _starsRow(context, avg, count),
+          ),
+        );
+      },
+    );
+
     return InkWell(
       onTap: () {
         Navigator.of(context).push(
@@ -901,7 +1001,6 @@ class _ListingCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Image + favorite btn
             Expanded(
               flex: 6,
               child: Stack(
@@ -969,6 +1068,7 @@ class _ListingCard extends StatelessWidget {
                     ),
                     const SizedBox(height: 6),
 
+                    // Prix + type
                     Row(
                       children: [
                         Text(
@@ -981,10 +1081,7 @@ class _ListingCard extends StatelessWidget {
                         const SizedBox(width: 8),
                         Flexible(
                           child: Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 6,
-                              vertical: 2,
-                            ),
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                             decoration: BoxDecoration(
                               color: cs.primary.withOpacity(.12),
                               borderRadius: BorderRadius.circular(6),
@@ -1005,14 +1102,12 @@ class _ListingCard extends StatelessWidget {
                       ],
                     ),
 
-                    const SizedBox(height: 4),
+                    ratingsPreview,
+
+                    const SizedBox(height: 2),
                     Row(
                       children: [
-                        Icon(
-                          Icons.place,
-                          size: 13,
-                          color: cs.onSurface.withOpacity(.7),
-                        ),
+                        Icon(Icons.place, size: 13, color: cs.onSurface.withOpacity(.7)),
                         const SizedBox(width: 4),
                         Expanded(
                           child: Text(
@@ -1028,22 +1123,14 @@ class _ListingCard extends StatelessWidget {
 
                     Row(
                       children: [
-                        Icon(
-                          Icons.square_foot,
-                          size: 13,
-                          color: cs.onSurface.withOpacity(.7),
-                        ),
+                        Icon(Icons.square_foot, size: 13, color: cs.onSurface.withOpacity(.7)),
                         const SizedBox(width: 4),
                         Text(
                           surface.isNotEmpty ? '$surface m²' : '—',
                           style: TextStyle(fontSize: 12, color: cs.onSurface.withOpacity(.8)),
                         ),
                         const SizedBox(width: 12),
-                        Icon(
-                          Icons.meeting_room,
-                          size: 13,
-                          color: cs.onSurface.withOpacity(.7),
-                        ),
+                        Icon(Icons.meeting_room, size: 13, color: cs.onSurface.withOpacity(.7)),
                         const SizedBox(width: 4),
                         Text(
                           rooms.isNotEmpty ? '$rooms rooms' : '—',
@@ -1063,23 +1150,15 @@ class _ListingCard extends StatelessWidget {
                                   (a) => Padding(
                                     padding: const EdgeInsets.only(right: 4),
                                     child: Container(
-                                      padding: const EdgeInsets.symmetric(
-                                        horizontal: 6,
-                                        vertical: 2,
-                                      ),
+                                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                                       decoration: BoxDecoration(
                                         color: cs.primary.withOpacity(.08),
                                         borderRadius: BorderRadius.circular(999),
-                                        border: Border.all(
-                                          color: cs.primary.withOpacity(.18),
-                                        ),
+                                        border: Border.all(color: cs.primary.withOpacity(.18)),
                                       ),
                                       child: Text(
                                         a,
-                                        style: const TextStyle(
-                                          fontSize: 10,
-                                          fontWeight: FontWeight.w600,
-                                        ),
+                                        style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w600),
                                       ),
                                     ),
                                   ),

@@ -1,13 +1,23 @@
-// lib/ui/view_listing_page.dart
 import 'dart:math' as math;
 import 'dart:convert';
+import 'dart:io' show Platform;
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:moon_design/moon_design.dart';
 import 'package:http/http.dart' as http;
+import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'package:phone_numbers_parser/phone_numbers_parser.dart';
 
+import 'rate_listing_page.dart';
 import 'edit_listing_page.dart';
+
+// Clé Google (Directions + Places)
+final _googleMapsApiKey = dotenv.env['GOOGLE_API_KEY'] ?? '';
+
+const _hesCollection = 'schools';
 
 class ViewListingPage extends StatefulWidget {
   final String listingId;
@@ -21,7 +31,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
   bool _loading = true;
   String? _error;
 
-  // Données
+  // Données listing
   String _ownerUid = '';
   String _address = '';
   String _city = '';
@@ -37,15 +47,32 @@ class _ViewListingPageState extends State<ViewListingPage> {
   String _type = 'room';
   double? _distTransportKm;
 
+  // Géoloc
   double? _latitude;
   double? _longitude;
-  double? _proximHesKm;
-  String? _nearestHesId;
 
+  // HES (vol d’oiseau)
+  double? _proximHesKm;
+  String? _nearestHesId;   // id Firestore dans `schools`
+  String? _nearestHesName; // name résolu depuis `schools`
+  bool _computingHes = false;
+
+  // Transport public → HES (prochaines 2h)
+  bool _loadingPt = false;
+  String? _ptError;
+  List<_TransitRoute> _ptRoutes = [];
+
+  // Bars à proximité (Places API v1)
+  bool _loadingBars = false;
+  String? _barsError;
+  List<_NearbyPlace> _bars = [];
+
+  // Dispo & photos
   DateTime? _availStart;
   DateTime? _availEnd;
   List<String> _photos = [];
 
+  // Estimation prix
   bool _estimatingPrice = false;
   double? _estimatedPrice;
   String? _estimateError;
@@ -55,31 +82,84 @@ class _ViewListingPageState extends State<ViewListingPage> {
   static DateTime _monthDate(DateTime d) => DateTime(d.year, d.month);
   DateTime _dateOnly(DateTime d) => DateTime(d.year, d.month, d.day);
 
-  // Carrousel
+  // Carrousels
   late final PageController _photoCtrl;
 
-  // Stream favoris (link-table favorites)
+  // ---- Favoris (link-table `favorites`) ----
   late final Stream<bool> _favStream;
+
+  // Carrousels PT & Bars + états
+  late final PageController _ptCtrl = PageController(viewportFraction: 1.0);
+  late final PageController _barsCtrl = PageController(viewportFraction: 1.0);
+  int _ptPage = 0;
+  int _barsPage = 0;
+  int? _expandedBarIndex;
+
+  // Réservations (formulaire)
+  List<Map<String, dynamic>> _bookedDates = [];
+  final TextEditingController _messageController = TextEditingController();
+  final TextEditingController _phoneController = TextEditingController();
+  final TextEditingController _startDateController = TextEditingController();
+  final TextEditingController _endDateController = TextEditingController();
+  DateTime? _selectedStart;
+  DateTime? _selectedEnd;
+  bool _submittingBooking = false;
+
+  // Validation téléphone
+  String? _phoneError;
+  bool _isValidPhone = false;
+
+  // Notes
+  int _rating = 0;
 
   bool get _isOwner =>
       FirebaseAuth.instance.currentUser?.uid != null &&
       FirebaseAuth.instance.currentUser!.uid == _ownerUid;
+
+  bool get _isStudent =>
+      FirebaseAuth.instance.currentUser != null && !_isOwner;
+
+  Future<void> _loadMyExistingReviewIfAny() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    final query = await FirebaseFirestore.instance
+        .collection('listing_reviews')
+        .where('listingId', isEqualTo: widget.listingId)
+        .where('studentUid', isEqualTo: user.uid)
+        .get();
+
+    if (query.docs.isNotEmpty) {
+      final data = query.docs.first.data();
+      setState(() {
+        _rating = (data['rating'] as num?)?.toInt() ?? 0;
+      });
+    }
+  }
 
   @override
   void initState() {
     super.initState();
     _photoCtrl = PageController(viewportFraction: 0.92);
     _favStream = _favoriteStream();
+    _phoneController.addListener(_validatePhoneNumber);
     _load();
+    _loadMyExistingReviewIfAny();
   }
 
   @override
   void dispose() {
     _photoCtrl.dispose();
+    _ptCtrl.dispose();
+    _barsCtrl.dispose();
+    _messageController.dispose();
+    _phoneController.dispose();
+    _startDateController.dispose();
+    _endDateController.dispose();
     super.dispose();
   }
 
-  // --- FAVORITES (link table) ---
+  // --- FAVORITES (link table) ------------------------------------------------
   Stream<bool> _favoriteStream() {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) return Stream.value(false);
@@ -119,7 +199,66 @@ class _ViewListingPageState extends State<ViewListingPage> {
       );
     }
   }
-  // --- /FAVORITES ---
+  // --------------------------------------------------------------------------
+
+  // Dots helper (PageView)
+  Widget _dots(BuildContext context, {required int count, required int index}) {
+    final cs = Theme.of(context).colorScheme;
+    if (count <= 1) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: List.generate(count, (i) {
+          final active = i == index;
+          return Container(
+            width: active ? 10 : 8,
+            height: active ? 10 : 8,
+            margin: const EdgeInsets.symmetric(horizontal: 4),
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: active ? cs.primary : cs.primary.withOpacity(.25),
+            ),
+          );
+        }),
+      ),
+    );
+  }
+
+  void _validatePhoneNumber() {
+    final phoneText = _phoneController.text.trim();
+    if (phoneText.isEmpty) {
+      setState(() {
+        _phoneError = null;
+        _isValidPhone = true; // optionnel → vide = ok
+      });
+      return;
+    }
+    try {
+      PhoneNumber phoneNumber;
+      if (phoneText.startsWith('+')) {
+        phoneNumber = PhoneNumber.parse(phoneText);
+      } else {
+        phoneNumber = PhoneNumber.parse(phoneText, destinationCountry: IsoCode.CH);
+      }
+      if (phoneNumber.isValid()) {
+        setState(() {
+          _phoneError = null;
+          _isValidPhone = true;
+        });
+      } else {
+        setState(() {
+          _phoneError = 'Invalid phone number format';
+          _isValidPhone = false;
+        });
+      }
+    } catch (_) {
+      setState(() {
+        _phoneError = 'Invalid phone number format';
+        _isValidPhone = false;
+      });
+    }
+  }
 
   Future<void> _load() async {
     try {
@@ -158,8 +297,11 @@ class _ViewListingPageState extends State<ViewListingPage> {
 
       _latitude = (m['latitude'] as num?)?.toDouble();
       _longitude = (m['longitude'] as num?)?.toDouble();
+
+      // Champs persistant
       _proximHesKm = (m['proxim_hesso_km'] as num?)?.toDouble();
       _nearestHesId = (m['nearest_hesso_id'] ?? '').toString();
+      _nearestHesName = null;
 
       final tsStart = m['availability_start'] as Timestamp?;
       final tsEnd = m['availability_end'] as Timestamp?;
@@ -169,15 +311,97 @@ class _ViewListingPageState extends State<ViewListingPage> {
       final List photos = (m['photos'] as List?) ?? const [];
       _photos = photos.map((e) => e.toString()).toList();
 
+      await _loadBookedDates();
+
       setState(() {
         _loading = false;
         if (_availStart != null) _shownMonth = _monthDate(_availStart!);
       });
+
+      await _ensureNearestSchool();
+      _autoLoadSections();
     } catch (e) {
       setState(() {
         _error = 'Failed to load listing: $e';
         _loading = false;
       });
+    }
+  }
+
+  Future<void> _ensureNearestSchool() async {
+    if (_latitude != null &&
+        _longitude != null &&
+        (_proximHesKm == null || (_nearestHesId ?? '').isEmpty)) {
+      await _computeNearestHes(persist: true);
+    }
+    if ((_nearestHesId ?? '').isNotEmpty && _nearestHesName == null) {
+      await _resolveHesNameById(_nearestHesId!);
+    }
+  }
+
+  void _autoLoadSections() {
+    if (_latitude != null && _longitude != null) {
+      _loadPtRoutesNext2h();
+      _loadNearbyBars();
+    }
+  }
+
+  Future<void> _loadBookedDates() async {
+    try {
+      final snapshot = await FirebaseFirestore.instance
+          .collection('booking_requests')
+          .where('listingId', isEqualTo: widget.listingId)
+          .where('status', isEqualTo: 'approved')
+          .get();
+
+      _bookedDates = snapshot.docs.map((doc) {
+        final data = doc.data();
+        return {
+          'id': doc.id,
+          'startDate': (data['startDate'] as Timestamp).toDate(),
+          'endDate': (data['endDate'] as Timestamp).toDate(),
+        };
+      }).toList();
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  bool _isDateBooked(DateTime day) {
+    final d = _dateOnly(day);
+    for (final booking in _bookedDates) {
+      final start = _dateOnly(booking['startDate']);
+      final end = _dateOnly(booking['endDate']);
+      if (!d.isBefore(start) && !d.isAfter(end)) return true;
+    }
+    return false;
+  }
+
+  bool _isDateAvailableForSelection(DateTime day) {
+    return _isAvailableOn(day) && !_isDateBooked(day);
+  }
+
+  Future<bool> _checkBookingConflict(DateTime startDate, DateTime endDate) async {
+    try {
+      final snapshot = await FirebaseFirestore.instance
+          .collection('booking_requests')
+          .where('listingId', isEqualTo: widget.listingId)
+          .where('status', isEqualTo: 'approved')
+          .get();
+
+      for (final doc in snapshot.docs) {
+        final data = doc.data();
+        final existingStart = _dateOnly((data['startDate'] as Timestamp).toDate());
+        final existingEnd = _dateOnly((data['endDate'] as Timestamp).toDate());
+        final reqStart = _dateOnly(startDate);
+        final reqEnd = _dateOnly(endDate);
+        if (!(reqEnd.isBefore(existingStart) || reqStart.isAfter(existingEnd))) {
+          return true;
+        }
+      }
+      return false;
+    } catch (_) {
+      return true;
     }
   }
 
@@ -189,9 +413,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
         _floor == null ||
         _distTransportKm == null ||
         _proximHesKm == null) {
-      setState(() {
-        _estimateError = 'Missing data for estimation';
-      });
+      setState(() => _estimateError = 'Missing data for estimation');
       return;
     }
 
@@ -215,7 +437,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
           "car_park": _carPark,
           "dist_public_transport_km": _distTransportKm!,
           "proxim_hesso_km": _proximHesKm!,
-        }
+        },
       ];
 
       final response = await http.post(
@@ -226,9 +448,12 @@ class _ViewListingPageState extends State<ViewListingPage> {
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
-        if (data is List && data.isNotEmpty && data[0]['predicted_price_chf'] != null) {
+        if (data is List &&
+            data.isNotEmpty &&
+            data[0]['predicted_price_chf'] != null) {
           setState(() {
-            _estimatedPrice = (data[0]['predicted_price_chf'] as num).toDouble();
+            _estimatedPrice =
+                (data[0]['predicted_price_chf'] as num).toDouble();
             _estimatingPrice = false;
           });
         } else {
@@ -251,6 +476,337 @@ class _ViewListingPageState extends State<ViewListingPage> {
     }
   }
 
+  // --- HES helpers -----------------------------------------------------------
+
+  double _deg2rad(double d) => d * math.pi / 180.0;
+
+  double _haversineKm(double lat1, double lon1, double lat2, double lon2) {
+    const earthRadiusKm = 6371.0;
+    final dLat = _deg2rad(lat2 - lat1);
+    final dLon = _deg2rad(lon2 - lon1);
+    final a = math.sin(dLat / 2) * math.sin(dLat / 2) +
+        math.cos(_deg2rad(lat1)) *
+            math.cos(_deg2rad(lat2)) *
+            math.sin(dLon / 2) *
+            math.sin(dLon / 2);
+    final c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a));
+    return earthRadiusKm * c;
+  }
+
+  Future<void> _resolveHesNameById(String campusId) async {
+    try {
+      final doc = await FirebaseFirestore.instance
+          .collection(_hesCollection)
+          .doc(campusId)
+          .get();
+      if (doc.exists) {
+        final name = (doc.data()?['name'] ?? '').toString();
+        if (mounted) {
+          setState(() {
+            _nearestHesName = name.isEmpty ? campusId : name;
+          });
+        }
+      } else {
+        await _computeNearestHes(persist: true);
+      }
+    } catch (_) {/* no-op */}
+  }
+
+  Future<void> _computeNearestHes({bool persist = true}) async {
+    if (_latitude == null || _longitude == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Missing listing coordinates')),
+      );
+      return;
+    }
+
+    setState(() => _computingHes = true);
+    try {
+      final query = await FirebaseFirestore.instance
+          .collection(_hesCollection)
+          .get();
+
+      if (query.docs.isEmpty) {
+        throw Exception('No school records found in "$_hesCollection".');
+      }
+
+      double bestKm = double.infinity;
+      String? bestId;
+      String? bestName;
+
+      for (final d in query.docs) {
+        final m = d.data();
+        final lat = (m['latitude'] as num?)?.toDouble();
+        final lon = (m['longitude'] as num?)?.toDouble();
+        final name = (m['name'] ?? '').toString();
+        if (lat == null || lon == null) continue;
+
+        final km = _haversineKm(_latitude!, _longitude!, lat, lon);
+        if (km < bestKm) {
+          bestKm = km;
+          bestId = d.id;
+          bestName = name.isEmpty ? d.id : name;
+        }
+      }
+
+      if (bestId == null) {
+        throw Exception('No valid school coordinates found.');
+      }
+
+      setState(() {
+        _proximHesKm = double.parse(bestKm.toStringAsFixed(3));
+        _nearestHesId = bestId;
+        _nearestHesName = bestName;
+      });
+
+      if (persist) {
+        await FirebaseFirestore.instance
+            .collection('listings')
+            .doc(widget.listingId)
+            .update({
+          'proxim_hesso_km': _proximHesKm,
+          'nearest_hesso_id': _nearestHesId,
+        });
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to compute nearest school: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _computingHes = false);
+    }
+  }
+
+  // --- Directions (transit) next 2h -----------------------------------------
+
+  Future<void> _loadPtRoutesNext2h() async {
+    if (_latitude == null || _longitude == null) {
+      setState(() => _ptError = 'Missing listing coordinates');
+      return;
+    }
+    if (_nearestHesId == null || _nearestHesId!.isEmpty) {
+      await _computeNearestHes(persist: true);
+      if (_nearestHesId == null || _nearestHesId!.isEmpty) {
+        setState(() => _ptError = 'No school found for this listing');
+        return;
+      }
+    }
+    if (_googleMapsApiKey.isEmpty) {
+      setState(() => _ptError = 'Google Directions API key missing.');
+      return;
+    }
+
+    final hesDoc = await FirebaseFirestore.instance
+        .collection(_hesCollection)
+        .doc(_nearestHesId!)
+        .get();
+
+    if (!hesDoc.exists) {
+      await _computeNearestHes(persist: true);
+    }
+    final docToUse = hesDoc.exists
+        ? hesDoc
+        : await FirebaseFirestore.instance
+            .collection(_hesCollection)
+            .doc(_nearestHesId!)
+            .get();
+
+    final schoolData = docToUse.data()!;
+    final hesLat = (schoolData['latitude'] as num?)?.toDouble();
+    final hesLon = (schoolData['longitude'] as num?)?.toDouble();
+    final hesName = (schoolData['name'] ?? '').toString();
+
+    if (hesLat == null || hesLon == null) {
+      setState(() => _ptError = 'School has no coordinates');
+      return;
+    }
+
+    setState(() {
+      _nearestHesName = (hesName.isEmpty ? _nearestHesId! : hesName);
+      _ptError = null;
+      _loadingPt = true;
+      _ptRoutes = [];
+      _ptPage = 0;
+    });
+
+    try {
+      final now = DateTime.now();
+      final horizon = now.add(const Duration(hours: 2));
+      final anchors = <DateTime>[];
+      var cursor = now;
+      while (cursor.isBefore(horizon) && anchors.length < 6) {
+        anchors.add(cursor);
+        cursor = cursor.add(const Duration(minutes: 20));
+      }
+
+      final results = <_TransitRoute>[];
+      for (final dt in anchors) {
+        final secs = (dt.millisecondsSinceEpoch / 1000).round();
+        final uri = Uri.https('maps.googleapis.com', '/maps/api/directions/json', {
+          'origin': '${_latitude!},${_longitude!}',
+          'destination': '$hesLat,$hesLon',
+          'mode': 'transit',
+          'alternatives': 'true',
+          'transit_routing_preference': 'less_walking',
+          'language': 'en',
+          'departure_time': '$secs',
+          'key': _googleMapsApiKey,
+        });
+
+        final resp = await http.get(uri);
+        if (resp.statusCode != 200) {
+          setState(() => _ptError = 'HTTP ${resp.statusCode}: ${resp.body}');
+          continue;
+        }
+        final jd = jsonDecode(resp.body);
+        if (jd['status'] != 'OK' || jd['routes'] == null) {
+          final em = (jd['error_message'] ?? '').toString();
+          setState(() => _ptError = 'Directions status: ${jd['status']}${em.isNotEmpty ? ' • $em' : ''}');
+          continue;
+        }
+
+        for (final r in jd['routes']) {
+          final leg = (r['legs'] as List).first;
+          final route = _TransitRoute.fromGoogle(leg, r);
+          if (route == null) continue;
+          if (route.departureTime.isAfter(horizon)) continue;
+
+          final key = '${route.departureTime.millisecondsSinceEpoch}-${route.summary}';
+          if (!results.any((x) => x._dedupeKey == key)) {
+            results.add(route.._dedupeKey = key);
+          }
+        }
+      }
+
+      results.sort((a, b) => a.departureTime.compareTo(b.departureTime));
+
+      setState(() {
+        _ptRoutes = results.take(12).toList();
+        _loadingPt = false;
+        if (_ptRoutes.isEmpty && _ptError == null) {
+          _ptError = 'No scheduled routes found in the next 2 hours.';
+        }
+      });
+    } catch (e) {
+      setState(() {
+        _ptError = 'Failed to load transit routes: $e';
+        _loadingPt = false;
+      });
+    }
+  }
+
+  // --- Places API v1 Nearby Bars --------------------------------------------
+
+  Future<void> _loadNearbyBars() async {
+    if (_latitude == null || _longitude == null) {
+      setState(() => _barsError = 'Missing listing coordinates');
+      return;
+    }
+    if (_googleMapsApiKey.isEmpty) {
+      setState(() => _barsError = 'Google Places API key missing.');
+      return;
+    }
+
+    setState(() {
+      _loadingBars = true;
+      _barsError = null;
+      _bars = [];
+      _barsPage = 0;
+      _expandedBarIndex = null;
+    });
+
+    try {
+      final url = Uri.parse('https://places.googleapis.com/v1/places:searchNearby');
+
+      final body = {
+        "includedTypes": ["bar"],
+        "maxResultCount": 15,
+        "locationRestriction": {
+          "circle": {
+            "center": {"latitude": _latitude, "longitude": _longitude},
+            "radius": 1500.0,
+          },
+        },
+      };
+
+      final headers = {
+        'Content-Type': 'application/json',
+        'X-Goog-Api-Key': _googleMapsApiKey,
+        'X-Goog-FieldMask':
+            'places.displayName,places.formattedAddress,places.rating,places.userRatingCount,places.location,places.types',
+      };
+
+      final resp = await http.post(url, headers: headers, body: jsonEncode(body));
+
+      if (resp.statusCode != 200) {
+        setState(() {
+          _barsError = 'HTTP ${resp.statusCode}: ${resp.body}';
+          _loadingBars = false;
+        });
+        return;
+      }
+
+      final jd = jsonDecode(resp.body);
+      final List items = (jd['places'] as List?) ?? const [];
+
+      final parsed = <_NearbyPlace>[];
+      for (final p in items) {
+        final name = (p['displayName']?['text'] ?? '').toString();
+        final addr = (p['formattedAddress'] ?? '').toString();
+        final rating = (p['rating'] as num?)?.toDouble();
+        final urc = (p['userRatingCount'] as num?)?.toInt();
+        final plat = (p['location']?['latitude'] as num?)?.toDouble();
+        final plon = (p['location']?['longitude'] as num?)?.toDouble();
+        if (plat == null || plon == null || name.isEmpty) continue;
+
+        final km = _haversineKm(_latitude!, _longitude!, plat, plon);
+        parsed.add(
+          _NearbyPlace(
+            name: name,
+            address: addr,
+            rating: rating,
+            ratingCount: urc,
+            latitude: plat,
+            longitude: plon,
+            distanceKm: double.parse(km.toStringAsFixed(2)),
+          ),
+        );
+      }
+
+      // Dedup (name, address)
+      final seen = <String>{};
+      final deduped = <_NearbyPlace>[];
+      for (final p in parsed) {
+        final k = '${p.name.toLowerCase()}|${p.address.toLowerCase()}';
+        if (seen.add(k)) deduped.add(p);
+      }
+
+      // Sort by rating desc, then count desc, then distance asc
+      deduped.sort((a, b) {
+        final ar = a.rating ?? -1.0;
+        final br = b.rating ?? -1.0;
+        if (ar != br) return br.compareTo(ar);
+        final arc = a.ratingCount ?? -1;
+        final brc = b.ratingCount ?? -1;
+        if (arc != brc) return brc.compareTo(arc);
+        return a.distanceKm.compareTo(b.distanceKm);
+      });
+
+      setState(() {
+        _bars = deduped.take(20).toList();
+        _loadingBars = false;
+        if (_bars.isEmpty) _barsError = 'No bars found nearby.';
+      });
+    } catch (e) {
+      setState(() {
+        _barsError = 'Failed to load nearby bars: $e';
+        _loadingBars = false;
+      });
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+
   // Calendrier
   bool _isAvailableOn(DateTime day) {
     if (_availStart == null) return false;
@@ -270,6 +826,8 @@ class _ViewListingPageState extends State<ViewListingPage> {
     final d = DateTime(_shownMonth.year, _shownMonth.month + 1);
     setState(() => _shownMonth = _monthDate(d));
   }
+
+  void _onDateTap(DateTime date) {}
 
   List<Widget> _buildCalendar(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
@@ -302,24 +860,36 @@ class _ViewListingPageState extends State<ViewListingPage> {
     for (var day = 1; day <= daysInMonth; day++) {
       final date = DateTime(_shownMonth.year, _shownMonth.month, day);
       final available = _isAvailableOn(date);
+      final isBooked = _isDateBooked(date);
+
+      Color bgColor = Colors.transparent;
+      Color borderColor = cs.primary.withOpacity(.12);
+      Color textColor = cs.onSurface;
+
+      if (isBooked) {
+        bgColor = Colors.red.withOpacity(.2);
+        borderColor = Colors.red.withOpacity(.5);
+        textColor = Colors.red;
+      } else if (available) {
+        bgColor = cs.primary.withOpacity(.12);
+        borderColor = cs.primary.withOpacity(.45);
+        textColor = cs.primary;
+      }
 
       items.add(
         Container(
           margin: const EdgeInsets.all(4),
           decoration: BoxDecoration(
-            color: available ? cs.primary.withOpacity(.12) : Colors.transparent,
+            color: bgColor,
             borderRadius: BorderRadius.circular(10),
-            border: Border.all(
-              color: available ? cs.primary.withOpacity(.45) : cs.primary.withOpacity(.12),
-              width: 1,
-            ),
+            border: Border.all(color: borderColor, width: 1),
           ),
           child: Center(
             child: Text(
               '$day',
               style: TextStyle(
                 fontWeight: FontWeight.w600,
-                color: available ? cs.primary : cs.onSurface,
+                color: textColor,
               ),
             ),
           ),
@@ -328,6 +898,379 @@ class _ViewListingPageState extends State<ViewListingPage> {
     }
 
     return items;
+  }
+
+  // Ratings preview
+  Widget _starsRow(BuildContext context, int value, double avg, int count) {
+    final cs = Theme.of(context).colorScheme;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        ...List.generate(5, (i) {
+          final idx = i + 1;
+          final filled = idx <= avg.round();
+          final icon = filled ? Icons.star_rounded : Icons.star_border_rounded;
+          final color = filled ? cs.primary : cs.onSurface.withOpacity(.35);
+          return Icon(icon, size: 16, color: color);
+        }),
+        const SizedBox(width: 6),
+        Text(
+          count == 0 ? 'No ratings' : '${avg.toStringAsFixed(1)} ($count)',
+          style: TextStyle(
+            fontSize: 12,
+            color: cs.onSurface.withOpacity(.8),
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildRatingsPreview(BuildContext context) {
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: FirebaseFirestore.instance
+          .collection('listing_reviews')
+          .where('listingId', isEqualTo: widget.listingId)
+          .snapshots(),
+      builder: (context, snap) {
+        double avg = 0;
+        int count = 0;
+        if (snap.hasData) {
+          final docs = snap.data!.docs;
+          count = docs.length;
+          if (count > 0) {
+            final sum = docs.fold<double>(
+              0.0,
+              (acc, d) => acc + ((d.data()['rating'] as num?)?.toDouble() ?? 0.0),
+            );
+            avg = sum / count;
+          }
+        }
+        return InkWell(
+          onTap: () {
+            Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => RateListingPage(
+                  listingId: widget.listingId,
+                  allowAdd: false,
+                ),
+              ),
+            );
+          },
+          borderRadius: BorderRadius.circular(8),
+          child: Padding(
+            padding: const EdgeInsets.only(top: 6.0, bottom: 2.0),
+            child: _starsRow(context, avg.round(), avg, count),
+          ),
+        );
+      },
+    );
+  }
+
+  // --- Open place in Maps ----------------------------------------------------
+
+  Future<void> _openPlaceInMaps(_NearbyPlace p) async {
+    final lat = p.latitude.toStringAsFixed(6);
+    final lon = p.longitude.toStringAsFixed(6);
+    final encodedQuery = Uri.encodeComponent('${p.name}, ${p.address}');
+
+    final List<Uri> candidates;
+    if (kIsWeb) {
+      candidates = [
+        Uri.parse('https://www.google.com/maps/search/?api=1&query=$lat,$lon'),
+      ];
+    } else if (Platform.isIOS) {
+      candidates = [
+        Uri.parse('comgooglemaps://?q=$lat,$lon&center=$lat,$lon&zoom=16'),
+        Uri.parse('maps://?q=$encodedQuery&ll=$lat,$lon'),
+        Uri.parse('https://www.google.com/maps/search/?api=1&query=$lat,$lon'),
+      ];
+    } else if (Platform.isAndroid) {
+      candidates = [
+        Uri.parse('geo:$lat,$lon?q=$encodedQuery'),
+        Uri.parse('https://www.google.com/maps/search/?api=1&query=$lat,$lon'),
+      ];
+    } else {
+      candidates = [
+        Uri.parse('https://www.google.com/maps/search/?api=1&query=$lat,$lon'),
+      ];
+    }
+
+    for (final uri in candidates) {
+      try {
+        final launched = await launchUrl(
+          uri,
+          mode: kIsWeb ? LaunchMode.platformDefault : LaunchMode.externalApplication,
+          webOnlyWindowName: kIsWeb ? '_blank' : null,
+        );
+        if (launched) return;
+      } catch (_) {}
+    }
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not open Google Maps')),
+      );
+    }
+  }
+
+  Widget _buildBookingPanel(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      margin: const EdgeInsets.only(top: 16),
+      decoration: BoxDecoration(
+        color: Theme.of(context).cardColor,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Theme.of(context).colorScheme.primary.withOpacity(0.3)),
+        boxShadow: [
+          BoxShadow(
+            color: Theme.of(context).colorScheme.primary.withOpacity(0.1),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            'Book your stay',
+            style: TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.w800,
+              color: Theme.of(context).colorScheme.onSurface,
+            ),
+          ),
+          const SizedBox(height: 16),
+
+          // Start Date
+          TextField(
+            readOnly: true,
+            controller: _startDateController,
+            decoration: InputDecoration(
+              labelText: 'Start Date',
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+              contentPadding: const EdgeInsets.all(12),
+              suffixIcon: const Icon(Icons.calendar_today),
+            ),
+            onTap: () async {
+              final picked = await showDatePicker(
+                context: context,
+                initialDate: _selectedStart ?? (_availStart ?? DateTime.now()),
+                firstDate: _availStart ?? DateTime.now(),
+                lastDate: _availEnd ?? DateTime.now().add(const Duration(days: 365)),
+                selectableDayPredicate: _isDateAvailableForSelection,
+              );
+              if (picked != null) {
+                setState(() {
+                  _selectedStart = picked;
+                  _startDateController.text = _fmt(picked);
+                  if (_selectedEnd != null && _selectedEnd!.isBefore(picked)) {
+                    _selectedEnd = null;
+                    _endDateController.text = '';
+                  }
+                });
+              }
+            },
+          ),
+          const SizedBox(height: 12),
+
+          // End Date
+          TextField(
+            readOnly: true,
+            controller: _endDateController,
+            decoration: InputDecoration(
+              labelText: 'End Date',
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+              contentPadding: const EdgeInsets.all(12),
+              suffixIcon: const Icon(Icons.calendar_today),
+            ),
+            onTap: () async {
+              if (_selectedStart == null) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Please select a start date first')),
+                );
+                return;
+              }
+
+              final picked = await showDatePicker(
+                context: context,
+                initialDate: _selectedEnd ?? _selectedStart!.add(const Duration(days: 1)),
+                firstDate: _selectedStart!.add(const Duration(days: 1)),
+                lastDate: _availEnd ?? DateTime.now().add(const Duration(days: 365)),
+                selectableDayPredicate: _isDateAvailableForSelection,
+              );
+              if (picked != null) {
+                setState(() {
+                  _selectedEnd = picked;
+                  _endDateController.text = _fmt(picked);
+                });
+              }
+            },
+          ),
+
+          // Message
+          const SizedBox(height: 12),
+          TextField(
+            controller: _messageController,
+            maxLines: 3,
+            decoration: InputDecoration(
+              labelText: 'Message to owner *',
+              hintText: 'Tell the owner about yourself...',
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
+              contentPadding: const EdgeInsets.all(12),
+            ),
+          ),
+
+          // Phone
+          const SizedBox(height: 12),
+          TextField(
+            controller: _phoneController,
+            keyboardType: TextInputType.phone,
+            decoration: InputDecoration(
+              labelText: 'Phone number (optional)',
+              hintText: '+41 79 123 45 67 or 079 123 45 67',
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+                borderSide: BorderSide(
+                  color: _phoneError != null ? Colors.red : Colors.grey,
+                ),
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+                borderSide: BorderSide(
+                  color: _phoneError != null ? Colors.red : Colors.grey,
+                ),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+                borderSide: BorderSide(
+                  color: _phoneError != null
+                      ? Colors.red
+                      : Theme.of(context).colorScheme.primary,
+                ),
+              ),
+              contentPadding: const EdgeInsets.all(12),
+              errorText: _phoneError,
+              suffixIcon: _phoneController.text.isNotEmpty
+                  ? Icon(
+                      _isValidPhone ? Icons.check_circle : Icons.error,
+                      color: _isValidPhone ? Colors.green : Colors.red,
+                    )
+                  : null,
+            ),
+          ),
+
+          // Submit
+          const SizedBox(height: 16),
+          MoonFilledButton(
+            isFullWidth: true,
+            onTap: _selectedStart != null &&
+                    _selectedEnd != null &&
+                    _messageController.text.isNotEmpty &&
+                    _isValidPhone &&
+                    !_submittingBooking
+                ? () => _submitBookingRequestWithDates(_selectedStart!, _selectedEnd!)
+                : null,
+            leading: _submittingBooking
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                  )
+                : const Icon(Icons.send),
+            label: Text(_submittingBooking ? 'Sending...' : 'Send booking request'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _submitBookingRequestWithDates(DateTime start, DateTime end) async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    setState(() => _submittingBooking = true);
+
+    try {
+      final hasConflict = await _checkBookingConflict(start, end);
+      if (hasConflict) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Selected dates are no longer available. Please choose different dates.'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+        setState(() => _submittingBooking = false);
+        return;
+      }
+
+      final userDoc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .get();
+      final userData = userDoc.data() ?? {};
+
+      String? formattedPhone;
+      if (_phoneController.text.trim().isNotEmpty) {
+        try {
+          PhoneNumber phoneNumber;
+          if (_phoneController.text.trim().startsWith('+')) {
+            phoneNumber = PhoneNumber.parse(_phoneController.text.trim());
+          } else {
+            phoneNumber = PhoneNumber.parse(
+              _phoneController.text.trim(),
+              destinationCountry: IsoCode.CH,
+            );
+          }
+          formattedPhone = phoneNumber.international;
+        } catch (_) {
+          formattedPhone = _phoneController.text.trim();
+        }
+      }
+
+      await FirebaseFirestore.instance.collection('booking_requests').add({
+        'listingId': widget.listingId,
+        'studentUid': user.uid,
+        'ownerUid': _ownerUid,
+        'startDate': Timestamp.fromDate(start),
+        'endDate': Timestamp.fromDate(end),
+        'message': _messageController.text.trim(),
+        'studentName': userData['name'] ?? user.email,
+        'studentEmail': user.email,
+        'studentPhone': formattedPhone,
+        'status': 'pending',
+        'createdAt': Timestamp.now(),
+        'updatedAt': Timestamp.now(),
+      });
+
+      setState(() {
+        _messageController.clear();
+        _phoneController.clear();
+        _startDateController.clear();
+        _endDateController.clear();
+        _selectedStart = null;
+        _selectedEnd = null;
+        _submittingBooking = false;
+      });
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Booking request sent successfully!'), backgroundColor: Colors.green),
+        );
+      }
+    } catch (e) {
+      setState(() => _submittingBooking = false);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error sending request: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
   }
 
   @override
@@ -369,7 +1312,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
           },
         ),
         actions: [
-          // --- Bouton Favori (live via stream) ---
+          // Bouton favori (live)
           StreamBuilder<bool>(
             stream: _favStream,
             builder: (context, snap) {
@@ -498,7 +1441,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
 
                                 const SizedBox(height: 16),
 
-                                // Header + bouton Edit (si propriétaire)
+                                // Header + bouton Edit + ratings
                                 _MoonCard(
                                   isDark: isDark,
                                   child: Column(
@@ -527,6 +1470,8 @@ class _ViewListingPageState extends State<ViewListingPage> {
                                                     color: cs.onSurface.withOpacity(.8),
                                                   ),
                                                 ),
+                                                const SizedBox(height: 8),
+                                                _buildRatingsPreview(context),
                                               ],
                                             ),
                                           ),
@@ -579,12 +1524,27 @@ class _ViewListingPageState extends State<ViewListingPage> {
                                                 ? '${_distTransportKm!.toStringAsFixed(1)} km PT'
                                                 : '—',
                                           ),
-                                          _chip(
-                                            context,
-                                            icon: Icons.school_outlined,
-                                            text:
-                                                _proximHesKm != null ? '${_proximHesKm!.toStringAsFixed(1)} km HES' : '—',
-                                          ),
+                                          if (_proximHesKm != null)
+                                            _chip(
+                                              context,
+                                              icon: Icons.school_outlined,
+                                              text: _nearestHesName != null && _nearestHesName!.trim().isNotEmpty
+                                                  ? '${_proximHesKm!.toStringAsFixed(1)} km • $_nearestHesName'
+                                                  : '${_proximHesKm!.toStringAsFixed(1)} km HES',
+                                            )
+                                          else
+                                            MoonButton(
+                                              isFullWidth: false,
+                                              onTap: _computingHes ? null : () => _computeNearestHes(persist: true),
+                                              leading: _computingHes
+                                                  ? const SizedBox(
+                                                      width: 16,
+                                                      height: 16,
+                                                      child: CircularProgressIndicator(strokeWidth: 2),
+                                                    )
+                                                  : const Icon(Icons.school_outlined),
+                                              label: const Text('Nearest HES'),
+                                            ),
                                         ],
                                       ),
                                     ],
@@ -631,6 +1591,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
 
                                 const SizedBox(height: 16),
 
+                                // Price estimation
                                 _MoonCard(
                                   isDark: isDark,
                                   child: Column(
@@ -769,6 +1730,192 @@ class _ViewListingPageState extends State<ViewListingPage> {
 
                                 const SizedBox(height: 16),
 
+                                // Public transport → HES
+                                _MoonCard(
+                                  isDark: isDark,
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Row(
+                                        mainAxisAlignment: MainAxisAlignment.start,
+                                        children: const [
+                                          Icon(Icons.alt_route_outlined, size: 20),
+                                          SizedBox(width: 8),
+                                        ],
+                                      ),
+                                      Text(
+                                        'Public transport to HES (next 2h)',
+                                        style: TextStyle(
+                                          fontSize: 18,
+                                          fontWeight: FontWeight.w800,
+                                          color: cs.onSurface,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 8),
+                                      Text(
+                                        'Swipe horizontally to browse routes.',
+                                        style: TextStyle(
+                                          fontSize: 12,
+                                          fontStyle: FontStyle.italic,
+                                          color: cs.onSurface.withOpacity(.7),
+                                        ),
+                                      ),
+                                      const SizedBox(height: 8),
+                                      if (_nearestHesName != null)
+                                        Text(
+                                          'Destination: $_nearestHesName',
+                                          style: TextStyle(
+                                            color: cs.onSurface.withOpacity(.8),
+                                          ),
+                                        ),
+                                      const SizedBox(height: 8),
+                                      if (_ptError != null)
+                                        Text(
+                                          _ptError!,
+                                          style: const TextStyle(
+                                            color: Colors.redAccent,
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                        )
+                                      else if (_loadingPt)
+                                        const Padding(
+                                          padding: EdgeInsets.all(8.0),
+                                          child: LinearProgressIndicator(),
+                                        )
+                                      else if (_ptRoutes.isEmpty)
+                                        Text(
+                                          'No routes found in the next 2 hours.',
+                                          style: TextStyle(
+                                            color: cs.onSurface.withOpacity(.7),
+                                          ),
+                                        )
+                                      else ...[
+                                        Builder(
+                                          builder: (ctx) {
+                                            final pvHeight =
+                                                math.min(MediaQuery.of(ctx).size.height * 0.5, 420.0);
+                                            return SizedBox(
+                                              height: pvHeight,
+                                              child: PageView.builder(
+                                                controller: _ptCtrl,
+                                                padEnds: true,
+                                                itemCount: _ptRoutes.length,
+                                                onPageChanged: (i) => setState(() => _ptPage = i),
+                                                itemBuilder: (ctx, i) {
+                                                  final r = _ptRoutes[i];
+                                                  return _routeCard(context, r);
+                                                },
+                                              ),
+                                            );
+                                          },
+                                        ),
+                                        _dots(context, count: _ptRoutes.length, index: _ptPage),
+                                      ],
+                                    ],
+                                  ),
+                                ),
+
+                                const SizedBox(height: 16),
+
+                                // Bars à proximité
+                                _MoonCard(
+                                  isDark: isDark,
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Row(
+                                        mainAxisAlignment: MainAxisAlignment.start,
+                                        children: const [
+                                          Icon(Icons.local_bar_outlined, size: 20),
+                                          SizedBox(width: 8),
+                                        ],
+                                      ),
+                                      Text(
+                                        'Nearby bars (best rated first)',
+                                        style: TextStyle(
+                                          fontSize: 18,
+                                          fontWeight: FontWeight.w800,
+                                          color: cs.onSurface,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 8),
+                                      Text(
+                                        'Swipe horizontally. Tap a card to expand details.',
+                                        style: TextStyle(
+                                          fontSize: 12,
+                                          fontStyle: FontStyle.italic,
+                                          color: cs.onSurface.withOpacity(.7),
+                                        ),
+                                      ),
+                                      const SizedBox(height: 8),
+                                      if (_barsError != null)
+                                        Text(
+                                          _barsError!,
+                                          style: const TextStyle(
+                                            color: Colors.redAccent,
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                        )
+                                      else if (_loadingBars)
+                                        const Padding(
+                                          padding: EdgeInsets.all(8.0),
+                                          child: LinearProgressIndicator(),
+                                        )
+                                      else if (_bars.isEmpty)
+                                        Text(
+                                          'No bars found nearby.',
+                                          style: TextStyle(
+                                            color: cs.onSurface.withOpacity(.7),
+                                          ),
+                                        )
+                                      else ...[
+                                        SizedBox(
+                                          height: 170,
+                                          child: PageView.builder(
+                                            controller: _barsCtrl,
+                                            padEnds: true,
+                                            itemCount: _bars.length,
+                                            onPageChanged: (i) => setState(() {
+                                              _barsPage = i;
+                                              _expandedBarIndex = null;
+                                            }),
+                                            itemBuilder: (ctx, i) {
+                                              final p = _bars[i];
+                                              final expanded = _expandedBarIndex == i;
+                                              return _barCard(
+                                                context,
+                                                p,
+                                                index: i,
+                                                expanded: expanded,
+                                                onTap: () {
+                                                  setState(() {
+                                                    _expandedBarIndex = expanded ? null : i;
+                                                  });
+                                                },
+                                              );
+                                            },
+                                          ),
+                                        ),
+                                        _dots(context, count: _bars.length, index: _barsPage),
+                                        if (_bars.length > 1)
+                                          Padding(
+                                            padding: const EdgeInsets.only(top: 6),
+                                            child: Text(
+                                              '${_barsPage + 1} / ${_bars.length}',
+                                              textAlign: TextAlign.center,
+                                              style: TextStyle(
+                                                color: cs.onSurface.withOpacity(.6),
+                                                fontSize: 12,
+                                              ),
+                                            ),
+                                          ),
+                                      ],
+                                    ],
+                                  ),
+                                ),
+
+                                const SizedBox(height: 16),
+
                                 // Calendrier disponibilité
                                 _MoonCard(
                                   isDark: isDark,
@@ -776,43 +1923,52 @@ class _ViewListingPageState extends State<ViewListingPage> {
                                     crossAxisAlignment: CrossAxisAlignment.stretch,
                                     children: [
                                       Row(
-                                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                         children: [
-                                          Row(
-                                            mainAxisSize: MainAxisSize.min,
-                                            children: [
-                                              const Icon(Icons.calendar_today_outlined, size: 20),
-                                              const SizedBox(width: 8),
-                                              Text(
-                                                'Availability',
-                                                style: TextStyle(
-                                                  fontSize: 18,
-                                                  fontWeight: FontWeight.w800,
-                                                  color: cs.onSurface,
+                                          Expanded(
+                                            child: Row(
+                                              mainAxisSize: MainAxisSize.min,
+                                              children: [
+                                                const Icon(Icons.calendar_today_outlined, size: 20),
+                                                const SizedBox(width: 8),
+                                                Flexible(
+                                                  child: Text(
+                                                    'Availability',
+                                                    style: TextStyle(
+                                                      fontSize: 18,
+                                                      fontWeight: FontWeight.w800,
+                                                      color: cs.onSurface,
+                                                    ),
+                                                    overflow: TextOverflow.ellipsis,
+                                                  ),
                                                 ),
-                                              ),
-                                            ],
+                                              ],
+                                            ),
                                           ),
-                                          Row(
-                                            children: [
-                                              IconButton(
-                                                tooltip: 'Previous month',
-                                                onPressed: _prevMonth,
-                                                icon: const Icon(Icons.chevron_left),
+                                          IconButton(
+                                            tooltip: 'Previous month',
+                                            onPressed: _prevMonth,
+                                            icon: const Icon(Icons.chevron_left, size: 20),
+                                            padding: const EdgeInsets.all(8),
+                                            constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                                          ),
+                                          Container(
+                                            constraints: const BoxConstraints(minWidth: 80),
+                                            child: Text(
+                                              '${_shownMonth.year}-${_shownMonth.month.toString().padLeft(2, '0')}',
+                                              style: TextStyle(
+                                                fontWeight: FontWeight.w700,
+                                                color: cs.onSurface,
+                                                fontSize: 14,
                                               ),
-                                              Text(
-                                                '${_shownMonth.year}-${_shownMonth.month.toString().padLeft(2, '0')}',
-                                                style: TextStyle(
-                                                  fontWeight: FontWeight.w700,
-                                                  color: cs.onSurface,
-                                                ),
-                                              ),
-                                              IconButton(
-                                                tooltip: 'Next month',
-                                                onPressed: _nextMonth,
-                                                icon: const Icon(Icons.chevron_right),
-                                              ),
-                                            ],
+                                              textAlign: TextAlign.center,
+                                            ),
+                                          ),
+                                          IconButton(
+                                            tooltip: 'Next month',
+                                            onPressed: _nextMonth,
+                                            icon: const Icon(Icons.chevron_right, size: 20),
+                                            padding: const EdgeInsets.all(8),
+                                            constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
                                           ),
                                         ],
                                       ),
@@ -832,27 +1988,28 @@ class _ViewListingPageState extends State<ViewListingPage> {
                                           children: _buildCalendar(context),
                                         ),
                                         const SizedBox(height: 8),
+                                        // Légende calendrier
+                                        Wrap(
+                                          spacing: 16,
+                                          runSpacing: 8,
+                                          children: [
+                                            _buildLegendItem(
+                                              context,
+                                              'Available',
+                                              cs.primary.withOpacity(.25),
+                                              cs.primary.withOpacity(.6),
+                                            ),
+                                            _buildLegendItem(
+                                              context,
+                                              'Booked',
+                                              Colors.red.withOpacity(.2),
+                                              Colors.red.withOpacity(.5),
+                                            ),
+                                          ],
+                                        ),
+                                        const SizedBox(height: 8),
                                         Row(
                                           children: [
-                                            Container(
-                                              width: 16,
-                                              height: 16,
-                                              decoration: BoxDecoration(
-                                                color: cs.primary.withOpacity(.25),
-                                                borderRadius: BorderRadius.circular(4),
-                                                border: Border.all(
-                                                  color: cs.primary.withOpacity(.6),
-                                                ),
-                                              ),
-                                            ),
-                                            const SizedBox(width: 8),
-                                            Text(
-                                              'Available days',
-                                              style: TextStyle(
-                                                color: cs.onSurface.withOpacity(.8),
-                                              ),
-                                            ),
-                                            const Spacer(),
                                             Text(
                                               _availEnd == null
                                                   ? 'From ${_fmt(_availStart!)} • no end'
@@ -869,6 +2026,9 @@ class _ViewListingPageState extends State<ViewListingPage> {
                                   ),
                                 ),
 
+                                // Formulaire de réservation (étudiant)
+                                if (_isStudent) _buildBookingPanel(context),
+
                                 const SizedBox(height: 24),
 
                                 if (_isOwner)
@@ -877,8 +2037,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
                                     onTap: () async {
                                       await Navigator.of(context).push(
                                         MaterialPageRoute(
-                                          builder: (_) =>
-                                              EditListingPage(listingId: widget.listingId),
+                                          builder: (_) => EditListingPage(listingId: widget.listingId),
                                         ),
                                       );
                                       _load();
@@ -894,6 +2053,31 @@ class _ViewListingPageState extends State<ViewListingPage> {
                     );
                   },
                 ),
+    );
+  }
+
+  Widget _buildLegendItem(BuildContext context, String label, Color bgColor, Color borderColor) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 16,
+          height: 16,
+          decoration: BoxDecoration(
+            color: bgColor,
+            borderRadius: BorderRadius.circular(4),
+            border: Border.all(color: borderColor),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Text(
+          label,
+          style: TextStyle(
+            color: Theme.of(context).colorScheme.onSurface.withOpacity(.8),
+            fontSize: 12,
+          ),
+        ),
+      ],
     );
   }
 
@@ -918,9 +2102,16 @@ class _ViewListingPageState extends State<ViewListingPage> {
         children: [
           Icon(icon, size: 16, color: cs.onSurface.withOpacity(.75)),
           const SizedBox(width: 6),
-          Text(
-            text,
-            style: TextStyle(color: cs.onSurface, fontWeight: FontWeight.w600),
+          Flexible(
+            child: Text(
+              text,
+              overflow: TextOverflow.ellipsis,
+              softWrap: true,
+              style: TextStyle(
+                color: cs.onSurface,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
           ),
         ],
       ),
@@ -952,7 +2143,479 @@ class _ViewListingPageState extends State<ViewListingPage> {
       ),
     );
   }
+
+  // --- UI: transit route card ------------------------------------------------
+
+  Widget _routeCard(BuildContext context, _TransitRoute r) {
+    final cs = Theme.of(context).colorScheme;
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 6),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        border: Border.all(color: cs.primary.withOpacity(.12)),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: SingleChildScrollView(
+        physics: const BouncingScrollPhysics(),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Times + duration
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Flexible(
+                  child: Text(
+                    '${_clock(r.departureTime)} → ${_clock(r.arrivalTime)}',
+                    style: TextStyle(
+                      fontWeight: FontWeight.w800,
+                      color: cs.onSurface,
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  r.totalText,
+                  style: TextStyle(
+                    color: cs.onSurface.withOpacity(.8),
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+            if (r.summary.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 2.0),
+                child: Text(
+                  r.summary,
+                  style: TextStyle(color: cs.onSurface.withOpacity(.7)),
+                  overflow: TextOverflow.ellipsis,
+                  maxLines: 1,
+                ),
+              ),
+            const SizedBox(height: 8),
+            // Steps
+            Column(
+              children: r.steps.map((s) {
+                return Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.only(top: 5.0),
+                      child: Icon(
+                        s.type == _StepType.walk
+                            ? Icons.directions_walk
+                            : Icons.directions_transit,
+                        size: 16,
+                        color: cs.primary,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          if (s.type == _StepType.walk) ...[
+                            Text(
+                              'Walk • ${s.durationText ?? ''} • ${s.distanceText ?? ''}',
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w600,
+                              ),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            if (s.instruction?.isNotEmpty == true)
+                              Text(
+                                s.instruction!,
+                                style: TextStyle(
+                                  color: cs.onSurface.withOpacity(.8),
+                                ),
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                          ] else ...[
+                            Text(
+                              '${s.transitLine ?? 'Transit'} • ${s.transitHeadsign ?? ''}'.trim(),
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w700,
+                              ),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            Text(
+                              'From ${s.departureStop ?? '?'} (${_clock(s.departureTime!)}) to ${s.arrivalStop ?? '?'} (${_clock(s.arrivalTime!)})',
+                              style: TextStyle(
+                                color: cs.onSurface.withOpacity(.85),
+                              ),
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            if ((s.platform ?? '').isNotEmpty)
+                              Text(
+                                'Platform: ${s.platform}',
+                                style: TextStyle(
+                                  color: cs.onSurface.withOpacity(.7),
+                                ),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            if ((s.numStops ?? 0) > 0)
+                              Text(
+                                '${s.numStops} stops',
+                                style: TextStyle(
+                                  color: cs.onSurface.withOpacity(.7),
+                                ),
+                              ),
+                          ],
+                          const SizedBox(height: 8),
+                        ],
+                      ),
+                    ),
+                  ],
+                );
+              }).toList(),
+            ),
+            const SizedBox(height: 4),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // --- UI: nearby bar card ---------------------------------------------------
+
+  Widget _barCard(
+    BuildContext context,
+    _NearbyPlace p, {
+    required int index,
+    required bool expanded,
+    required VoidCallback onTap,
+  }) {
+    final cs = Theme.of(context).colorScheme;
+
+    final walkMins = (p.distanceKm / 4.5 * 60).round();
+    final bikeMins = (p.distanceKm / 14.0 * 60).round();
+
+    return InkWell(
+      borderRadius: BorderRadius.circular(12),
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOut,
+        margin: const EdgeInsets.symmetric(vertical: 6),
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          border: Border.all(color: cs.primary.withOpacity(.12)),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: LayoutBuilder(
+          builder: (ctx, constraints) {
+            return SingleChildScrollView(
+              physics: expanded ? const BouncingScrollPhysics() : const NeverScrollableScrollPhysics(),
+              child: ConstrainedBox(
+                constraints: BoxConstraints(minHeight: constraints.maxHeight),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Name
+                    Text(
+                      p.name,
+                      style: TextStyle(
+                        fontWeight: FontWeight.w800,
+                        color: cs.onSurface,
+                        fontSize: 16,
+                      ),
+                      maxLines: expanded ? 3 : 1,
+                      overflow: expanded ? TextOverflow.visible : TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 4),
+
+                    // Address
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Icon(Icons.place_outlined, size: 14, color: cs.primary),
+                        const SizedBox(width: 4),
+                        Expanded(
+                          child: Text(
+                            '${p.distanceKm.toStringAsFixed(2)} km • ${p.address}',
+                            style: TextStyle(
+                              color: cs.onSurface.withOpacity(.8),
+                            ),
+                            maxLines: expanded ? null : 2,
+                            overflow: expanded ? TextOverflow.visible : TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+
+                    // Rating
+                    if (p.rating != null)
+                      Row(
+                        children: [
+                          Icon(Icons.star_rate_rounded, size: 16, color: cs.primary),
+                          const SizedBox(width: 4),
+                          Text(
+                            '${p.rating!.toStringAsFixed(1)}'
+                            '${p.ratingCount != null ? ' (${p.ratingCount})' : ''}',
+                            style: TextStyle(
+                              color: cs.onSurface.withOpacity(.9),
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ],
+                      )
+                    else
+                      Text(
+                        'No rating yet',
+                        style: TextStyle(color: cs.onSurface.withOpacity(.6)),
+                      ),
+
+                    // Extra (expanded)
+                    AnimatedCrossFade(
+                      duration: const Duration(milliseconds: 180),
+                      sizeCurve: Curves.easeOut,
+                      alignment: Alignment.topLeft,
+                      crossFadeState:
+                          expanded ? CrossFadeState.showSecond : CrossFadeState.showFirst,
+                      firstChild: const SizedBox.shrink(),
+                      secondChild: Padding(
+                        padding: const EdgeInsets.only(top: 10),
+                        child: Container(
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: cs.primary.withOpacity(.06),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(color: cs.primary.withOpacity(.15)),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              // Travel time
+                              Row(
+                                children: [
+                                  const Icon(Icons.directions_walk, size: 16),
+                                  const SizedBox(width: 6),
+                                  Text(
+                                    'Walk ~ $walkMins min',
+                                    style: TextStyle(
+                                      color: cs.onSurface.withOpacity(.9),
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  const Icon(Icons.pedal_bike, size: 16),
+                                  const SizedBox(width: 6),
+                                  Text(
+                                    'Bike ~ $bikeMins min',
+                                    style: TextStyle(
+                                      color: cs.onSurface.withOpacity(.9),
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 8),
+
+                              // Open in Maps
+                              GestureDetector(
+                                behavior: HitTestBehavior.opaque,
+                                onTap: () => _openPlaceInMaps(p),
+                                child: Row(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    const Icon(Icons.map_outlined, size: 16),
+                                    const SizedBox(width: 6),
+                                    Expanded(
+                                      child: Text(
+                                        'Open in Google Maps',
+                                        style: TextStyle(
+                                          color: cs.primary,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  String _clock(DateTime dt) =>
+      '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
 }
+
+// --- Nearby place model -------------------------------------------------------
+
+class _NearbyPlace {
+  final String name;
+  final String address;
+  final double? rating;
+  final int? ratingCount;
+  final double latitude;
+  final double longitude;
+  final double distanceKm;
+
+  _NearbyPlace({
+    required this.name,
+    required this.address,
+    required this.rating,
+    required this.ratingCount,
+    required this.latitude,
+    required this.longitude,
+    required this.distanceKm,
+  });
+}
+
+// --- Models for Directions response ------------------------------------------
+
+enum _StepType { walk, transit }
+
+class _TransitStep {
+  final _StepType type;
+  final String? instruction;
+  final String? distanceText;
+  final String? durationText;
+
+  // Transit-only
+  final String? transitLine;
+  final String? transitHeadsign;
+  final String? departureStop;
+  final String? arrivalStop;
+  final String? platform;
+  final int? numStops;
+  final DateTime? departureTime;
+  final DateTime? arrivalTime;
+
+  _TransitStep.walk({this.instruction, this.distanceText, this.durationText})
+      : type = _StepType.walk,
+        transitLine = null,
+        transitHeadsign = null,
+        departureStop = null,
+        arrivalStop = null,
+        platform = null,
+        numStops = null,
+        departureTime = null,
+        arrivalTime = null;
+
+  _TransitStep.transit({
+    this.transitLine,
+    this.transitHeadsign,
+    this.departureStop,
+    this.arrivalStop,
+    this.platform,
+    this.numStops,
+    this.departureTime,
+    this.arrivalTime,
+    this.distanceText,
+    this.durationText,
+  })  : type = _StepType.transit,
+        instruction = null;
+}
+
+class _TransitRoute {
+  late String _dedupeKey; // internal
+
+  final DateTime departureTime;
+  final DateTime arrivalTime;
+  final String totalText;
+  final String summary;
+  final List<_TransitStep> steps;
+
+  _TransitRoute({
+    required this.departureTime,
+    required this.arrivalTime,
+    required this.totalText,
+    required this.summary,
+    required this.steps,
+  });
+
+  static _TransitRoute? fromGoogle(Map leg, Map route) {
+    try {
+      final dep = _parseGoogleTime(leg['departure_time']);
+      final arr = _parseGoogleTime(leg['arrival_time']);
+      final durText = (leg['duration']?['text'] ?? '').toString();
+      final summary = (route['summary'] ?? '').toString();
+
+      final rawSteps = (leg['steps'] as List?) ?? const [];
+      final steps = <_TransitStep>[];
+
+      for (final s in rawSteps) {
+        final travelMode = (s['travel_mode'] ?? '').toString();
+        if (travelMode == 'WALKING') {
+          steps.add(
+            _TransitStep.walk(
+              instruction: (s['html_instructions'] ?? '')
+                  .toString()
+                  .replaceAll(RegExp(r'<[^>]+>'), ''),
+              distanceText: (s['distance']?['text'] ?? '').toString(),
+              durationText: (s['duration']?['text'] ?? '').toString(),
+            ),
+          );
+        } else if (travelMode == 'TRANSIT') {
+          final td = s['transit_details'] ?? {};
+          final line = td['line'] ?? {};
+          final depStop = td['departure_stop']?['name']?.toString();
+          final arrStop = td['arrival_stop']?['name']?.toString();
+          final headsign = (td['headsign'] ?? '').toString();
+          final lineName = (line['short_name'] ?? line['name'] ?? '').toString();
+          final numStops = (td['num_stops'] as num?)?.toInt();
+          final depTime = _parseGoogleTime(td['departure_time']);
+          final arrTime = _parseGoogleTime(td['arrival_time']);
+          final platform = (td['departure_platform'] ?? '').toString();
+
+          steps.add(
+            _TransitStep.transit(
+              transitLine: lineName.isEmpty ? null : lineName,
+              transitHeadsign: headsign.isNotEmpty ? headsign : null,
+              departureStop: depStop,
+              arrivalStop: arrStop,
+              numStops: numStops,
+              departureTime: depTime,
+              arrivalTime: arrTime,
+              platform: platform.isEmpty ? null : platform,
+              distanceText: (s['distance']?['text'] ?? '').toString(),
+              durationText: (s['duration']?['text'] ?? '').toString(),
+            ),
+          );
+        }
+      }
+
+      return _TransitRoute(
+        departureTime: dep ?? DateTime.now(),
+        arrivalTime: arr ?? DateTime.now(),
+        totalText: durText,
+        summary: summary,
+        steps: steps,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static DateTime? _parseGoogleTime(dynamic obj) {
+    if (obj == null) return null;
+    final v = obj['value'];
+    if (v is int) {
+      return DateTime.fromMillisecondsSinceEpoch(v * 1000, isUtc: false).toLocal();
+    }
+    return null;
+  }
+}
+
+// --- Reusable card ------------------------------------------------------------
 
 class _MoonCard extends StatelessWidget {
   final Widget child;
