@@ -11,6 +11,7 @@ import 'about_page.dart';
 import 'home.dart'; // DashboardPage lives here
 import 'owner_management.dart';
 import 'student_management.dart';
+import 'tutorial_page.dart';
 
 /// Pages add this mixin to provide menu metadata while staying Stateless/Stateful.
 mixin MenuPageMeta {
@@ -60,8 +61,9 @@ class _MoonMenuShellState extends State<MoonMenuShell> {
       })
       .toList(growable: false);
 
-  List<int> get _bottomNavIndices => 
-      widget.bottomNavPageIndices ?? List.generate(widget.allPages.length, (i) => i);
+  List<int> get _bottomNavIndices =>
+      widget.bottomNavPageIndices ??
+      List.generate(widget.allPages.length, (i) => i);
 
   int _bottomNavToGlobalIndex(int bottomNavIndex) {
     return _bottomNavIndices[bottomNavIndex];
@@ -73,6 +75,16 @@ class _MoonMenuShellState extends State<MoonMenuShell> {
 
   List<Widget> _buildActions(BuildContext context, MoonTokens tokens) {
     return [
+      // Tutorial button in the app bar
+      IconButton(
+        tooltip: 'Tutorial',
+        onPressed: () {
+          Navigator.of(context).push(
+            MaterialPageRoute(builder: (_) => const TutorialPage()),
+          );
+        },
+        icon: Icon(Icons.help_outline, color: tokens.colors.bulma),
+      ),
       ...?widget.actions,
       if (widget.onToggleTheme != null)
         IconButton(
@@ -156,8 +168,8 @@ class _MoonMenuShellState extends State<MoonMenuShell> {
                   iconTheme: WidgetStateProperty.resolveWith((states) {
                     if (states.contains(WidgetState.selected)) {
                       return IconThemeData(
-                        color: Theme.of(context).brightness == Brightness.light 
-                            ? Colors.white 
+                        color: Theme.of(context).brightness == Brightness.light
+                            ? Colors.white
                             : tokens.colors.bulma,
                       );
                     }
@@ -166,18 +178,21 @@ class _MoonMenuShellState extends State<MoonMenuShell> {
                 ),
               ),
               child: NavigationBar(
-                selectedIndex: _globalToBottomNavIndex(_index).clamp(0, _bottomNavIndices.length - 1),
+                selectedIndex: _globalToBottomNavIndex(_index)
+                    .clamp(0, _bottomNavIndices.length - 1),
                 onDestinationSelected: (bottomNavIndex) {
-                  setState(() => _index = _bottomNavToGlobalIndex(bottomNavIndex));
+                  setState(() =>
+                      _index = _bottomNavToGlobalIndex(bottomNavIndex));
                 },
                 destinations: [
                   for (final globalIndex in _bottomNavIndices)
                     NavigationDestination(
-                      icon: Icon(allMeta[globalIndex].menuIcon),
+                      icon: Icon(_allMeta[globalIndex].menuIcon),
                       selectedIcon: Icon(
-                        allMeta[globalIndex].menuSelectedIcon ?? allMeta[globalIndex].menuIcon,
+                        _allMeta[globalIndex].menuSelectedIcon ??
+                            _allMeta[globalIndex].menuIcon,
                       ),
-                      label: allMeta[globalIndex].menuLabel,
+                      label: _allMeta[globalIndex].menuLabel,
                     ),
                 ],
               ),
@@ -213,10 +228,10 @@ class _HomeMenuPageState extends State<HomeMenuPage> {
           .doc(user.uid)
           .get();
       if (doc.exists) {
-        final userData = doc.data();
+        final data = doc.data();
         setState(() {
-          _isHomeowner = userData?['role'] == "homeowner" ? true: false;
-          _isStudent = userData?['role'] == "student" ? true: false;
+          _isHomeowner = data?['role'] == "homeowner";
+          _isStudent = data?['role'] == "student";
         });
       }
     }
@@ -226,41 +241,65 @@ class _HomeMenuPageState extends State<HomeMenuPage> {
   Widget build(BuildContext context) {
     // If an int is passed as route arguments, use it as the initial tab index.
     final maybeIndex = ModalRoute.of(context)?.settings.arguments as int?;
-    
-    // Build pages list based on homeowner status
-    final allPages = [
-      const DashboardPage(),        // Index 0
-      const ListingsSection(),      // Index 1
+
+    // Build pages list based on homeowner/student status
+    final pages = <Widget>[
+      const DashboardPage(),         // 0
+      const ListingsSection(),       // 1
       if (_isHomeowner) ...[
-        const MyListingsSection(),      // Index 2 (only for homeowners)
-        const NewListingSection(),      // Index 3 (only for homeowners)
-        const OwnerManagementSection()  // Index 4 (only for homeowners)
+        const MyListingsSection(),
+        const NewListingSection(),
+        const OwnerManagementSection(),
       ],
       if (_isStudent) ...[
-        const StudentManagementSection() // Index 2 (only for students)
+        const StudentManagementSection(),
       ],
-      const ProfileSection(),       // Index 5 (or 2 for non-homeowners)
-      const AboutSection(),         // Index 6 (or 3 for non-homeowners)
+      const ProfileSection(),
+      const AboutSection(),
     ];
 
-    // Determine bottom nav indices based on homeowner status
+    // Helper to find page indices by type safely.
+    int idxOf<T>() => pages.indexWhere((w) => w is T);
+
+    final dashboardIdx = idxOf<DashboardPage>();
+    final propertiesIdx = idxOf<ListingsSection>();
+    final myPropsIdx = idxOf<MyListingsSection>();
+    final newIdx = idxOf<NewListingSection>();
+    final manageOwnerIdx = idxOf<OwnerManagementSection>();
+    final manageStudentIdx = idxOf<StudentManagementSection>();
+    final profileIdx = idxOf<ProfileSection>();
+    final aboutIdx = idxOf<AboutSection>();
+
+    // Mobile bottom nav (no invalid -1 indices)
     final bottomNavIndices = _isHomeowner
-        ? const [0, 2, 3, 4, 5] // Dashboard, Properties, My Properties, New Listing, Profile
-        : const [0, 1, 2, 3];   // Dashboard, Properties, Profile, About
+        ? [
+            dashboardIdx,
+            propertiesIdx,
+            if (myPropsIdx != -1) myPropsIdx,
+            if (newIdx != -1) newIdx,
+            if (manageOwnerIdx != -1) manageOwnerIdx,
+            profileIdx,
+          ].where((i) => i != -1).toList()
+        : [
+            dashboardIdx,
+            propertiesIdx,
+            profileIdx,
+            aboutIdx,
+          ].where((i) => i != -1).toList();
 
     return MoonMenuShell(
       title: 'HEStimate',
       initialIndex: maybeIndex ?? 0,
       onToggleTheme: widget.onToggleTheme,
       desktopBreakpoint: 1100,
-      allPages: allPages,
+      allPages: pages,
       bottomNavPageIndices: bottomNavIndices,
     );
   }
 }
 
 /// ----------------------
-/// Updated sections using unified ListingsPage
+/// Sections
 /// ----------------------
 class ListingsSection extends StatelessWidget with MenuPageMeta {
   const ListingsSection({super.key});
@@ -271,25 +310,21 @@ class ListingsSection extends StatelessWidget with MenuPageMeta {
   @override
   IconData? get menuSelectedIcon => Icons.apartment;
   @override
-  Widget build(BuildContext context) => const ListingsPage(mode: ListingsMode.all);
+  Widget build(BuildContext context) =>
+      const ListingsPage(mode: ListingsMode.all);
 }
 
 class MyListingsSection extends StatelessWidget with MenuPageMeta {
   const MyListingsSection({super.key});
-
   @override
   String get menuLabel => 'My Properties';
-
   @override
   IconData get menuIcon => Icons.home_outlined;
-
   @override
   IconData? get menuSelectedIcon => Icons.home;
-
   @override
-  Widget build(BuildContext context) {
-    return const ListingsPage(mode: ListingsMode.owner);
-  }
+  Widget build(BuildContext context) =>
+      const ListingsPage(mode: ListingsMode.owner);
 }
 
 class NewListingSection extends StatelessWidget with MenuPageMeta {
@@ -318,32 +353,24 @@ class ProfileSection extends StatelessWidget with MenuPageMeta {
 
 class OwnerManagementSection extends StatelessWidget with MenuPageMeta {
   const OwnerManagementSection({super.key});
-  
   @override
   String get menuLabel => 'Manage';
-  
   @override
   IconData get menuIcon => Icons.manage_accounts_outlined;
-  
   @override
   IconData? get menuSelectedIcon => Icons.manage_accounts;
-  
   @override
   Widget build(BuildContext context) => const OwnerManagementPage();
 }
 
 class StudentManagementSection extends StatelessWidget with MenuPageMeta {
   const StudentManagementSection({super.key});
-  
   @override
   String get menuLabel => 'Manage';
-  
   @override
   IconData get menuIcon => Icons.manage_accounts_outlined;
-  
   @override
   IconData? get menuSelectedIcon => Icons.manage_accounts;
-  
   @override
   Widget build(BuildContext context) => const StudentManagementPage();
 }

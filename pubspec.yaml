@@ -30,6 +30,7 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  
   firebase_core: ^4.1.0
   firebase_auth: ^6.0.2
   cloud_firestore: ^6.0.1
@@ -62,6 +63,7 @@ dev_dependencies:
   flutter_lints: ^6.0.0
   flutter_launcher_icons: ^0.14.4
 
+    
 flutter_launcher_icons:
   android: true
   ios: false
@@ -84,6 +86,7 @@ flutter:
   assets:
     - assets/icons/hestimate_logo_black_1024.png
     - .env
+    - assets/tutorial/
   #   - images/a_dot_ham.jpeg
 
   # An image asset can refer to one or more resolution-specific "variants", see
