@@ -1027,11 +1027,12 @@ class _ViewListingPageState extends State<ViewListingPage> {
       Color borderColor = cs.primary.withOpacity(.12);
       Color textColor = cs.onSurface;
 
-      if (isBooked) {
+      if (!_isStudent && isBooked) {
         bgColor = Colors.red.withOpacity(.2);
         borderColor = Colors.red.withOpacity(.5);
         textColor = Colors.red;
-      } else if (available) {
+      } else if (available && !isBooked) {
+        // Jour disponible (non booké)
         bgColor = cs.primary.withOpacity(.12);
         borderColor = cs.primary.withOpacity(.45);
         textColor = cs.primary;
@@ -2542,12 +2543,13 @@ Future<Map<String, dynamic>> _getOwnerRatings(List<String> ownerListingIds) asyn
                                           cs.primary.withOpacity(.25),
                                           cs.primary.withOpacity(.6),
                                         ),
-                                        _buildLegendItem(
-                                          context,
-                                          'Booked',
-                                          Colors.red.withOpacity(.2),
-                                          Colors.red.withOpacity(.5),
-                                        ),
+                                        if (!_isStudent) // <-- les étudiants ne voient pas "Booked"
+                                          _buildLegendItem(
+                                            context,
+                                            'Booked',
+                                            Colors.red.withOpacity(.2),
+                                            Colors.red.withOpacity(.5),
+                                          ),
                                       ],
                                     ),
                                     const SizedBox(height: 8),
