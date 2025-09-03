@@ -45,6 +45,7 @@ class _NewListingPageState extends State<NewListingPage> {
   Timer? _addrDebounce;
   List<_AddressSuggestion> _addressSuggestions = [];
   bool _isLoadingAddr = false;
+  bool _suspendAddrSearch = false;
 
   // Type: Entire home / Single room  -> segmented control
   final _typeOptions = const ['Entire home', 'Single room'];
@@ -144,6 +145,7 @@ class _NewListingPageState extends State<NewListingPage> {
 
   // Address suggestions (Nominatim) with debounce
   void _onAddressChanged() {
+    if(_suspendAddrSearch) return;
     _addrDebounce?.cancel();
     _addrDebounce = Timer(const Duration(milliseconds: 350), () async {
       final q = _addressCtrl.text.trim();
@@ -183,9 +185,13 @@ class _NewListingPageState extends State<NewListingPage> {
       _geoLat = coords.lat;
       _geoLng = coords.lng;
 
-      final nearest = await _computeNearestSchool(lat: _geoLat!, lng: _geoLng!);
+      final nearest = await _computeNearestSchoolRoadKm(
+        lat: _geoLat!,
+        lng: _geoLng!,
+        mode: 'driving', // change if you prefer walking/bicycling/transit
+      );
       setState(() {
-        _proximHesKm = nearest.km;
+        _proximHesKm = nearest.km; // <-- road distance (km)
         _nearestHesId = nearest.id;
         _nearestHesName = nearest.name;
       });
@@ -227,8 +233,15 @@ class _NewListingPageState extends State<NewListingPage> {
   Future<void> _fetchAddressSuggestions(String query) async {
     try {
       setState(() => _isLoadingAddr = true);
+
       final url =
-          'https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&countrycodes=ch&q=${Uri.encodeQueryComponent(query)}&limit=6';
+          'https://nominatim.openstreetmap.org/search'
+          '?format=json'
+          '&addressdetails=1'
+          '&countrycodes=ch'
+          '&q=${Uri.encodeQueryComponent(query)}'
+          '&limit=6';
+
       final res = await http.get(
         Uri.parse(url),
         headers: const {
@@ -238,20 +251,37 @@ class _NewListingPageState extends State<NewListingPage> {
       if (res.statusCode != 200) {
         throw Exception('Address search failed (${res.statusCode}).');
       }
-      final List data = jsonDecode(res.body) as List;
+
+      final List<dynamic> data = jsonDecode(res.body) as List<dynamic>;
+
       final suggestions = data
           .map((e) {
             final m = e as Map<String, dynamic>;
+            final addr = (m['address'] as Map?) ?? const {};
+
+            // Prefer structured street fields
+            final String? road = (addr['road'] ??
+                    addr['pedestrian'] ??
+                    addr['footway'] ??
+                    addr['residential'] ??
+                    addr['path'])
+                ?.toString();
+
+            final String? houseNumber = addr['house_number']?.toString();
+
             return _AddressSuggestion(
               displayName: (m['display_name'] ?? '').toString(),
               lat: double.tryParse(m['lat']?.toString() ?? ''),
               lon: double.tryParse(m['lon']?.toString() ?? ''),
-              city:
-                  _tryAddrPiece(m, ['address', 'city']) ??
-                  _tryAddrPiece(m, ['address', 'town']) ??
-                  _tryAddrPiece(m, ['address', 'village']) ??
-                  '',
-              postcode: _tryAddrPiece(m, ['address', 'postcode']) ?? '',
+              city: (addr['city'] ??
+                      addr['town'] ??
+                      addr['village'] ??
+                      addr['municipality'] ??
+                      '')
+                  .toString(),
+              postcode: (addr['postcode'] ?? '').toString(),
+              road: road,
+              houseNumber: houseNumber,
             );
           })
           .where((s) => s.lat != null && s.lon != null)
@@ -278,14 +308,54 @@ class _NewListingPageState extends State<NewListingPage> {
     return cur?.toString();
   }
 
-  void _applySuggestion(_AddressSuggestion s) {
-    _addressCtrl.text = s.displayName.split(',').first;
-    if (s.city.isNotEmpty) _cityCtrl.text = s.city;
-    if (s.postcode.isNotEmpty) _npaCtrl.text = s.postcode;
+
+  Future<void> _applySuggestion(_AddressSuggestion s) async {
+    // Build the street line from structured fields if possible
+    String streetLine = '';
+    final road = (s.road ?? '').trim();
+    final house = (s.houseNumber ?? '').trim();
+
+    if (road.isNotEmpty && house.isNotEmpty) {
+      streetLine = '$road $house';
+    } else if (road.isNotEmpty) {
+      streetLine = road;
+    } else {
+      // fallback to displayName parsing
+      final parts = s.displayName.split(',').map((e) => e.trim()).toList();
+      if (parts.length >= 2 && RegExp(r'^\d+[A-Za-z]?$').hasMatch(parts.first)) {
+        streetLine = '${parts[1]} ${parts.first}';
+      } else {
+        streetLine = parts.isNotEmpty ? parts.first : s.displayName;
+      }
+    }
+
+    // Suspend listener to avoid re-triggering suggestions
+    _suspendAddrSearch = true;
+    _addrDebounce?.cancel(); // cancel any queued fetch
+
+    // --- Fill all form fields explicitly ---
+    _addressCtrl.text = streetLine;
+    _cityCtrl.text = s.city;
+    _npaCtrl.text = s.postcode;
     _geoLat = s.lat!;
     _geoLng = s.lon!;
-    setState(() => _addressSuggestions = []);
-    // Recompute distances now that address is set
+
+    // Clear suggestion list immediately
+    if (mounted) {
+      setState(() {
+        _addressSuggestions = [];
+        _isLoadingAddr = false;
+      });
+    }
+
+    // Hide keyboard to prevent focus-triggered searches
+    _addressFocus.unfocus();
+
+    // Wait a tick before resuming listener
+    await Future<void>.delayed(const Duration(milliseconds: 80));
+    _suspendAddrSearch = false;
+
+    // Trigger recompute of distances once everything is stable
     _recomputeHesDistanceIfPossible();
   }
 
@@ -337,26 +407,13 @@ class _NewListingPageState extends State<NewListingPage> {
     return (lat: lat, lng: lng);
   }
 
-  // Schools fetching + distance computation (Haversine)
-  Future<List<_School>> _fetchSchools() async {
-    final snap = await FirebaseFirestore.instance.collection('schools').get();
-    return snap.docs.map((d) {
-      final m = d.data();
-      return _School(
-        id: d.id,
-        name: (m['name'] ?? '').toString(),
-        latitude: (m['latitude'] as num).toDouble(),
-        longitude: (m['longitude'] as num).toDouble(),
-      );
-    }).toList();
-  }
+  // ---- Distance helpers ----
 
   double _haversineKm(double lat1, double lon1, double lat2, double lon2) {
     const earthRadius = 6371.0; // km
     final dLat = _toRad(lat2 - lat1);
     final dLon = _toRad(lon2 - lon1);
-    final a =
-        math.sin(dLat / 2) * math.sin(dLat / 2) +
+    final a = math.sin(dLat / 2) * math.sin(dLat / 2) +
         math.cos(_toRad(lat1)) *
             math.cos(_toRad(lat2)) *
             math.sin(dLon / 2) *
@@ -365,34 +422,97 @@ class _NewListingPageState extends State<NewListingPage> {
     return earthRadius * c;
   }
 
-  double _toRad(double degrees) => degrees * math.pi / 180.0;
-
-  Future<({double km, String id, String name})> _computeNearestSchool({
-    required double lat,
-    required double lng,
+  Future<int> _directionsDistanceMeters({
+    required double originLat,
+    required double originLng,
+    required double destLat,
+    required double destLng,
+    String mode = 'driving',
   }) async {
-    final schools = await _fetchSchools();
-    if (schools.isEmpty) {
-      throw Exception('No schools found in Firestore (collection "schools").');
+    final mapsKey = dotenv.env['GOOGLE_API_KEY'] ?? '';
+    if (mapsKey.isEmpty) {
+      throw Exception('GOOGLE_API_KEY missing. Add it in .env and load dotenv.');
     }
 
-    _School? best;
-    double? bestKm;
+    final uri = Uri.parse('https://maps.googleapis.com/maps/api/directions/json')
+        .replace(queryParameters: {
+      'origin': '$originLat,$originLng',
+      'destination': '$destLat,$destLng',
+      'mode': mode,
+      'units': 'metric',
+      'key': mapsKey,
+    });
 
-    for (final s in schools) {
-      final dist = _haversineKm(lat, lng, s.latitude, s.longitude);
-      if (bestKm == null || dist < bestKm) {
-        best = s;
-        bestKm = dist;
+    final res = await http.get(uri);
+    if (res.statusCode != 200) {
+      throw Exception('Directions HTTP ${res.statusCode}.');
+    }
+    final data = jsonDecode(res.body) as Map<String, dynamic>;
+    if (data['status'] != 'OK') {
+      final msg = data['error_message']?.toString() ?? '';
+      throw Exception('Directions error: ${data['status']} $msg');
+    }
+
+    final routes = data['routes'] as List? ?? const [];
+    final legs =
+        (routes.isNotEmpty ? routes.first['legs'] : []) as List? ?? const [];
+    if (legs.isEmpty) throw Exception('No legs returned.');
+    final leg = legs.first as Map<String, dynamic>;
+    final distMeters = (leg['distance'] as Map?)?['value'] as int?;
+    if (distMeters == null) throw Exception('No distance value.');
+    return distMeters;
+  }
+
+  /// Find nearest school by straight-line (fast), then compute **road** distance via Google Directions.
+  /// Returns (km, id, name).
+  Future<({double km, String id, String name})> _computeNearestSchoolRoadKm({
+    required double lat,
+    required double lng,
+    String mode = 'driving',
+  }) async {
+    final snap = await FirebaseFirestore.instance.collection('schools').get();
+    if (snap.docs.isEmpty) {
+      throw Exception('No schools found in Firestore.');
+    }
+
+    String? bestId;
+    String? bestName;
+    double? bestLat, bestLng;
+    double? bestAirKm;
+
+    for (final d in snap.docs) {
+      final m = d.data();
+      final sLat = (m['latitude'] as num?)?.toDouble();
+      final sLng = (m['longitude'] as num?)?.toDouble();
+      if (sLat == null || sLng == null) continue;
+
+      final airKm = _haversineKm(lat, lng, sLat, sLng);
+      if (bestAirKm == null || airKm < bestAirKm) {
+        bestAirKm = airKm;
+        bestId = d.id;
+        bestName = (m['name'] ?? '').toString();
+        bestLat = sLat;
+        bestLng = sLng;
       }
     }
 
-    return (
-      km: bestKm ?? double.nan,
-      id: best?.id ?? '',
-      name: best?.name ?? '',
+    if (bestId == null || bestLat == null || bestLng == null) {
+      throw Exception('Could not determine nearest school.');
+    }
+
+    final meters = await _directionsDistanceMeters(
+      originLat: lat,
+      originLng: lng,
+      destLat: bestLat,
+      destLng: bestLng,
+      mode: mode,
     );
+
+    final kmRounded = double.parse((meters / 1000.0).toStringAsFixed(2));
+    return (km: kmRounded, id: bestId!, name: bestName ?? '');
   }
+
+  double _toRad(double degrees) => degrees * math.pi / 180.0;
 
   // Nearest public transport stop using Overpass API
   Future<({double km, String name})> _computeNearestTransitStop({
@@ -401,8 +521,7 @@ class _NewListingPageState extends State<NewListingPage> {
   }) async {
     final radii = [500, 1000, 1500, 2500]; // meters
     for (final r in radii) {
-      final query =
-          """
+      final query = """
 [out:json][timeout:15];
 (
   node(around:$r,$lat,$lng)[highway=bus_stop];
@@ -424,8 +543,9 @@ out body;
       );
 
       if (resp.statusCode != 200) {
-        if (r == radii.last)
+        if (r == radii.last) {
           throw Exception('Overpass error (HTTP ${resp.statusCode}).');
+        }
         continue;
       }
 
@@ -444,13 +564,12 @@ out body;
         if (bestKm == null || d < bestKm) {
           bestKm = d;
           final tags = (m['tags'] as Map?) ?? const {};
-          bestName =
-              (tags['name'] ??
-                      tags['ref'] ??
-                      tags['uic_name'] ??
-                      tags['uic_ref'] ??
-                      'Stop')
-                  .toString();
+          bestName = (tags['name'] ??
+                  tags['ref'] ??
+                  tags['uic_name'] ??
+                  tags['uic_ref'] ??
+                  'Stop')
+              .toString();
         }
       }
       if (bestKm != null) return (km: bestKm, name: bestName);
@@ -516,8 +635,12 @@ out body;
     if (_proximHesKm == null ||
         _nearestHesId == null ||
         _nearestHesId!.isEmpty) {
-      final nearest = await _computeNearestSchool(lat: _geoLat!, lng: _geoLng!);
-      _proximHesKm = nearest.km;
+      final nearest = await _computeNearestSchoolRoadKm(
+        lat: _geoLat!,
+        lng: _geoLng!,
+        mode: 'driving',
+      );
+      _proximHesKm = nearest.km; // <-- road distance (km)
       _nearestHesId = nearest.id;
       _nearestHesName = nearest.name;
     }
@@ -530,8 +653,7 @@ out body;
       if (raw.isEmpty) throw '$label is required';
       final v = double.tryParse(raw.replaceAll(',', '.'));
       if (v == null) throw '$label must be a number';
-      if (min != null && v < min)
-        throw '$label must be ≥ ${min.toStringAsFixed(0)}';
+      if (min != null && v < min) throw '$label must be ≥ ${min.toStringAsFixed(0)}';
       return v;
     }
 
@@ -559,18 +681,16 @@ out body;
       "longitude": _geoLng!,
       "surface_m2": reqNum('Surface (m²)', _surfaceCtrl.text, min: 1),
       "num_rooms": reqInt('Number of rooms', _roomsCtrl.text, min: 1),
-      "type": _typeOptions[_typeIndex] == 'Single room'
-          ? "room"
-          : "entire_home",
+      "type": _typeOptions[_typeIndex] == 'Single room' ? "room" : "entire_home",
       "is_furnished": _isFurnish,
       "floor": reqInt('Floor', _floorCtrl.text), // negative allowed if needed
       "wifi_incl": _wifiIncl,
       "charges_incl": _chargesIncl,
       "car_park": _carPark,
-      "dist_public_transport_km": _distTransitKm!, // now strictly computed
+      "dist_public_transport_km": _distTransitKm!, // computed only
       "proxim_hesso_km": _proximHesKm!,
     };
-  }
+    }
 
   String? _validateForEstimate() {
     if (_addressCtrl.text.trim().isEmpty) return 'Address is required.';
@@ -727,7 +847,7 @@ out body;
   // Save flow:
   // 1) Validate availability
   // 2) Geocode address -> lat/lng (unless already from suggestion)
-  // 3) Compute nearest school
+  // 3) Compute nearest school (Google Directions road distance)
   // 4) Ensure transit distance
   // 5) Save listing (with availability_start & availability_end)
   // 6) Upload images
@@ -771,8 +891,12 @@ out body;
         _geoLng = coords.lng;
       }
 
-      // 2) Nearest school (id + km + name)
-      final nearest = await _computeNearestSchool(lat: _geoLat!, lng: _geoLng!);
+      // 2) Nearest school by air, then road distance (id + km + name)
+      final nearest = await _computeNearestSchoolRoadKm(
+        lat: _geoLat!,
+        lng: _geoLng!,
+        mode: 'driving',
+      );
       _proximHesKm = nearest.km;
       _nearestHesId = nearest.id;
       _nearestHesName = nearest.name;
@@ -825,9 +949,7 @@ out body;
         'longitude': _geoLng,
         'surface': parseD(_surfaceCtrl.text),
         'num_rooms': parseI(_roomsCtrl.text),
-        'type': _typeOptions[_typeIndex] == "Entire home"
-            ? "entire_home"
-            : "room",
+        'type': _typeOptions[_typeIndex] == "Entire home" ? "entire_home" : "room",
         'is_furnish': _isFurnish,
         'floor': parseI(_floorCtrl.text),
         'wifi_incl': _wifiIncl,
@@ -989,13 +1111,9 @@ out body;
 
           final gap = 12.0;
           final double contentMax = 900;
-          final double gridWidth = (constraints.maxWidth.clamp(
-            360,
-            contentMax,
-          )).toDouble();
-          final double fieldWidth = isWide
-              ? ((gridWidth - gap) / 2)
-              : gridWidth;
+          final double gridWidth =
+              (constraints.maxWidth.clamp(360, contentMax)).toDouble();
+          final double fieldWidth = isWide ? ((gridWidth - gap) / 2) : gridWidth;
 
           // Image grid sizes
           final thumbsPerRow = isWide ? 4 : 2;
@@ -1078,8 +1196,7 @@ out body;
                                             leading: const Icon(
                                               Icons.place_outlined,
                                             ),
-                                            validator: (v) =>
-                                                (v == null || v.isEmpty)
+                                            validator: (v) => (v == null || v.isEmpty)
                                                 ? 'Required'
                                                 : null,
                                             textAlign: TextAlign.center,
@@ -1096,15 +1213,11 @@ out body;
                                           if (_addressSuggestions.isNotEmpty)
                                             Container(
                                               decoration: BoxDecoration(
-                                                color: Theme.of(
-                                                  context,
-                                                ).cardColor,
+                                                color: Theme.of(context).cardColor,
                                                 borderRadius:
                                                     BorderRadius.circular(12),
                                                 border: Border.all(
-                                                  color: cs.primary.withOpacity(
-                                                    .15,
-                                                  ),
+                                                  color: cs.primary.withOpacity(.15),
                                                 ),
                                               ),
                                               child: ListView.separated(
@@ -1113,29 +1226,46 @@ out body;
                                                     const NeverScrollableScrollPhysics(),
                                                 itemCount:
                                                     _addressSuggestions.length,
-                                                separatorBuilder: (_, __) =>
-                                                    Divider(
-                                                      height: 1,
-                                                      color: cs.primary
-                                                          .withOpacity(.08),
-                                                    ),
+                                                separatorBuilder: (_, __) => Divider(
+                                                  height: 1,
+                                                  color: cs.primary.withOpacity(.08),
+                                                ),
                                                 itemBuilder: (ctx, i) {
-                                                  final s =
-                                                      _addressSuggestions[i];
+                                                  final s = _addressSuggestions[i];
+
+                                                  // Compose the street part we will SHOW in the suggestion
+                                                  final road = s.road?.trim() ?? '';
+                                                  final house = s.houseNumber?.trim() ?? '';
+                                                  final street = [road, house].where((x) => x.isNotEmpty).join(' ').trim();
+
+                                                  // Compose locality: "<postcode> <city>"
+                                                  final locality = [
+                                                    s.postcode.trim(),
+                                                    s.city.trim(),
+                                                  ].where((x) => x.isNotEmpty).join(' ').trim();
+
+                                                  // Final full line for the suggestion UI:
+                                                  // Prefer our structured "street, locality", otherwise fall back to display_name.
+                                                  final fullLabel = [
+                                                    street.isNotEmpty ? street : s.displayName.split(',').first.trim(),
+                                                    if (locality.isNotEmpty) locality,
+                                                  ].join(', ');
+
                                                   return ListTile(
                                                     dense: true,
-                                                    leading: const Icon(
-                                                      Icons
-                                                          .location_on_outlined,
-                                                    ),
+                                                    leading: const Icon(Icons.location_on_outlined),
                                                     title: Text(
-                                                      s.displayName,
-                                                      maxLines: 2,
-                                                      overflow:
-                                                          TextOverflow.ellipsis,
+                                                      fullLabel,
+                                                      maxLines: 1,
+                                                      overflow: TextOverflow.ellipsis,
                                                     ),
-                                                    onTap: () =>
-                                                        _applySuggestion(s),
+                                                    // Optional: show original display_name as context (one line)
+                                                    subtitle: Text(
+                                                      s.displayName,
+                                                      maxLines: 1,
+                                                      overflow: TextOverflow.ellipsis,
+                                                    ),
+                                                    onTap: () => _applySuggestion(s),
                                                   );
                                                 },
                                               ),
@@ -1152,9 +1282,7 @@ out body;
                                           Icons.location_city_outlined,
                                         ),
                                         validator: (v) =>
-                                            (v == null || v.isEmpty)
-                                            ? 'Required'
-                                            : null,
+                                            (v == null || v.isEmpty) ? 'Required' : null,
                                         textAlign: TextAlign.center,
                                       ),
                                     ),
@@ -1168,9 +1296,7 @@ out body;
                                           Icons.local_post_office_outlined,
                                         ),
                                         validator: (v) =>
-                                            (v == null || v.isEmpty)
-                                            ? 'Required'
-                                            : null,
+                                            (v == null || v.isEmpty) ? 'Required' : null,
                                         textAlign: TextAlign.center,
                                       ),
                                     ),
@@ -1184,13 +1310,11 @@ out body;
                                           Icons.square_foot_outlined,
                                         ),
                                         validator: (v) {
-                                          if (v == null || v.isEmpty)
-                                            return 'Required';
+                                          if (v == null || v.isEmpty) return 'Required';
                                           final n = double.tryParse(
                                             v.replaceAll(',', '.'),
                                           );
-                                          if (n == null)
-                                            return 'Invalid number';
+                                          if (n == null) return 'Invalid number';
                                           if (n < 1) return 'Must be ≥ 1';
                                           return null;
                                         },
@@ -1207,11 +1331,9 @@ out body;
                                           Icons.meeting_room_outlined,
                                         ),
                                         validator: (v) {
-                                          if (v == null || v.isEmpty)
-                                            return 'Required';
+                                          if (v == null || v.isEmpty) return 'Required';
                                           final n = int.tryParse(v);
-                                          if (n == null)
-                                            return 'Invalid integer';
+                                          if (n == null) return 'Invalid integer';
                                           if (n < 1) return 'Must be ≥ 1';
                                           return null;
                                         },
@@ -1228,11 +1350,9 @@ out body;
                                           Icons.unfold_more_outlined,
                                         ),
                                         validator: (v) {
-                                          if (v == null || v.isEmpty)
-                                            return 'Required';
+                                          if (v == null || v.isEmpty) return 'Required';
                                           final n = int.tryParse(v);
-                                          if (n == null)
-                                            return 'Invalid integer';
+                                          if (n == null) return 'Invalid integer';
                                           return null; // allow negative floors if needed
                                         },
                                         textAlign: TextAlign.center,
@@ -1243,29 +1363,24 @@ out body;
                                     SizedBox(
                                       width: gridWidth,
                                       child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.center,
+                                        crossAxisAlignment: CrossAxisAlignment.center,
                                         children: [
                                           Text(
                                             'Type',
                                             style: TextStyle(
-                                              color: cs.onSurface.withOpacity(
-                                                .8,
-                                              ),
+                                              color: cs.onSurface.withOpacity(.8),
                                               fontWeight: FontWeight.w600,
                                             ),
                                           ),
                                           const SizedBox(height: 8),
                                           LayoutBuilder(
                                             builder: (context, box) {
-                                              final isNarrow =
-                                                  box.maxWidth < 300;
+                                              final isNarrow = box.maxWidth < 300;
                                               if (isNarrow) {
                                                 return Wrap(
                                                   spacing: 8,
                                                   runSpacing: 8,
-                                                  alignment:
-                                                      WrapAlignment.center,
+                                                  alignment: WrapAlignment.center,
                                                   children: List.generate(
                                                     _typeOptions.length,
                                                     (i) {
@@ -1273,22 +1388,14 @@ out body;
                                                         width: box.maxWidth,
                                                         child: MoonSegmentedControl(
                                                           initialIndex:
-                                                              _typeIndex == i
-                                                              ? 0
-                                                              : -1,
+                                                              _typeIndex == i ? 0 : -1,
                                                           segments: [
                                                             Segment(
-                                                              label: Text(
-                                                                _typeOptions[i],
-                                                              ),
+                                                              label: Text(_typeOptions[i]),
                                                             ),
                                                           ],
-                                                          onSegmentChanged:
-                                                              (_) => setState(
-                                                                () =>
-                                                                    _typeIndex =
-                                                                        i,
-                                                              ),
+                                                          onSegmentChanged: (_) =>
+                                                              setState(() => _typeIndex = i),
                                                           isExpanded: true,
                                                         ),
                                                       );
@@ -1299,16 +1406,10 @@ out body;
                                               return MoonSegmentedControl(
                                                 initialIndex: _typeIndex,
                                                 segments: _typeOptions
-                                                    .map(
-                                                      (t) => Segment(
-                                                        label: Text(t),
-                                                      ),
-                                                    )
+                                                    .map((t) => Segment(label: Text(t)))
                                                     .toList(),
                                                 onSegmentChanged: (i) =>
-                                                    setState(
-                                                      () => _typeIndex = i,
-                                                    ),
+                                                    setState(() => _typeIndex = i),
                                                 isExpanded: true,
                                               );
                                             },
@@ -1345,17 +1446,15 @@ out body;
                                       child: _AmenitySwitch(
                                         title: 'Have furniture?',
                                         value: _isFurnish,
-                                        onChanged: (v) =>
-                                            setState(() => _isFurnish = v),
+                                        onChanged: (v) => setState(() => _isFurnish = v),
                                       ),
                                     ),
                                     SizedBox(
                                       width: fieldWidth,
                                       child: _AmenitySwitch(
-                                        title: 'Wifi included?',
+                                        title: 'Wi-Fi included?',
                                         value: _wifiIncl,
-                                        onChanged: (v) =>
-                                            setState(() => _wifiIncl = v),
+                                        onChanged: (v) => setState(() => _wifiIncl = v),
                                       ),
                                     ),
                                     SizedBox(
@@ -1363,8 +1462,7 @@ out body;
                                       child: _AmenitySwitch(
                                         title: 'Charges included?',
                                         value: _chargesIncl,
-                                        onChanged: (v) =>
-                                            setState(() => _chargesIncl = v),
+                                        onChanged: (v) => setState(() => _chargesIncl = v),
                                       ),
                                     ),
                                     SizedBox(
@@ -1372,8 +1470,7 @@ out body;
                                       child: _AmenitySwitch(
                                         title: 'Car park?',
                                         value: _carPark,
-                                        onChanged: (v) =>
-                                            setState(() => _carPark = v),
+                                        onChanged: (v) => setState(() => _carPark = v),
                                       ),
                                     ),
                                   ],
@@ -1421,9 +1518,7 @@ out body;
                                           Expanded(
                                             child: MoonFilledButton(
                                               isFullWidth: true,
-                                              onTap: _noEndDate
-                                                  ? null
-                                                  : _pickEndDate,
+                                              onTap: _noEndDate ? null : _pickEndDate,
                                               leading: const Icon(
                                                 Icons.event_note_outlined,
                                               ),
@@ -1441,8 +1536,7 @@ out body;
                                               Text(
                                                 'No end',
                                                 style: TextStyle(
-                                                  color: cs.onSurface
-                                                      .withOpacity(.8),
+                                                  color: cs.onSurface.withOpacity(.8),
                                                 ),
                                               ),
                                               const SizedBox(width: 6),
@@ -1498,8 +1592,7 @@ out body;
                                           strokeWidth: 2,
                                         ),
                                       ),
-                                    if (_isComputingTransit)
-                                      const SizedBox(width: 8),
+                                    if (_isComputingTransit) const SizedBox(width: 8),
                                     Flexible(
                                       child: Text(
                                         _distTransitKm == null
@@ -1527,16 +1620,14 @@ out body;
                                           strokeWidth: 2,
                                         ),
                                       ),
-                                    if (_isComputingHes)
-                                      const SizedBox(width: 8),
+                                    if (_isComputingHes) const SizedBox(width: 8),
                                     Flexible(
                                       child: Text(
                                         _proximHesKm == null
                                             ? 'HES proximity: —'
-                                            : (_nearestHesName == null ||
-                                                  _nearestHesName!.isEmpty)
-                                            ? 'HES proximity: ${_proximHesKm!.toStringAsFixed(2)} km'
-                                            : 'HES proximity: ${_nearestHesName!} • ${_proximHesKm!.toStringAsFixed(2)} km',
+                                            : (_nearestHesName == null || _nearestHesName!.isEmpty)
+                                                ? 'HES proximity: ${_proximHesKm!.toStringAsFixed(2)} km'
+                                                : 'HES proximity: ${_nearestHesName!} • ${_proximHesKm!.toStringAsFixed(2)} km',
                                         textAlign: TextAlign.center,
                                         style: TextStyle(
                                           color: cs.onSurface.withOpacity(.85),
@@ -1631,17 +1722,15 @@ out body;
                                             MoonIcons.arrows_boost_24_regular,
                                           ),
                                           validator: (v) {
-                                            if (v == null || v.isEmpty)
-                                              return 'Required';
+                                            if (v == null || v.isEmpty) return 'Required';
                                             final value = double.tryParse(
                                               v.replaceAll(',', '.'),
                                             );
-                                            if (value == null)
-                                              return 'Invalid number';
-                                            if (value <= 0)
-                                              return 'Must be > 0';
-                                            if (!_isOn005Step(value))
+                                            if (value == null) return 'Invalid number';
+                                            if (value <= 0) return 'Must be > 0';
+                                            if (!_isOn005Step(value)) {
                                               return 'Must be multiple of 0.05';
+                                            }
                                             return null;
                                           },
                                           textAlign: TextAlign.center,
@@ -1650,30 +1739,21 @@ out body;
                                       ),
                                       const SizedBox(width: 8),
                                       MoonButton(
-                                        onTap: _estimating
-                                            ? null
-                                            : _estimatePrice,
+                                        onTap: _estimating ? null : _estimatePrice,
                                         leading: _estimating
                                             ? const SizedBox(
                                                 width: 18,
                                                 height: 18,
                                                 child:
-                                                    CircularProgressIndicator(
-                                                      strokeWidth: 2,
-                                                    ),
+                                                    CircularProgressIndicator(strokeWidth: 2),
                                               )
-                                            : const Icon(
-                                                Icons.calculate_outlined,
-                                              ),
-                                        label: Text(
-                                          _estimating ? '...' : 'Estimate',
-                                        ),
+                                            : const Icon(Icons.calculate_outlined),
+                                        label: Text(_estimating ? '...' : 'Estimate'),
                                       ),
                                     ],
                                   ),
                                 ),
-                                if (_estimatedPrice != null ||
-                                    _estimationError != null) ...[
+                                if (_estimatedPrice != null || _estimationError != null) ...[
                                   const SizedBox(height: 8),
                                   Container(
                                     padding: const EdgeInsets.symmetric(
@@ -1681,9 +1761,7 @@ out body;
                                       vertical: 10,
                                     ),
                                     decoration: BoxDecoration(
-                                      color: Theme.of(
-                                        context,
-                                      ).cardColor.withOpacity(.95),
+                                      color: Theme.of(context).cardColor.withOpacity(.95),
                                       border: Border.all(
                                         color: cs.primary.withOpacity(.15),
                                       ),
@@ -1714,8 +1792,7 @@ out body;
                                                 ),
                                               ),
                                               MoonButton(
-                                                onTap:
-                                                    _applyEstimateToPriceField,
+                                                onTap: _applyEstimateToPriceField,
                                                 label: const Text('Apply'),
                                                 leading: const Icon(
                                                   Icons.check_circle_outline,
@@ -1750,9 +1827,7 @@ out body;
                                 ? const SizedBox(
                                     width: 18,
                                     height: 18,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                    ),
+                                    child: CircularProgressIndicator(strokeWidth: 2),
                                   )
                                 : const Icon(MoonIcons.arrows_boost_24_regular),
                             label: Text(_saving ? 'Saving…' : 'Save listing'),
@@ -1834,26 +1909,15 @@ class _AmenitySwitch extends StatelessWidget {
   }
 }
 
-// Models
-class _School {
-  final String id;
-  final String name;
-  final double latitude;
-  final double longitude;
-  const _School({
-    required this.id,
-    required this.name,
-    required this.latitude,
-    required this.longitude,
-  });
-}
-
 class _AddressSuggestion {
   final String displayName;
   final double? lat;
   final double? lon;
   final String city;
   final String postcode;
+  final String? road;
+  final String? houseNumber;
+
 
   const _AddressSuggestion({
     required this.displayName,
@@ -1861,5 +1925,7 @@ class _AddressSuggestion {
     required this.lon,
     required this.city,
     required this.postcode,
+    this.road,
+    this.houseNumber,
   });
 }
