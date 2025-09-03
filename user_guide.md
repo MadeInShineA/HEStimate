@@ -27,9 +27,9 @@ On a property’s detail page, you’ll find:
 
 - **Photo Gallery** with a carousel of images.  
 - **Title and Location** with address info.  
-- **Price and Details** like size, rooms, and amenities.  
+- **Property Details** like size, rooms, and amenities.  
+- **Price estimation** An estimation of the price by a machine learning model.
 - **Distance to Campus** showing how close it is to the nearest school.  
-- **Nearby Amenities** such as public transport stops.  
 - **Ratings** from previous students.  
 - **Favorite Button** to save the listing for later.  
 
