@@ -15,6 +15,7 @@ import 'ui/profile.dart';
 import 'ui/about_page.dart';
 import 'ui/faceIdLogin.dart';
 import 'ui/faceIdSetup.dart';
+import 'ui/forgot_password.dart'; // Add this import
 import 'ui/menu.dart'; // HomeMenuPage lives here
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'firebase_options.dart';
@@ -112,6 +113,7 @@ class _MyAppState extends State<MyApp> {
       routes: {
         '/login': (context) => const LoginPage(),
         '/register': (context) => const RegisterPage(),
+        '/forgot-password': (context) => const ForgotPasswordPage(), // Add this route
         '/faceIdSetup': (context) => const FaceIdSetupPage(),
         '/home': (context) => HomeMenuPage(onToggleTheme: _toggleTheme),
         '/profile': (context) => const ProfilePage(),
