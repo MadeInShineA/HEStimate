@@ -3,6 +3,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:moon_design/moon_design.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'rate_student_page.dart';
 
 class OwnerManagementPage extends StatefulWidget {
   const OwnerManagementPage({super.key});
@@ -96,7 +97,7 @@ String _generateTitle(Map<String, dynamic> data) {
   return title;
 }
 
-Widget _starsRow(BuildContext context, double avg, int count) {
+Widget _starsRow(BuildContext context, double avg, int count, {bool isClickable = false}) {
   final cs = Theme.of(context).colorScheme;
   final full = avg.round().clamp(0, 5);
   return Row(
@@ -114,13 +115,26 @@ Widget _starsRow(BuildContext context, double avg, int count) {
         );
       }),
       const SizedBox(width: 6),
-      Text(
-        count == 0 ? 'No ratings' : '${avg.toStringAsFixed(1)} ($count)',
-        style: TextStyle(
-          fontSize: 12,
-          color: cs.onSurface.withOpacity(.8),
-          fontWeight: FontWeight.w600,
-        ),
+      Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            count == 0 ? 'No ratings' : '${avg.toStringAsFixed(1)} ($count)',
+            style: TextStyle(
+              fontSize: 12,
+              color: cs.onSurface.withOpacity(.8),
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          if (isClickable && count > 0) ...[
+            const SizedBox(width: 4),
+            Icon(
+              Icons.arrow_forward_ios,
+              size: 10,
+              color: cs.onSurface.withOpacity(.6),
+            ),
+          ],
+        ],
       ),
     ],
   );
@@ -128,12 +142,17 @@ Widget _starsRow(BuildContext context, double avg, int count) {
 
 class StudentRatingPreview extends StatelessWidget {
   final String? studentUid;
-  const StudentRatingPreview({super.key, required this.studentUid});
+  final String? studentName;
+  const StudentRatingPreview({
+    super.key, 
+    required this.studentUid,
+    this.studentName,
+  });
 
   @override
   Widget build(BuildContext context) {
     if (studentUid == null || studentUid!.isEmpty) {
-      return _starsRow(context, 0, 0); // fallback propre
+      return _starsRow(context, 0, 0, isClickable: false);
     }
 
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
@@ -157,7 +176,23 @@ class StudentRatingPreview extends StatelessWidget {
         }
         return Padding(
           padding: const EdgeInsets.only(top: 6.0),
-          child: _starsRow(context, avg, count),
+          child: InkWell(
+            onTap: count > 0 ? () {
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (context) => StudentReviewsPage(
+                    studentUid: studentUid!,
+                    studentName: studentName ?? 'Unknown Student',
+                  ),
+                ),
+              );
+            } : null,
+            borderRadius: BorderRadius.circular(8),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+              child: _starsRow(context, avg, count, isClickable: count > 0),
+            ),
+          ),
         );
       },
     );
@@ -501,7 +536,10 @@ class _RequestsTabState extends State<RequestsTab> with AutomaticKeepAliveClient
                                   color: cs.onSurface.withOpacity(0.6),
                                 ),
                               ),
-                              StudentRatingPreview(studentUid: data['studentUid']),
+                              StudentRatingPreview(
+                                studentUid: data['studentUid'],
+                                studentName: data['studentName'],
+                              ),
                             ],
                           ),
                         ),
@@ -859,7 +897,10 @@ class _ReviewsTabState extends State<ReviewsTab> with AutomaticKeepAliveClientMi
                                   color: cs.onSurface.withOpacity(0.6),
                                 ),
                               ),
-                              StudentRatingPreview(studentUid: data['studentUid']),
+                              StudentRatingPreview(
+                                studentUid: data['studentUid'],
+                                studentName: data['studentName'],
+                              ),
                             ],
                           ),
                         ),
@@ -1143,7 +1184,10 @@ class _StudentsTabState extends State<StudentsTab> with AutomaticKeepAliveClient
                                     color: cs.onSurface.withOpacity(0.6),
                                   ),
                                 ),
-                                StudentRatingPreview(studentUid: data['studentUid']),
+                                StudentRatingPreview(
+                                  studentUid: data['studentUid'],
+                                  studentName: data['studentName'],
+                                ),
                               ],
                             ),
                           ),
