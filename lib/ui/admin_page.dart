@@ -10,13 +10,18 @@ class AdminPage extends StatefulWidget {
   _AdminPageState createState() => _AdminPageState();
 }
 
-class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMixin {
+class _AdminPageState extends State<AdminPage>
+    with SingleTickerProviderStateMixin {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final FirebaseAuth _auth = FirebaseAuth.instance;
-  
+
   bool _isAdmin = false;
   bool _isLoading = true;
   late TabController _tabController;
+
+  // Search state (Users tab)
+  final TextEditingController _userSearchCtrl = TextEditingController();
+  String _userQuery = '';
 
   // Dashboard data
   int _totalUsers = 0;
@@ -34,13 +39,14 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 3, vsync: this); // Changé à 3 onglets
+    _tabController = TabController(length: 3, vsync: this);
     _checkAdminRole();
   }
 
   @override
   void dispose() {
     _tabController.dispose();
+    _userSearchCtrl.dispose();
     super.dispose();
   }
 
@@ -52,13 +58,14 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
             .collection('users')
             .doc(currentUser.uid)
             .get();
-        
+
         if (userDoc.exists && userDoc.data() != null) {
-          Map<String, dynamic> userData = userDoc.data() as Map<String, dynamic>;
+          Map<String, dynamic> userData =
+              userDoc.data() as Map<String, dynamic>;
           setState(() {
             _isAdmin = userData['role'] == 'admin';
           });
-          
+
           if (_isAdmin) {
             await _loadDashboardData();
             await _loadAnalyticsData();
@@ -86,10 +93,7 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
 
   Future<void> _loadAnalyticsData() async {
     try {
-      await Future.wait([
-        _loadDailyListingsData(),
-        _loadDailyBookingsData(),
-      ]);
+      await Future.wait([_loadDailyListingsData(), _loadDailyBookingsData()]);
     } catch (e) {
       print('Erreur lors du chargement des données analytiques: $e');
     }
@@ -98,16 +102,19 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
   Future<void> _loadDailyListingsData() async {
     final now = DateTime.now();
     final thirtyDaysAgo = now.subtract(const Duration(days: 30));
-    
+
     QuerySnapshot snapshot = await _firestore
         .collection('listings')
-        .where('createdAt', isGreaterThanOrEqualTo: Timestamp.fromDate(thirtyDaysAgo))
+        .where(
+          'createdAt',
+          isGreaterThanOrEqualTo: Timestamp.fromDate(thirtyDaysAgo),
+        )
         .orderBy('createdAt')
         .get();
 
     Map<String, int> dailyCounts = {};
     List<String> dates = [];
-    
+
     // Initialize all dates with 0
     for (int i = 0; i < 30; i++) {
       final date = thirtyDaysAgo.add(Duration(days: i));
@@ -129,11 +136,12 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
     }
 
     setState(() {
-      _dailyListingsData = dailyCounts.entries
+      // Fixed: use values.toList() and value.toDouble()
+      _dailyListingsData = dailyCounts.values
           .toList()
           .asMap()
           .entries
-          .map((entry) => FlSpot(entry.key.toDouble(), entry.value.value.toDouble()))
+          .map((e) => FlSpot(e.key.toDouble(), e.value.toDouble()))
           .toList();
       _chartDates = dates;
     });
@@ -142,15 +150,18 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
   Future<void> _loadDailyBookingsData() async {
     final now = DateTime.now();
     final thirtyDaysAgo = now.subtract(const Duration(days: 30));
-    
+
     QuerySnapshot snapshot = await _firestore
         .collection('booking_requests')
-        .where('createdAt', isGreaterThanOrEqualTo: Timestamp.fromDate(thirtyDaysAgo))
+        .where(
+          'createdAt',
+          isGreaterThanOrEqualTo: Timestamp.fromDate(thirtyDaysAgo),
+        )
         .orderBy('createdAt')
         .get();
 
     Map<String, int> dailyCounts = {};
-    
+
     // Initialize all dates with 0
     for (int i = 0; i < 30; i++) {
       final date = thirtyDaysAgo.add(Duration(days: i));
@@ -171,26 +182,27 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
     }
 
     setState(() {
-      _dailyBookingsData = dailyCounts.entries
+      // Fixed: use values.toList() and value.toDouble()
+      _dailyBookingsData = dailyCounts.values
           .toList()
           .asMap()
           .entries
-          .map((entry) => FlSpot(entry.key.toDouble(), entry.value.value.toDouble()))
+          .map((e) => FlSpot(e.key.toDouble(), e.value.toDouble()))
           .toList();
     });
   }
 
   Future<void> _loadUsersData() async {
     QuerySnapshot usersSnapshot = await _firestore.collection('users').get();
-    
+
     Map<String, int> roleCount = {'student': 0, 'homeowner': 0, 'admin': 0};
-    
+
     for (var doc in usersSnapshot.docs) {
       Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
       String role = data['role'] ?? 'student';
       roleCount[role] = (roleCount[role] ?? 0) + 1;
     }
-    
+
     setState(() {
       _totalUsers = usersSnapshot.docs.length;
       _usersByRole = roleCount;
@@ -198,16 +210,18 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
   }
 
   Future<void> _loadListingsData() async {
-    QuerySnapshot listingsSnapshot = await _firestore.collection('listings').get();
-    
+    QuerySnapshot listingsSnapshot = await _firestore
+        .collection('listings')
+        .get();
+
     Map<String, int> typeCount = {'room': 0, 'entire_home': 0};
-    
+
     for (var doc in listingsSnapshot.docs) {
       Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
       String type = data['type'] ?? 'room';
       typeCount[type] = (typeCount[type] ?? 0) + 1;
     }
-    
+
     setState(() {
       _totalListings = listingsSnapshot.docs.length;
       _listingsByType = typeCount;
@@ -215,15 +229,17 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
   }
 
   Future<void> _loadBookingsData() async {
-    QuerySnapshot bookingsSnapshot = await _firestore.collection('booking_requests').get();
-    
+    QuerySnapshot bookingsSnapshot = await _firestore
+        .collection('booking_requests')
+        .get();
+
     int pending = 0;
     for (var doc in bookingsSnapshot.docs) {
       Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
       String status = data['status'] ?? '';
       if (status == 'pending') pending++;
     }
-    
+
     setState(() {
       _totalBookings = bookingsSnapshot.docs.length;
       _pendingBookings = pending;
@@ -291,9 +307,7 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
                   Text(
                     'You don\'t have administrative privileges to access this page.',
                     textAlign: TextAlign.center,
-                    style: TextStyle(
-                      color: cs.onSurface.withOpacity(0.7),
-                    ),
+                    style: TextStyle(color: cs.onSurface.withOpacity(0.7)),
                   ),
                 ],
               ),
@@ -376,14 +390,16 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
                         Text(
                           'Real-time statistics and metrics',
                           style: TextStyle(
-                            color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
+                            color: Theme.of(
+                              context,
+                            ).colorScheme.onSurface.withOpacity(0.7),
                           ),
                         ),
                       ],
                     ),
                   ),
                   const SizedBox(height: 16),
-                  
+
                   // Stats grid
                   GridView.count(
                     shrinkWrap: true,
@@ -422,9 +438,9 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
                       ),
                     ],
                   ),
-                  
+
                   const SizedBox(height: 16),
-                  
+
                   // User breakdown
                   _MoonCard(
                     isDark: isDark,
@@ -447,7 +463,7 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
                         ),
                         const SizedBox(height: 16),
                         ..._usersByRole.entries.map((entry) {
-                          final percentage = _totalUsers > 0 
+                          final percentage = _totalUsers > 0
                               ? (entry.value / _totalUsers * 100).round()
                               : 0;
                           return Padding(
@@ -463,7 +479,9 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
                                 Expanded(
                                   child: Text(
                                     _getRoleName(entry.key),
-                                    style: const TextStyle(fontWeight: FontWeight.w600),
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.w600,
+                                    ),
                                   ),
                                 ),
                                 Text(
@@ -480,9 +498,9 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
                       ],
                     ),
                   ),
-                  
+
                   const SizedBox(height: 16),
-                  
+
                   // Listing breakdown
                   _MoonCard(
                     isDark: isDark,
@@ -505,13 +523,19 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
                         ),
                         const SizedBox(height: 16),
                         ..._listingsByType.entries.map((entry) {
-                          final percentage = _totalListings > 0 
+                          final percentage = _totalListings > 0
                               ? (entry.value / _totalListings * 100).round()
                               : 0;
-                          final typeName = entry.key == 'entire_home' ? 'Entire Homes' : 'Single Rooms';
-                          final typeIcon = entry.key == 'entire_home' ? Icons.home : Icons.meeting_room;
-                          final typeColor = entry.key == 'entire_home' ? Colors.purple : Colors.teal;
-                          
+                          final typeName = entry.key == 'entire_home'
+                              ? 'Entire Homes'
+                              : 'Single Rooms';
+                          final typeIcon = entry.key == 'entire_home'
+                              ? Icons.home
+                              : Icons.meeting_room;
+                          final typeColor = entry.key == 'entire_home'
+                              ? Colors.purple
+                              : Colors.teal;
+
                           return Padding(
                             padding: const EdgeInsets.only(bottom: 12),
                             child: Row(
@@ -521,7 +545,9 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
                                 Expanded(
                                   child: Text(
                                     typeName,
-                                    style: const TextStyle(fontWeight: FontWeight.w600),
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.w600,
+                                    ),
                                   ),
                                 ),
                                 Text(
@@ -592,14 +618,34 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
                         Text(
                           'Manage all platform users and their roles',
                           style: TextStyle(
-                            color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
+                            color: Theme.of(
+                              context,
+                            ).colorScheme.onSurface.withOpacity(0.7),
                           ),
                         ),
                       ],
                     ),
                   ),
                   const SizedBox(height: 16),
-                  
+
+                  // Search bar
+                  _MoonCard(
+                    isDark: isDark,
+                    child: TextField(
+                      controller: _userSearchCtrl,
+                      onChanged: (v) => setState(() => _userQuery = v.trim()),
+                      decoration: InputDecoration(
+                        prefixIcon: const Icon(Icons.search),
+                        hintText: 'Search by username…',
+                        isDense: true,
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+
                   // Users list
                   _MoonCard(
                     isDark: isDark,
@@ -609,8 +655,11 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
                           .orderBy('createdAt', descending: true)
                           .snapshots(),
                       builder: (context, snapshot) {
-                        if (snapshot.connectionState == ConnectionState.waiting) {
-                          return const Center(child: CircularProgressIndicator());
+                        if (snapshot.connectionState ==
+                            ConnectionState.waiting) {
+                          return const Center(
+                            child: CircularProgressIndicator(),
+                          );
                         }
 
                         if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
@@ -618,11 +667,54 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
                             child: Column(
                               mainAxisAlignment: MainAxisAlignment.center,
                               children: [
-                                Icon(Icons.people_outline, size: 64, color: Colors.grey),
+                                Icon(
+                                  Icons.people_outline,
+                                  size: 64,
+                                  color: Colors.grey,
+                                ),
                                 SizedBox(height: 16),
                                 Text(
                                   'No users found',
-                                  style: TextStyle(fontSize: 18, color: Colors.grey),
+                                  style: TextStyle(
+                                    fontSize: 18,
+                                    color: Colors.grey,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        }
+
+                        final docs = snapshot.data!.docs;
+
+                        // Case-insensitive client-side filter on 'name' (username)
+                        final filtered = _userQuery.isEmpty
+                            ? docs
+                            : docs.where((d) {
+                                final data = d.data() as Map<String, dynamic>;
+                                final name = (data['name'] ?? '').toString();
+                                return name.toLowerCase().contains(
+                                  _userQuery.toLowerCase(),
+                                );
+                              }).toList();
+
+                        if (filtered.isEmpty) {
+                          return const Center(
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(
+                                  Icons.person_search,
+                                  size: 64,
+                                  color: Colors.grey,
+                                ),
+                                SizedBox(height: 16),
+                                Text(
+                                  'No matching users',
+                                  style: TextStyle(
+                                    fontSize: 18,
+                                    color: Colors.grey,
+                                  ),
                                 ),
                               ],
                             ),
@@ -633,7 +725,7 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              'All Users (${snapshot.data!.docs.length})',
+                              'All Users (${filtered.length})',
                               style: TextStyle(
                                 fontSize: 18,
                                 fontWeight: FontWeight.w800,
@@ -641,19 +733,25 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
                               ),
                             ),
                             const SizedBox(height: 16),
-                            ...snapshot.data!.docs.map((user) {
-                              Map<String, dynamic> userData = user.data() as Map<String, dynamic>;
+                            ...filtered.map((user) {
+                              Map<String, dynamic> userData =
+                                  user.data() as Map<String, dynamic>;
                               String userId = user.id;
-                              bool isCurrentAdmin = userId == _auth.currentUser?.uid;
+                              bool isCurrentAdmin =
+                                  userId == _auth.currentUser?.uid;
 
                               return Container(
                                 margin: const EdgeInsets.only(bottom: 12),
                                 padding: const EdgeInsets.all(16),
                                 decoration: BoxDecoration(
-                                  color: Theme.of(context).colorScheme.surface.withOpacity(0.5),
+                                  color: Theme.of(
+                                    context,
+                                  ).colorScheme.surface.withOpacity(0.5),
                                   borderRadius: BorderRadius.circular(12),
                                   border: Border.all(
-                                    color: Theme.of(context).colorScheme.outline.withOpacity(0.2),
+                                    color: Theme.of(
+                                      context,
+                                    ).colorScheme.outline.withOpacity(0.2),
                                   ),
                                 ),
                                 child: Row(
@@ -662,7 +760,9 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
                                       width: 50,
                                       height: 50,
                                       decoration: BoxDecoration(
-                                        color: _getRoleColor(userData['role']).withOpacity(0.15),
+                                        color: _getRoleColor(
+                                          userData['role'],
+                                        ).withOpacity(0.15),
                                         borderRadius: BorderRadius.circular(25),
                                       ),
                                       child: Icon(
@@ -674,7 +774,8 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
                                     const SizedBox(width: 16),
                                     Expanded(
                                       child: Column(
-                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
                                         children: [
                                           Row(
                                             children: [
@@ -688,16 +789,25 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
                                               if (isCurrentAdmin) ...[
                                                 const SizedBox(width: 8),
                                                 Container(
-                                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                                  padding:
+                                                      const EdgeInsets.symmetric(
+                                                        horizontal: 6,
+                                                        vertical: 2,
+                                                      ),
                                                   decoration: BoxDecoration(
-                                                    color: Colors.blue.withOpacity(0.15),
-                                                    borderRadius: BorderRadius.circular(6),
+                                                    color: Colors.blue
+                                                        .withOpacity(0.15),
+                                                    borderRadius:
+                                                        BorderRadius.circular(
+                                                          6,
+                                                        ),
                                                   ),
                                                   child: const Text(
                                                     'You',
                                                     style: TextStyle(
                                                       fontSize: 10,
-                                                      fontWeight: FontWeight.w700,
+                                                      fontWeight:
+                                                          FontWeight.w700,
                                                       color: Colors.blue,
                                                     ),
                                                   ),
@@ -710,23 +820,37 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
                                             userData['email'] ?? 'No email',
                                             style: TextStyle(
                                               fontSize: 14,
-                                              color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
+                                              color: Theme.of(context)
+                                                  .colorScheme
+                                                  .onSurface
+                                                  .withOpacity(0.7),
                                             ),
                                           ),
                                           const SizedBox(height: 4),
                                           Row(
                                             children: [
                                               Container(
-                                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                                padding:
+                                                    const EdgeInsets.symmetric(
+                                                      horizontal: 8,
+                                                      vertical: 4,
+                                                    ),
                                                 decoration: BoxDecoration(
-                                                  color: _getRoleColor(userData['role']).withOpacity(0.15),
-                                                  borderRadius: BorderRadius.circular(12),
+                                                  color: _getRoleColor(
+                                                    userData['role'],
+                                                  ).withOpacity(0.15),
+                                                  borderRadius:
+                                                      BorderRadius.circular(12),
                                                 ),
                                                 child: Text(
-                                                  _getRoleName(userData['role']),
+                                                  _getRoleName(
+                                                    userData['role'],
+                                                  ),
                                                   style: TextStyle(
                                                     fontSize: 12,
-                                                    color: _getRoleColor(userData['role']),
+                                                    color: _getRoleColor(
+                                                      userData['role'],
+                                                    ),
                                                     fontWeight: FontWeight.w600,
                                                   ),
                                                 ),
@@ -736,7 +860,10 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
                                                 'Created: ${_formatDate(userData['createdAt'])}',
                                                 style: TextStyle(
                                                   fontSize: 12,
-                                                  color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5),
+                                                  color: Theme.of(context)
+                                                      .colorScheme
+                                                      .onSurface
+                                                      .withOpacity(0.5),
                                                 ),
                                               ),
                                             ],
@@ -746,8 +873,14 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
                                     ),
                                     if (!isCurrentAdmin) ...[
                                       IconButton(
-                                        onPressed: () => _showDeleteDialog(userId, userData['name']),
-                                        icon: const Icon(Icons.delete_outline, color: Colors.red),
+                                        onPressed: () => _showDeleteDialog(
+                                          userId,
+                                          userData['name'],
+                                        ),
+                                        icon: const Icon(
+                                          Icons.delete_outline,
+                                          color: Colors.red,
+                                        ),
                                         tooltip: 'Delete user',
                                       ),
                                     ],
@@ -770,8 +903,13 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
   }
 
   Widget _buildAnalyticsTab(bool isDark) {
-    double maxYListings = _dailyListingsData.isEmpty ? 1 : _dailyListingsData.map((spot) => spot.y).reduce(math.max);
-    double intervalListings = (maxYListings / 5).ceilToDouble().clamp(1, double.infinity);
+    double maxYListings = _dailyListingsData.isEmpty
+        ? 1
+        : _dailyListingsData.map((spot) => spot.y).reduce(math.max);
+    double intervalListings = (maxYListings / 5).ceilToDouble().clamp(
+      1,
+      double.infinity,
+    );
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -817,7 +955,9 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
                         Text(
                           'Daily trends and insights over the last 30 days',
                           style: TextStyle(
-                            color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
+                            color: Theme.of(
+                              context,
+                            ).colorScheme.onSurface.withOpacity(0.7),
                           ),
                         ),
                       ],
@@ -825,15 +965,20 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
                   ),
                   const SizedBox(height: 16),
 
-                  // New Listings Chart
+                  // New Listings Chart (transparent card)
                   _MoonCard(
                     isDark: isDark,
+                    transparent: true,
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Row(
                           children: [
-                            const Icon(Icons.home_work_outlined, size: 20, color: Colors.green),
+                            const Icon(
+                              Icons.home_work_outlined,
+                              size: 20,
+                              color: Colors.green,
+                            ),
                             const SizedBox(width: 8),
                             Text(
                               'New Listings per Day',
@@ -848,25 +993,37 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
                         const SizedBox(height: 20),
                         SizedBox(
                           height: 200,
-                          child: _dailyListingsData.isEmpty 
+                          child: _dailyListingsData.isEmpty
                               ? const Center(child: CircularProgressIndicator())
                               : LineChart(
                                   LineChartData(
+                                    backgroundColor: Colors.transparent,
                                     gridData: FlGridData(
                                       show: true,
                                       drawVerticalLine: false,
                                       horizontalInterval: 1,
                                       getDrawingHorizontalLine: (value) {
                                         return FlLine(
-                                          color: Theme.of(context).colorScheme.outline.withOpacity(0.2),
+                                          color: Theme.of(context)
+                                              .colorScheme
+                                              .outline
+                                              .withOpacity(0.2),
                                           strokeWidth: 1,
                                         );
                                       },
                                     ),
                                     titlesData: FlTitlesData(
                                       show: true,
-                                      rightTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                                      topTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                                      rightTitles: AxisTitles(
+                                        sideTitles: SideTitles(
+                                          showTitles: false,
+                                        ),
+                                      ),
+                                      topTitles: AxisTitles(
+                                        sideTitles: SideTitles(
+                                          showTitles: false,
+                                        ),
+                                      ),
                                       bottomTitles: AxisTitles(
                                         sideTitles: SideTitles(
                                           showTitles: true,
@@ -874,13 +1031,17 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
                                           interval: 5,
                                           getTitlesWidget: (value, meta) {
                                             final index = value.toInt();
-                                            if (index >= 0 && index < _chartDates.length) {
+                                            if (index >= 0 &&
+                                                index < _chartDates.length) {
                                               return SideTitleWidget(
                                                 axisSide: meta.axisSide,
                                                 child: Text(
                                                   _chartDates[index],
                                                   style: TextStyle(
-                                                    color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+                                                    color: Theme.of(context)
+                                                        .colorScheme
+                                                        .onSurface
+                                                        .withOpacity(0.6),
                                                     fontSize: 10,
                                                   ),
                                                 ),
@@ -898,7 +1059,10 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
                                             return Text(
                                               value.toInt().toString(),
                                               style: TextStyle(
-                                                color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+                                                color: Theme.of(context)
+                                                    .colorScheme
+                                                    .onSurface
+                                                    .withOpacity(0.6),
                                                 fontSize: 10,
                                               ),
                                             );
@@ -909,27 +1073,36 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
                                     ),
                                     borderData: FlBorderData(show: false),
                                     minX: 0,
-                                    maxX: (_dailyListingsData.length - 1).toDouble(),
+                                    maxX: (_dailyListingsData.length - 1)
+                                        .toDouble(),
                                     minY: 0,
-                                    maxY: _dailyListingsData.map((spot) => spot.y).reduce(math.max) + 1,
+                                    maxY:
+                                        _dailyListingsData
+                                            .map((spot) => spot.y)
+                                            .reduce(math.max) +
+                                        1,
                                     lineBarsData: [
                                       LineChartBarData(
                                         spots: _dailyListingsData,
                                         gradient: LinearGradient(
-                                          colors: [Colors.green.withOpacity(0.8), Colors.green],
+                                          colors: [
+                                            Colors.green.withOpacity(0.8),
+                                            Colors.green,
+                                          ],
                                         ),
                                         barWidth: 3,
                                         isStrokeCapRound: true,
                                         dotData: FlDotData(
                                           show: true,
-                                          getDotPainter: (spot, percent, barData, index) {
-                                            return FlDotCirclePainter(
-                                              radius: 4,
-                                              color: Colors.green,
-                                              strokeWidth: 2,
-                                              strokeColor: Colors.white,
-                                            );
-                                          },
+                                          getDotPainter:
+                                              (spot, percent, barData, index) {
+                                                return FlDotCirclePainter(
+                                                  radius: 4,
+                                                  color: Colors.green,
+                                                  strokeWidth: 2,
+                                                  strokeColor: Colors.white,
+                                                );
+                                              },
                                         ),
                                         belowBarData: BarAreaData(
                                           show: true,
@@ -950,18 +1123,23 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
                       ],
                     ),
                   ),
-                  
+
                   const SizedBox(height: 16),
-                  
-                  // New Bookings Chart
+
+                  // New Bookings Chart (transparent card)
                   _MoonCard(
                     isDark: isDark,
+                    transparent: true,
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Row(
                           children: [
-                            const Icon(Icons.book_online_outlined, size: 20, color: Colors.orange),
+                            const Icon(
+                              Icons.book_online_outlined,
+                              size: 20,
+                              color: Colors.orange,
+                            ),
                             const SizedBox(width: 8),
                             Text(
                               'New Bookings per Day',
@@ -976,25 +1154,37 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
                         const SizedBox(height: 20),
                         SizedBox(
                           height: 200,
-                          child: _dailyBookingsData.isEmpty 
+                          child: _dailyBookingsData.isEmpty
                               ? const Center(child: CircularProgressIndicator())
                               : LineChart(
                                   LineChartData(
+                                    backgroundColor: Colors.transparent,
                                     gridData: FlGridData(
                                       show: true,
                                       drawVerticalLine: false,
                                       horizontalInterval: 1,
                                       getDrawingHorizontalLine: (value) {
                                         return FlLine(
-                                          color: Theme.of(context).colorScheme.outline.withOpacity(0.2),
+                                          color: Theme.of(context)
+                                              .colorScheme
+                                              .outline
+                                              .withOpacity(0.2),
                                           strokeWidth: 1,
                                         );
                                       },
                                     ),
                                     titlesData: FlTitlesData(
                                       show: true,
-                                      rightTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                                      topTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                                      rightTitles: AxisTitles(
+                                        sideTitles: SideTitles(
+                                          showTitles: false,
+                                        ),
+                                      ),
+                                      topTitles: AxisTitles(
+                                        sideTitles: SideTitles(
+                                          showTitles: false,
+                                        ),
+                                      ),
                                       bottomTitles: AxisTitles(
                                         sideTitles: SideTitles(
                                           showTitles: true,
@@ -1002,13 +1192,17 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
                                           interval: 5,
                                           getTitlesWidget: (value, meta) {
                                             final index = value.toInt();
-                                            if (index >= 0 && index < _chartDates.length) {
+                                            if (index >= 0 &&
+                                                index < _chartDates.length) {
                                               return SideTitleWidget(
                                                 axisSide: meta.axisSide,
                                                 child: Text(
                                                   _chartDates[index],
                                                   style: TextStyle(
-                                                    color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+                                                    color: Theme.of(context)
+                                                        .colorScheme
+                                                        .onSurface
+                                                        .withOpacity(0.6),
                                                     fontSize: 10,
                                                   ),
                                                 ),
@@ -1026,7 +1220,10 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
                                             return Text(
                                               value.toInt().toString(),
                                               style: TextStyle(
-                                                color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+                                                color: Theme.of(context)
+                                                    .colorScheme
+                                                    .onSurface
+                                                    .withOpacity(0.6),
                                                 fontSize: 10,
                                               ),
                                             );
@@ -1037,27 +1234,36 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
                                     ),
                                     borderData: FlBorderData(show: false),
                                     minX: 0,
-                                    maxX: (_dailyBookingsData.length - 1).toDouble(),
+                                    maxX: (_dailyBookingsData.length - 1)
+                                        .toDouble(),
                                     minY: 0,
-                                    maxY: _dailyBookingsData.map((spot) => spot.y).reduce(math.max) + 1,
+                                    maxY:
+                                        _dailyBookingsData
+                                            .map((spot) => spot.y)
+                                            .reduce(math.max) +
+                                        1,
                                     lineBarsData: [
                                       LineChartBarData(
                                         spots: _dailyBookingsData,
                                         gradient: LinearGradient(
-                                          colors: [Colors.orange.withOpacity(0.8), Colors.orange],
+                                          colors: [
+                                            Colors.orange.withOpacity(0.8),
+                                            Colors.orange,
+                                          ],
                                         ),
                                         barWidth: 3,
                                         isStrokeCapRound: true,
                                         dotData: FlDotData(
                                           show: true,
-                                          getDotPainter: (spot, percent, barData, index) {
-                                            return FlDotCirclePainter(
-                                              radius: 4,
-                                              color: Colors.orange,
-                                              strokeWidth: 2,
-                                              strokeColor: Colors.white,
-                                            );
-                                          },
+                                          getDotPainter:
+                                              (spot, percent, barData, index) {
+                                                return FlDotCirclePainter(
+                                                  radius: 4,
+                                                  color: Colors.orange,
+                                                  strokeWidth: 2,
+                                                  strokeColor: Colors.white,
+                                                );
+                                              },
                                         ),
                                         belowBarData: BarAreaData(
                                           show: true,
@@ -1087,7 +1293,13 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
     );
   }
 
-  Widget _buildDashboardCard(String title, String value, IconData icon, Color color, bool isDark) {
+  Widget _buildDashboardCard(
+    String title,
+    String value,
+    IconData icon,
+    Color color,
+    bool isDark,
+  ) {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -1179,7 +1391,7 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
 
   String _formatDate(dynamic timestamp) {
     if (timestamp == null) return 'Unknown';
-    
+
     try {
       DateTime date;
       if (timestamp is Timestamp) {
@@ -1189,7 +1401,7 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
       } else {
         return 'Invalid date';
       }
-      
+
       return '${date.day}/${date.month}/${date.year}';
     } catch (e) {
       return 'Invalid date';
@@ -1227,7 +1439,7 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
   }
 
   Future<void> _deleteUser(String userId) async {
-    // Double vérification pour éviter la suppression de l'admin actuel
+    // Prevent deleting current admin
     if (userId == _auth.currentUser?.uid) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -1241,17 +1453,17 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
     try {
       // Delete user document from Firestore
       await _firestore.collection('users').doc(userId).delete();
-      
+
       // Also delete any related booking requests
       QuerySnapshot bookings = await _firestore
           .collection('booking_requests')
           .where('studentId', isEqualTo: userId)
           .get();
-      
+
       for (var booking in bookings.docs) {
         await booking.reference.delete();
       }
-      
+
       // Show success message
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -1259,7 +1471,7 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
           backgroundColor: Colors.green,
         ),
       );
-      
+
       // Refresh dashboard data
       await _loadDashboardData();
     } catch (e) {
@@ -1280,35 +1492,47 @@ class _MoonCard extends StatelessWidget {
   final bool isDark;
   final EdgeInsets? padding;
 
+  // NEW: allow transparent background (no border/shadow)
+  final bool transparent;
+
   const _MoonCard({
     required this.child,
     required this.isDark,
     this.padding,
+    this.transparent = false,
   });
 
   @override
   Widget build(BuildContext context) {
+    final bgColor = transparent
+        ? Colors.transparent
+        : (isDark
+              ? const Color(0xFF1A1D29).withOpacity(0.8)
+              : Colors.white.withOpacity(0.9));
+
     return Container(
       padding: padding ?? const EdgeInsets.all(20),
       decoration: BoxDecoration(
-        color: isDark 
-            ? const Color(0xFF1A1D29).withOpacity(0.8)
-            : Colors.white.withOpacity(0.9),
+        color: bgColor,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: isDark 
-              ? Colors.white.withOpacity(0.1)
-              : Colors.black.withOpacity(0.05),
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: isDark 
-                ? Colors.black.withOpacity(0.3)
-                : Colors.black.withOpacity(0.08),
-            blurRadius: 20,
-            offset: const Offset(0, 8),
-          ),
-        ],
+        border: transparent
+            ? null
+            : Border.all(
+                color: isDark
+                    ? Colors.white.withOpacity(0.1)
+                    : Colors.black.withOpacity(0.05),
+              ),
+        boxShadow: transparent
+            ? []
+            : [
+                BoxShadow(
+                  color: isDark
+                      ? Colors.black.withOpacity(0.3)
+                      : Colors.black.withOpacity(0.08),
+                  blurRadius: 20,
+                  offset: const Offset(0, 8),
+                ),
+              ],
       ),
       child: child,
     );
