@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'dart:convert';
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -9,6 +10,223 @@ import 'package:path_provider/path_provider.dart';
 import 'package:http/http.dart' as http;
 import 'loader.dart';
 import 'page.dart';
+import 'rate_student_page.dart';
+
+// Student Rating Preview Widget (CLIQUABLE)
+class StudentRatingPreview extends StatelessWidget {
+  final String studentUid;
+  final String studentName;
+
+  const StudentRatingPreview({
+    super.key,
+    required this.studentUid,
+    required this.studentName,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: FirebaseFirestore.instance
+          .collection('reviews')
+          .where('studentUid', isEqualTo: studentUid)
+          .snapshots(),
+      builder: (context, snap) {
+        double avg = 0;
+        int count = 0;
+        
+        if (snap.hasData) {
+          final docs = snap.data!.docs;
+          count = docs.length;
+          if (count > 0) {
+            final sum = docs.fold<double>(
+              0.0,
+              (acc, d) => acc + ((d.data()['rating'] as num?)?.toDouble() ?? 0.0),
+            );
+            avg = sum / count;
+          }
+        }
+
+        final cs = Theme.of(context).colorScheme;
+        final full = avg.round().clamp(0, 5);
+
+        Widget starsRow() => Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                ...List.generate(5, (i) {
+                  final filled = i < full;
+                  return Padding(
+                    padding: const EdgeInsets.only(right: 4),
+                    child: Icon(
+                      filled ? Icons.star_rounded : Icons.star_border_rounded,
+                      size: 24,
+                      color: filled ? cs.primary : cs.onSurface.withOpacity(.35),
+                    ),
+                  );
+                }),
+              ],
+            );
+
+        return InkWell(
+          onTap: () {
+            Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (context) => StudentReviewsPage(
+                  studentUid: studentUid,
+                  studentName: studentName.isNotEmpty ? studentName : 'Unknown Student',
+                ),
+              ),
+            );
+          },
+          borderRadius: BorderRadius.circular(8),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            child: starsRow(),
+          ),
+        );
+      },
+    );
+  }
+}
+
+// Homeowner Rating Preview Widget (NON CLIQUABLE)
+class HomeownerRatingPreview extends StatelessWidget {
+  final String ownerUid;
+
+  const HomeownerRatingPreview({
+    super.key,
+    required this.ownerUid,
+  });
+
+  Future<Map<String, dynamic>> _getOwnerRatings(List<String> ownerListingIds) async {
+    double totalSum = 0;
+    int totalCount = 0;
+
+    // Split listing IDs into chunks of 30 to handle Firestore's limit
+    for (int i = 0; i < ownerListingIds.length; i += 30) {
+      final chunk = ownerListingIds.sublist(
+        i, 
+        math.min(i + 30, ownerListingIds.length)
+      );
+
+      final querySnapshot = await FirebaseFirestore.instance
+          .collection('listing_reviews')
+          .where('listingId', whereIn: chunk)
+          .get();
+
+      for (final doc in querySnapshot.docs) {
+        final rating = (doc.data()['rating'] as num?)?.toDouble() ?? 0.0;
+        totalSum += rating;
+        totalCount++;
+      }
+    }
+
+    final average = totalCount > 0 ? totalSum / totalCount : 0.0;
+
+    return {
+      'average': average,
+      'count': totalCount,
+    };
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: FirebaseFirestore.instance
+          .collection('listings')
+          .where('ownerUid', isEqualTo: ownerUid)
+          .snapshots(),
+      builder: (context, listingsSnapshot) {
+        if (!listingsSnapshot.hasData) {
+          return Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            ],
+          );
+        }
+
+        final ownerListingIds = listingsSnapshot.data!.docs
+            .map((doc) => doc.id)
+            .toList();
+
+        if (ownerListingIds.isEmpty) {
+          return Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              ...List.generate(5, (i) {
+                return Padding(
+                  padding: const EdgeInsets.only(right: 4),
+                  child: Icon(
+                    Icons.star_border_rounded,
+                    size: 24,
+                    color: Theme.of(context).colorScheme.onSurface.withOpacity(.35),
+                  ),
+                );
+              }),
+            ],
+          );
+        }
+
+        return FutureBuilder<Map<String, dynamic>>(
+          future: _getOwnerRatings(ownerListingIds),
+          builder: (context, ratingsSnapshot) {
+            if (!ratingsSnapshot.hasData) {
+              return Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                ],
+              );
+            }
+
+            final data = ratingsSnapshot.data!;
+            final overallAvg = data['average'] as double;
+            final totalReviews = data['count'] as int;
+            final cs = Theme.of(context).colorScheme;
+            final full = overallAvg.round().clamp(0, 5);
+
+            // NON CLIQUABLE - juste les étoiles avec infos
+            return Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                ...List.generate(5, (i) {
+                  final filled = i < full;
+                  return Padding(
+                    padding: const EdgeInsets.only(right: 4),
+                    child: Icon(
+                      filled ? Icons.star_rounded : Icons.star_border_rounded,
+                      size: 24,
+                      color: filled ? cs.primary : cs.onSurface.withOpacity(.35),
+                    ),
+                  );
+                }),
+                const SizedBox(width: 8),
+                Text(
+                  totalReviews == 0 
+                      ? 'No reviews yet' 
+                      : '${overallAvg.toStringAsFixed(1)} (${totalReviews} review${totalReviews != 1 ? 's' : ''})',
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: cs.onSurface.withOpacity(.8),
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+}
 
 class ProfilePage extends StatefulWidget {
   const ProfilePage({super.key});
@@ -207,6 +425,17 @@ class _ProfilePageState extends State<ProfilePage> {
                 children: [
                   Icon(Icons.account_circle,
                       size: 80, color: theme?.tokens.colors.piccolo),
+                  const SizedBox(height: 12),
+                  // Rating stars for both student and homeowner - CENTRÉES SOUS L'ICÔNE
+                  if (_userData?['role'] == 'student')
+                    StudentRatingPreview(
+                      studentUid: _user?.uid ?? '',
+                      studentName: _userData?['name'] ?? '',
+                    )
+                  else if (_userData?['role'] == 'homeowner')
+                    HomeownerRatingPreview(
+                      ownerUid: _user?.uid ?? '',
+                    ),
                   const SizedBox(height: 16),
                   _isEditing ? _buildEditForm() : _buildUserInfo(),
                   const SizedBox(height: 24),
@@ -266,9 +495,11 @@ class _ProfilePageState extends State<ProfilePage> {
         const SizedBox(height: 8),
         Text('Role: ${_userData?['role'] ?? 'homeowner'}',
             style: Theme.of(context).textTheme.titleMedium),
-        if (_userData?['role'] == 'student')
+        if (_userData?['role'] == 'student') ...[
+          const SizedBox(height: 8),
           Text('School: ${_userData?['school'] ?? ''}',
               style: Theme.of(context).textTheme.titleMedium),
+        ],
         const SizedBox(height: 8),
         Text('Face ID: ${_userData?['faceIdEnabled'] == true ? 'Enabled' : 'Disabled'}',
             style: Theme.of(context).textTheme.titleMedium),
