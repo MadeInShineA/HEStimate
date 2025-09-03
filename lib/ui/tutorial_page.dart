@@ -115,6 +115,15 @@ class _TutorialPageState extends State<TutorialPage> {
                         child:
                             _tutorialImage('assets/tutorial/nearby_bars.png'),
                       ),
+
+                      _card(
+                        context,
+                        title: 'Property reviews',
+                        description:
+                            'See the average rating, tags, and all reviews for a listing.',
+                        child: _tutorialImage(
+                            'assets/tutorial/listing_reviews.png'),
+                      ),
                     ],
                   ),
 
@@ -449,7 +458,6 @@ class _TutorialPageState extends State<TutorialPage> {
   }
 
   // ---------- Click-to-expand images ----------
-  // Single-path image (most cards). Clickable + zoomable fullscreen viewer.
   Widget _tutorialImage(String assetPath) {
     final heroTag = 'tut:$assetPath';
     return ClipRRect(
@@ -473,7 +481,6 @@ class _TutorialPageState extends State<TutorialPage> {
     );
   }
 
-  // Theme-aware image. Will try themed path first, then fall back.
   Widget _tutorialImageThemeAware(String baseName) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final themed =
@@ -507,7 +514,6 @@ class _TutorialPageState extends State<TutorialPage> {
     );
   }
 
-  // Fullscreen viewer with zoom & pan; taps anywhere (or close button) to dismiss.
   void _openAssetViewer(String primaryPath,
       {required String heroTag, String? fallbackPath}) {
     showGeneralDialog(
@@ -568,7 +574,6 @@ class _TutorialPageState extends State<TutorialPage> {
     );
   }
 
-  // Fallback widget when an asset is missing.
   Widget _missing(String path) => Container(
         color: Theme.of(context).cardColor,
         alignment: Alignment.center,
