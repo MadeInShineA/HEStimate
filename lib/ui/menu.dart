@@ -11,6 +11,7 @@ import 'about_page.dart';
 import 'home.dart'; // DashboardPage lives here
 import 'owner_management.dart';
 import 'student_management.dart';
+import 'admin_page.dart'; // Ajouter cet import
 
 /// Pages add this mixin to provide menu metadata while staying Stateless/Stateful.
 mixin MenuPageMeta {
@@ -198,14 +199,15 @@ class HomeMenuPage extends StatefulWidget {
 class _HomeMenuPageState extends State<HomeMenuPage> {
   bool _isHomeowner = false;
   bool _isStudent = false;
+  bool _isAdmin = false; // Ajouter cette ligne
 
   @override
   void initState() {
     super.initState();
-    _checkHomeownerStatus();
+    _checkUserStatus();
   }
 
-  Future<void> _checkHomeownerStatus() async {
+  Future<void> _checkUserStatus() async {
     final user = FirebaseAuth.instance.currentUser;
     if (user != null) {
       final doc = await FirebaseFirestore.instance
@@ -215,8 +217,10 @@ class _HomeMenuPageState extends State<HomeMenuPage> {
       if (doc.exists) {
         final userData = doc.data();
         setState(() {
-          _isHomeowner = userData?['role'] == "homeowner" ? true: false;
-          _isStudent = userData?['role'] == "student" ? true: false;
+          final role = userData?['role'];
+          _isHomeowner = role == "homeowner";
+          _isStudent = role == "student";
+          _isAdmin = role == "admin"; // Ajouter cette ligne
         });
       }
     }
@@ -227,7 +231,7 @@ class _HomeMenuPageState extends State<HomeMenuPage> {
     // If an int is passed as route arguments, use it as the initial tab index.
     final maybeIndex = ModalRoute.of(context)?.settings.arguments as int?;
     
-    // Build pages list based on homeowner status
+    // Build pages list based on user status
     final allPages = [
       const DashboardPage(),        // Index 0
       const ListingsSection(),      // Index 1
@@ -239,14 +243,23 @@ class _HomeMenuPageState extends State<HomeMenuPage> {
       if (_isStudent) ...[
         const StudentManagementSection() // Index 2 (only for students)
       ],
-      const ProfileSection(),       // Index 5 (or 2 for non-homeowners)
-      const AboutSection(),         // Index 6 (or 3 for non-homeowners)
+      if (_isAdmin) ...[  // Ajouter cette section
+        const AdminSection()  // Page admin pour les administrateurs
+      ],
+      const ProfileSection(),       // Index variable selon le rôle
+      const AboutSection(),         // Index variable selon le rôle
     ];
 
-    // Determine bottom nav indices based on homeowner status
-    final bottomNavIndices = _isHomeowner
-        ? const [0, 2, 3, 4, 5] // Dashboard, Properties, My Properties, New Listing, Profile
-        : const [0, 1, 2, 3];   // Dashboard, Properties, Profile, About
+    // Determine bottom nav indices based on user status
+    List<int> bottomNavIndices;
+    if (_isHomeowner) {
+      bottomNavIndices = const [0, 2, 3, 4, 5]; // Dashboard, Properties, My Properties, New Listing, Profile
+    } else if (_isAdmin) {
+      // Pour les admins, on peut inclure l'admin dans la bottom nav ou pas
+      bottomNavIndices = const [0, 1, 3]; // Dashboard, Properties, Profile (admin dans drawer seulement)
+    } else {
+      bottomNavIndices = const [0, 1, 2, 3]; // Dashboard, Properties, Profile, About
+    }
 
     return MoonMenuShell(
       title: 'HEStimate',
@@ -346,6 +359,23 @@ class StudentManagementSection extends StatelessWidget with MenuPageMeta {
   
   @override
   Widget build(BuildContext context) => const StudentManagementPage();
+}
+
+// Ajouter cette nouvelle section pour l'admin
+class AdminSection extends StatelessWidget with MenuPageMeta {
+  const AdminSection({super.key});
+  
+  @override
+  String get menuLabel => 'Administration';
+  
+  @override
+  IconData get menuIcon => Icons.admin_panel_settings_outlined;
+  
+  @override
+  IconData? get menuSelectedIcon => Icons.admin_panel_settings;
+  
+  @override
+  Widget build(BuildContext context) => AdminPage();
 }
 
 class AboutSection extends StatelessWidget with MenuPageMeta {
