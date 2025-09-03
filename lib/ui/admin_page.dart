@@ -530,6 +530,9 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
                         children: users.map((user) {
                           Map<String, dynamic> userData = user.data() as Map<String, dynamic>;
                           String userId = user.id;
+                          
+                          // Vérifier si c'est l'admin actuellement connecté
+                          bool isCurrentAdmin = userId == _auth.currentUser?.uid;
 
                           return Padding(
                             padding: const EdgeInsets.only(bottom: 12),
@@ -545,6 +548,7 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
                                       borderRadius: BorderRadius.circular(25),
                                       border: Border.all(
                                         color: _getRoleColor(userData['role']).withOpacity(0.3),
+                                        width: isCurrentAdmin ? 2 : 1,
                                       ),
                                     ),
                                     child: Icon(
@@ -558,12 +562,34 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
                                     child: Column(
                                       crossAxisAlignment: CrossAxisAlignment.start,
                                       children: [
-                                        Text(
-                                          userData['name'] ?? 'No name',
-                                          style: const TextStyle(
-                                            fontWeight: FontWeight.w700,
-                                            fontSize: 16,
-                                          ),
+                                        Row(
+                                          children: [
+                                            Text(
+                                              userData['name'] ?? 'No name',
+                                              style: const TextStyle(
+                                                fontWeight: FontWeight.w700,
+                                                fontSize: 16,
+                                              ),
+                                            ),
+                                            if (isCurrentAdmin) ...[
+                                              const SizedBox(width: 8),
+                                              Container(
+                                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                                decoration: BoxDecoration(
+                                                  color: Colors.blue.withOpacity(0.15),
+                                                  borderRadius: BorderRadius.circular(8),
+                                                ),
+                                                child: const Text(
+                                                  'You',
+                                                  style: TextStyle(
+                                                    fontSize: 10,
+                                                    fontWeight: FontWeight.w700,
+                                                    color: Colors.blue,
+                                                  ),
+                                                ),
+                                              ),
+                                            ],
+                                          ],
                                         ),
                                         const SizedBox(height: 4),
                                         Text(
@@ -616,11 +642,16 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
                                       ],
                                     ),
                                   ),
-                                  MoonButton(
-                                    onTap: () => _showDeleteDialog(userId, userData['name']),
-                                    backgroundColor: Colors.red.withOpacity(0.1),
-                                    leading: const Icon(Icons.delete_outline, color: Colors.red, size: 18),
-                                  ),
+                                  // N'afficher le bouton de suppression que si ce n'est pas l'admin actuellement connecté
+                                  if (!isCurrentAdmin)
+                                    MoonButton(
+                                      onTap: () => _showDeleteDialog(userId, userData['name']),
+                                      backgroundColor: Colors.red.withOpacity(0.1),
+                                      leading: const Icon(Icons.delete_outline, color: Colors.red, size: 18),
+                                    )
+                                  else
+                                    // Espace vide pour maintenir l'alignement
+                                    const SizedBox(width: 48),
                                 ],
                               ),
                             ),
