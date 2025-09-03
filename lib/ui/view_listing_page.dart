@@ -967,12 +967,18 @@ class _ViewListingPageState extends State<ViewListingPage> {
   // Calendrier
   bool _isAvailableOn(DateTime day) {
     if (_availStart == null) return false;
+
     final d = _dateOnly(day);
     final start = _dateOnly(_availStart!);
+    final today = _dateOnly(DateTime.now());
+
+    if (d.isBefore(today)) return false;
+
     if (_availEnd == null) return !d.isBefore(start);
     final end = _dateOnly(_availEnd!);
     return !d.isBefore(start) && !d.isAfter(end);
   }
+
 
   void _prevMonth() {
     final d = DateTime(_shownMonth.year, _shownMonth.month - 1);
