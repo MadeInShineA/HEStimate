@@ -490,6 +490,233 @@ class _ViewListingPageState extends State<ViewListingPage> {
     );
   }
 
+Widget _buildHomeownerRatingSection(BuildContext context) {
+  return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+    stream: FirebaseFirestore.instance
+        .collection('listings')
+        .where('ownerUid', isEqualTo: _ownerUid)
+        .snapshots(),
+    builder: (context, listingsSnapshot) {
+      if (!listingsSnapshot.hasData) {
+        return const SizedBox.shrink();
+      }
+
+      final ownerListingIds = listingsSnapshot.data!.docs
+          .map((doc) => doc.id)
+          .toList();
+
+      if (ownerListingIds.isEmpty) {
+        return const SizedBox.shrink();
+      }
+
+      // Handle Firestore's 30-item limit for 'whereIn' queries
+      return FutureBuilder<Map<String, dynamic>>(
+        future: _getOwnerRatings(ownerListingIds),
+        builder: (context, ratingsSnapshot) {
+          if (!ratingsSnapshot.hasData) {
+            return _buildHomeownerRatingCard(context, 0, 0, ownerListingIds.length, isLoading: true);
+          }
+
+          final data = ratingsSnapshot.data!;
+          final overallAvg = data['average'] as double;
+          final totalReviews = data['count'] as int;
+
+          return _buildHomeownerRatingCard(context, overallAvg, totalReviews, ownerListingIds.length);
+        },
+      );
+    },
+  );
+}
+
+Future<Map<String, dynamic>> _getOwnerRatings(List<String> ownerListingIds) async {
+  double totalSum = 0;
+  int totalCount = 0;
+
+  // Split listing IDs into chunks of 30 to handle Firestore's limit
+  for (int i = 0; i < ownerListingIds.length; i += 30) {
+    final chunk = ownerListingIds.sublist(
+      i, 
+      math.min(i + 30, ownerListingIds.length)
+    );
+
+    final querySnapshot = await FirebaseFirestore.instance
+        .collection('listing_reviews')
+        .where('listingId', whereIn: chunk)
+        .get();
+
+    for (final doc in querySnapshot.docs) {
+      final rating = (doc.data()['rating'] as num?)?.toDouble() ?? 0.0;
+      totalSum += rating;
+      totalCount++;
+    }
+  }
+
+  final average = totalCount > 0 ? totalSum / totalCount : 0.0;
+
+  return {
+    'average': average,
+    'count': totalCount,
+  };
+}
+
+  Widget _buildHomeownerRatingCard(BuildContext context, double overallAvg, int totalReviews, int totalListings, {bool isLoading = false}) {
+    final cs = Theme.of(context).colorScheme;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    return _MoonCard(
+      isDark: isDark,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.person_outline, size: 20),
+              const SizedBox(width: 8),
+              Text(
+                'Homeowner Rating',
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w800,
+                  color: cs.onSurface,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          if (isLoading)
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: cs.primary.withOpacity(0.12),
+                  width: 1,
+                ),
+              ),
+              child: const Row(
+                children: [
+                  SizedBox(
+                    width: 24,
+                    height: 24,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                  SizedBox(width: 12),
+                  Text('Loading ratings...'),
+                ],
+              ),
+            )
+          else if (totalReviews == 0)
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: cs.primary.withOpacity(0.12),
+                  width: 1,
+                ),
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.star_border_rounded,
+                    color: cs.onSurface.withOpacity(.5),
+                    size: 24,
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'No reviews yet',
+                          style: TextStyle(
+                            color: cs.onSurface.withOpacity(.8),
+                            fontSize: 14,
+                          ),
+                        ),
+                        Text(
+                          'This homeowner hasn\'t received any reviews',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
+                            color: cs.onSurface.withOpacity(.6),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            )
+          else
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: cs.primary.withOpacity(0.12),
+                  width: 1,
+                ),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(
+                    Icons.star_rounded,
+                    color: cs.primary,
+                    size: 24,
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Overall rating',
+                          style: TextStyle(
+                            color: cs.onSurface.withOpacity(.8),
+                            fontSize: 14,
+                          ),
+                        ),
+                        Row(
+                          children: [
+                            Text(
+                              overallAvg.toStringAsFixed(1),
+                              style: const TextStyle(
+                                fontSize: 24,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            // Display stars
+                            ...List.generate(5, (i) {
+                              final idx = i + 1;
+                              final filled = idx <= overallAvg.round();
+                              final icon = filled ? Icons.star_rounded : Icons.star_border_rounded;
+                              final color = filled ? cs.primary : cs.onSurface.withOpacity(.35);
+                              return Icon(icon, size: 20, color: color);
+                            }),
+                          ],
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          'Based on $totalReviews review${totalReviews == 1 ? '' : 's'} across $totalListings listing${totalListings == 1 ? '' : 's'}',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: cs.onSurface.withOpacity(.7),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
 
   Widget _buildRatingsPreview(BuildContext context) {
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
@@ -1120,6 +1347,8 @@ class _ViewListingPageState extends State<ViewListingPage> {
                             ),
 
                             const SizedBox(height: 16),
+
+                            _buildHomeownerRatingSection(context),
 
                             _MoonCard(
                               isDark: isDark,
