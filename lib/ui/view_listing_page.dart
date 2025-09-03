@@ -51,11 +51,16 @@ class _ViewListingPageState extends State<ViewListingPage> {
   double? _latitude;
   double? _longitude;
 
-  // HES (vol d’oiseau)
+  // HES (vol d’oiseau pour le listing — on garde le plus proche)
   double? _proximHesKm;
-  String? _nearestHesId;   // id Firestore dans `schools`
+  String? _nearestHesId; // id Firestore dans `schools`
   String? _nearestHesName; // name résolu depuis `schools`
   bool _computingHes = false;
+
+  // Destination PT (peut être la HES de l’étudiant)
+  String? _destHesId;
+  String? _destHesName;
+  bool _destIsUserSchool = false;
 
   // Transport public → HES (prochaines 2h)
   bool _loadingPt = false;
@@ -112,12 +117,23 @@ class _ViewListingPageState extends State<ViewListingPage> {
   // Notes
   int _rating = 0;
 
+  // User profile (role/school) for behavior
+  String? _userRole;
+  String? _userSchool;
+
   bool get _isOwner =>
       FirebaseAuth.instance.currentUser?.uid != null &&
       FirebaseAuth.instance.currentUser!.uid == _ownerUid;
 
+  // Real student check (from users/{uid}.role)
   bool get _isStudent =>
-      FirebaseAuth.instance.currentUser != null && !_isOwner;
+      FirebaseAuth.instance.currentUser != null &&
+      !_isOwner &&
+      (_userRole?.toLowerCase() == 'student');
+
+  // Whether we should route to user's HES
+  bool get _useStudentSchoolAsDestination =>
+      _isStudent && (_userSchool != null && _userSchool!.trim().isNotEmpty);
 
   Future<void> _loadMyExistingReviewIfAny() async {
     final user = FirebaseAuth.instance.currentUser;
@@ -175,7 +191,9 @@ class _ViewListingPageState extends State<ViewListingPage> {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Connecte-toi pour utiliser les favoris.')),
+        const SnackBar(
+          content: Text('Connecte-toi pour utiliser les favoris.'),
+        ),
       );
       return;
     }
@@ -194,9 +212,9 @@ class _ViewListingPageState extends State<ViewListingPage> {
         });
       }
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Erreur favoris: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Erreur favoris: $e')));
     }
   }
   // --------------------------------------------------------------------------
@@ -239,7 +257,10 @@ class _ViewListingPageState extends State<ViewListingPage> {
       if (phoneText.startsWith('+')) {
         phoneNumber = PhoneNumber.parse(phoneText);
       } else {
-        phoneNumber = PhoneNumber.parse(phoneText, destinationCountry: IsoCode.CH);
+        phoneNumber = PhoneNumber.parse(
+          phoneText,
+          destinationCountry: IsoCode.CH,
+        );
       }
       if (phoneNumber.isValid()) {
         setState(() {
@@ -298,7 +319,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
       _latitude = (m['latitude'] as num?)?.toDouble();
       _longitude = (m['longitude'] as num?)?.toDouble();
 
-      // Champs persistant
+      // Champs persistant (pour le listing: plus proche HES)
       _proximHesKm = (m['proxim_hesso_km'] as num?)?.toDouble();
       _nearestHesId = (m['nearest_hesso_id'] ?? '').toString();
       _nearestHesName = null;
@@ -311,6 +332,21 @@ class _ViewListingPageState extends State<ViewListingPage> {
       final List photos = (m['photos'] as List?) ?? const [];
       _photos = photos.map((e) => e.toString()).toList();
 
+      // Load current user's role/school (for routing + booking UI)
+      final user = FirebaseAuth.instance.currentUser;
+      if (user != null) {
+        final userDoc = await FirebaseFirestore.instance
+            .collection('users')
+            .doc(user.uid)
+            .get();
+        final ud = userDoc.data() ?? {};
+        _userRole = (ud['role'] ?? '').toString();
+        _userSchool = (ud['school'] ?? '').toString();
+      } else {
+        _userRole = null;
+        _userSchool = null;
+      }
+
       await _loadBookedDates();
 
       setState(() {
@@ -318,7 +354,12 @@ class _ViewListingPageState extends State<ViewListingPage> {
         if (_availStart != null) _shownMonth = _monthDate(_availStart!);
       });
 
+      // Make sure nearest school (for listing metrics) is computed/resolved
       await _ensureNearestSchool();
+
+      // Resolve destination school for transit (student school > nearest)
+      await _ensureDestinationSchool();
+
       _autoLoadSections();
     } catch (e) {
       setState(() {
@@ -336,6 +377,66 @@ class _ViewListingPageState extends State<ViewListingPage> {
     }
     if ((_nearestHesId ?? '').isNotEmpty && _nearestHesName == null) {
       await _resolveHesNameById(_nearestHesId!);
+    }
+  }
+
+  /// Sets _destHesId/_destHesName and whether it is user school.
+  Future<void> _ensureDestinationSchool() async {
+    // Prefer student's school if available
+    if (_useStudentSchoolAsDestination) {
+      final doc = await _findHesByName(_userSchool!.trim());
+      if (doc != null && doc.exists) {
+        final name = (doc.data()?['name'] ?? '').toString();
+        setState(() {
+          _destHesId = doc.id;
+          _destHesName = name.isEmpty ? doc.id : name;
+          _destIsUserSchool = true;
+        });
+        return;
+      }
+    }
+    // Fallback to nearest (already ensured by _ensureNearestSchool)
+    if ((_nearestHesId ?? '').isNotEmpty) {
+      setState(() {
+        _destHesId = _nearestHesId;
+        _destHesName = _nearestHesName;
+        _destIsUserSchool = false;
+      });
+    } else {
+      // As a last resort, compute nearest now
+      await _computeNearestHes(persist: true);
+      setState(() {
+        _destHesId = _nearestHesId;
+        _destHesName = _nearestHesName;
+        _destIsUserSchool = false;
+      });
+    }
+  }
+
+  /// Exact-name match in `schools`. If not found, returns null.
+  Future<DocumentSnapshot<Map<String, dynamic>>?> _findHesByName(
+    String name,
+  ) async {
+    try {
+      final q = await FirebaseFirestore.instance
+          .collection(_hesCollection)
+          .where('name', isEqualTo: name)
+          .limit(1)
+          .get();
+      if (q.docs.isNotEmpty) return q.docs.first;
+      // Optional secondary pass: linear scan (case-insensitive) if exact not found.
+      final all = await FirebaseFirestore.instance
+          .collection(_hesCollection)
+          .get();
+      for (final d in all.docs) {
+        final n = (d.data()['name'] ?? '').toString();
+        if (n.toLowerCase().trim() == name.toLowerCase().trim()) {
+          return d;
+        }
+      }
+      return null;
+    } catch (_) {
+      return null;
     }
   }
 
@@ -381,7 +482,10 @@ class _ViewListingPageState extends State<ViewListingPage> {
     return _isAvailableOn(day) && !_isDateBooked(day);
   }
 
-  Future<bool> _checkBookingConflict(DateTime startDate, DateTime endDate) async {
+  Future<bool> _checkBookingConflict(
+    DateTime startDate,
+    DateTime endDate,
+  ) async {
     try {
       final snapshot = await FirebaseFirestore.instance
           .collection('booking_requests')
@@ -391,11 +495,14 @@ class _ViewListingPageState extends State<ViewListingPage> {
 
       for (final doc in snapshot.docs) {
         final data = doc.data();
-        final existingStart = _dateOnly((data['startDate'] as Timestamp).toDate());
+        final existingStart = _dateOnly(
+          (data['startDate'] as Timestamp).toDate(),
+        );
         final existingEnd = _dateOnly((data['endDate'] as Timestamp).toDate());
         final reqStart = _dateOnly(startDate);
         final reqEnd = _dateOnly(endDate);
-        if (!(reqEnd.isBefore(existingStart) || reqStart.isAfter(existingEnd))) {
+        if (!(reqEnd.isBefore(existingStart) ||
+            reqStart.isAfter(existingEnd))) {
           return true;
         }
       }
@@ -436,12 +543,15 @@ class _ViewListingPageState extends State<ViewListingPage> {
           "charges_incl": _chargesIncl,
           "car_park": _carPark,
           "dist_public_transport_km": _distTransportKm!,
-          "proxim_hesso_km": _proximHesKm!,
+          "proxim_hesso_km":
+              _proximHesKm!, // estimation reste basée sur la plus proche HES
         },
       ];
 
       final response = await http.post(
-        Uri.parse('https://hestimate-api-production.up.railway.app/estimate-price'),
+        Uri.parse(
+          'https://hestimate-api-production.up.railway.app/estimate-price',
+        ),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode(body),
       );
@@ -452,8 +562,8 @@ class _ViewListingPageState extends State<ViewListingPage> {
             data.isNotEmpty &&
             data[0]['predicted_price_chf'] != null) {
           setState(() {
-            _estimatedPrice =
-                (data[0]['predicted_price_chf'] as num).toDouble();
+            _estimatedPrice = (data[0]['predicted_price_chf'] as num)
+                .toDouble();
             _estimatingPrice = false;
           });
         } else {
@@ -484,7 +594,8 @@ class _ViewListingPageState extends State<ViewListingPage> {
     const earthRadiusKm = 6371.0;
     final dLat = _deg2rad(lat2 - lat1);
     final dLon = _deg2rad(lon2 - lon1);
-    final a = math.sin(dLat / 2) * math.sin(dLat / 2) +
+    final a =
+        math.sin(dLat / 2) * math.sin(dLat / 2) +
         math.cos(_deg2rad(lat1)) *
             math.cos(_deg2rad(lat2)) *
             math.sin(dLon / 2) *
@@ -509,7 +620,9 @@ class _ViewListingPageState extends State<ViewListingPage> {
       } else {
         await _computeNearestHes(persist: true);
       }
-    } catch (_) {/* no-op */}
+    } catch (_) {
+      /* no-op */
+    }
   }
 
   Future<void> _computeNearestHes({bool persist = true}) async {
@@ -564,9 +677,9 @@ class _ViewListingPageState extends State<ViewListingPage> {
             .collection('listings')
             .doc(widget.listingId)
             .update({
-          'proxim_hesso_km': _proximHesKm,
-          'nearest_hesso_id': _nearestHesId,
-        });
+              'proxim_hesso_km': _proximHesKm,
+              'nearest_hesso_id': _nearestHesId,
+            });
       }
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -584,34 +697,52 @@ class _ViewListingPageState extends State<ViewListingPage> {
       setState(() => _ptError = 'Missing listing coordinates');
       return;
     }
-    if (_nearestHesId == null || _nearestHesId!.isEmpty) {
-      await _computeNearestHes(persist: true);
-      if (_nearestHesId == null || _nearestHesId!.isEmpty) {
-        setState(() => _ptError = 'No school found for this listing');
-        return;
-      }
-    }
     if (_googleMapsApiKey.isEmpty) {
       setState(() => _ptError = 'Google Directions API key missing.');
       return;
     }
 
-    final hesDoc = await FirebaseFirestore.instance
-        .collection(_hesCollection)
-        .doc(_nearestHesId!)
-        .get();
-
-    if (!hesDoc.exists) {
-      await _computeNearestHes(persist: true);
+    // Ensure destination school selection is ready
+    await _ensureDestinationSchool();
+    if (_destHesId == null || _destHesId!.isEmpty) {
+      setState(
+        () => _ptError = 'No destination school found for this listing/user',
+      );
+      return;
     }
-    final docToUse = hesDoc.exists
-        ? hesDoc
-        : await FirebaseFirestore.instance
-            .collection(_hesCollection)
-            .doc(_nearestHesId!)
-            .get();
 
-    final schoolData = docToUse.data()!;
+    // Load destination school doc
+    DocumentSnapshot<Map<String, dynamic>>? hesDoc;
+    try {
+      hesDoc = await FirebaseFirestore.instance
+          .collection(_hesCollection)
+          .doc(_destHesId!)
+          .get();
+
+      // If _destHesId came from name search fallback, it should exist;
+      // but if not, try recompute nearest and use that.
+      if (!hesDoc.exists) {
+        await _ensureNearestSchool();
+        if ((_nearestHesId ?? '').isNotEmpty) {
+          hesDoc = await FirebaseFirestore.instance
+              .collection(_hesCollection)
+              .doc(_nearestHesId!)
+              .get();
+          _destHesId = _nearestHesId;
+          _destHesName = _nearestHesName;
+          _destIsUserSchool = false;
+        }
+      }
+    } catch (_) {
+      hesDoc = null;
+    }
+
+    if (hesDoc == null || !hesDoc.exists) {
+      setState(() => _ptError = 'Destination school not found in database');
+      return;
+    }
+
+    final schoolData = hesDoc.data()!;
     final hesLat = (schoolData['latitude'] as num?)?.toDouble();
     final hesLon = (schoolData['longitude'] as num?)?.toDouble();
     final hesName = (schoolData['name'] ?? '').toString();
@@ -622,7 +753,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
     }
 
     setState(() {
-      _nearestHesName = (hesName.isEmpty ? _nearestHesId! : hesName);
+      _destHesName = (hesName.isEmpty ? _destHesId! : hesName);
       _ptError = null;
       _loadingPt = true;
       _ptRoutes = [];
@@ -642,16 +773,17 @@ class _ViewListingPageState extends State<ViewListingPage> {
       final results = <_TransitRoute>[];
       for (final dt in anchors) {
         final secs = (dt.millisecondsSinceEpoch / 1000).round();
-        final uri = Uri.https('maps.googleapis.com', '/maps/api/directions/json', {
-          'origin': '${_latitude!},${_longitude!}',
-          'destination': '$hesLat,$hesLon',
-          'mode': 'transit',
-          'alternatives': 'true',
-          'transit_routing_preference': 'less_walking',
-          'language': 'en',
-          'departure_time': '$secs',
-          'key': _googleMapsApiKey,
-        });
+        final uri =
+            Uri.https('maps.googleapis.com', '/maps/api/directions/json', {
+              'origin': '${_latitude!},${_longitude!}',
+              'destination': '$hesLat,$hesLon',
+              'mode': 'transit',
+              'alternatives': 'true',
+              'transit_routing_preference': 'less_walking',
+              'language': 'en',
+              'departure_time': '$secs',
+              'key': _googleMapsApiKey,
+            });
 
         final resp = await http.get(uri);
         if (resp.statusCode != 200) {
@@ -661,17 +793,34 @@ class _ViewListingPageState extends State<ViewListingPage> {
         final jd = jsonDecode(resp.body);
         if (jd['status'] != 'OK' || jd['routes'] == null) {
           final em = (jd['error_message'] ?? '').toString();
-          setState(() => _ptError = 'Directions status: ${jd['status']}${em.isNotEmpty ? ' • $em' : ''}');
+          setState(
+            () => _ptError =
+                'Directions status: ${jd['status']}${em.isNotEmpty ? ' • $em' : ''}',
+          );
           continue;
         }
 
         for (final r in jd['routes']) {
           final leg = (r['legs'] as List).first;
-          final route = _TransitRoute.fromGoogle(leg, r);
+          final route = _TransitRoute.fromGoogle(leg, r, anchor: dt);
           if (route == null) continue;
           if (route.departureTime.isAfter(horizon)) continue;
 
-          final key = '${route.departureTime.millisecondsSinceEpoch}-${route.summary}';
+          // Build a more specific, stable signature for the route:
+          final transitSig = route.steps
+              .where((s) => s.type == _StepType.transit)
+              .map(
+                (s) =>
+                    '${s.transitLine ?? ''}|${s.transitHeadsign ?? ''}|${s.departureStop ?? ''}|${s.arrivalStop ?? ''}',
+              )
+              .join('>');
+
+          // NOTE: includes both departure and arrival times → same route at a different time shows up.
+          final key =
+              '${route.departureTime.millisecondsSinceEpoch}-'
+              '${route.arrivalTime.millisecondsSinceEpoch}-'
+              '${route.summary}-$transitSig';
+
           if (!results.any((x) => x._dedupeKey == key)) {
             results.add(route.._dedupeKey = key);
           }
@@ -716,7 +865,9 @@ class _ViewListingPageState extends State<ViewListingPage> {
     });
 
     try {
-      final url = Uri.parse('https://places.googleapis.com/v1/places:searchNearby');
+      final url = Uri.parse(
+        'https://places.googleapis.com/v1/places:searchNearby',
+      );
 
       final body = {
         "includedTypes": ["bar"],
@@ -736,7 +887,11 @@ class _ViewListingPageState extends State<ViewListingPage> {
             'places.displayName,places.formattedAddress,places.rating,places.userRatingCount,places.location,places.types',
       };
 
-      final resp = await http.post(url, headers: headers, body: jsonEncode(body));
+      final resp = await http.post(
+        url,
+        headers: headers,
+        body: jsonEncode(body),
+      );
 
       if (resp.statusCode != 200) {
         setState(() {
@@ -832,7 +987,11 @@ class _ViewListingPageState extends State<ViewListingPage> {
   List<Widget> _buildCalendar(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final firstOfMonth = DateTime(_shownMonth.year, _shownMonth.month, 1);
-    final int daysInMonth = DateTime(_shownMonth.year, _shownMonth.month + 1, 0).day;
+    final int daysInMonth = DateTime(
+      _shownMonth.year,
+      _shownMonth.month + 1,
+      0,
+    ).day;
 
     final int weekdayStart = firstOfMonth.weekday; // 1..7 (Mon..Sun)
     final int leadingEmpty = weekdayStart - 1;
@@ -887,10 +1046,7 @@ class _ViewListingPageState extends State<ViewListingPage> {
           child: Center(
             child: Text(
               '$day',
-              style: TextStyle(
-                fontWeight: FontWeight.w600,
-                color: textColor,
-              ),
+              style: TextStyle(fontWeight: FontWeight.w600, color: textColor),
             ),
           ),
         ),
@@ -941,7 +1097,8 @@ class _ViewListingPageState extends State<ViewListingPage> {
           if (count > 0) {
             final sum = docs.fold<double>(
               0.0,
-              (acc, d) => acc + ((d.data()['rating'] as num?)?.toDouble() ?? 0.0),
+              (acc, d) =>
+                  acc + ((d.data()['rating'] as num?)?.toDouble() ?? 0.0),
             );
             avg = sum / count;
           }
@@ -1000,7 +1157,9 @@ class _ViewListingPageState extends State<ViewListingPage> {
       try {
         final launched = await launchUrl(
           uri,
-          mode: kIsWeb ? LaunchMode.platformDefault : LaunchMode.externalApplication,
+          mode: kIsWeb
+              ? LaunchMode.platformDefault
+              : LaunchMode.externalApplication,
           webOnlyWindowName: kIsWeb ? '_blank' : null,
         );
         if (launched) return;
@@ -1021,7 +1180,9 @@ class _ViewListingPageState extends State<ViewListingPage> {
       decoration: BoxDecoration(
         color: Theme.of(context).cardColor,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Theme.of(context).colorScheme.primary.withOpacity(0.3)),
+        border: Border.all(
+          color: Theme.of(context).colorScheme.primary.withOpacity(0.3),
+        ),
         boxShadow: [
           BoxShadow(
             color: Theme.of(context).colorScheme.primary.withOpacity(0.1),
@@ -1049,7 +1210,9 @@ class _ViewListingPageState extends State<ViewListingPage> {
             controller: _startDateController,
             decoration: InputDecoration(
               labelText: 'Start Date',
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
               contentPadding: const EdgeInsets.all(12),
               suffixIcon: const Icon(Icons.calendar_today),
             ),
@@ -1058,7 +1221,8 @@ class _ViewListingPageState extends State<ViewListingPage> {
                 context: context,
                 initialDate: _selectedStart ?? (_availStart ?? DateTime.now()),
                 firstDate: _availStart ?? DateTime.now(),
-                lastDate: _availEnd ?? DateTime.now().add(const Duration(days: 365)),
+                lastDate:
+                    _availEnd ?? DateTime.now().add(const Duration(days: 365)),
                 selectableDayPredicate: _isDateAvailableForSelection,
               );
               if (picked != null) {
@@ -1081,23 +1245,30 @@ class _ViewListingPageState extends State<ViewListingPage> {
             controller: _endDateController,
             decoration: InputDecoration(
               labelText: 'End Date',
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
               contentPadding: const EdgeInsets.all(12),
               suffixIcon: const Icon(Icons.calendar_today),
             ),
             onTap: () async {
               if (_selectedStart == null) {
                 ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Please select a start date first')),
+                  const SnackBar(
+                    content: Text('Please select a start date first'),
+                  ),
                 );
                 return;
               }
 
               final picked = await showDatePicker(
                 context: context,
-                initialDate: _selectedEnd ?? _selectedStart!.add(const Duration(days: 1)),
+                initialDate:
+                    _selectedEnd ??
+                    _selectedStart!.add(const Duration(days: 1)),
                 firstDate: _selectedStart!.add(const Duration(days: 1)),
-                lastDate: _availEnd ?? DateTime.now().add(const Duration(days: 365)),
+                lastDate:
+                    _availEnd ?? DateTime.now().add(const Duration(days: 365)),
                 selectableDayPredicate: _isDateAvailableForSelection,
               );
               if (picked != null) {
@@ -1167,28 +1338,40 @@ class _ViewListingPageState extends State<ViewListingPage> {
           const SizedBox(height: 16),
           MoonFilledButton(
             isFullWidth: true,
-            onTap: _selectedStart != null &&
+            onTap:
+                _selectedStart != null &&
                     _selectedEnd != null &&
                     _messageController.text.isNotEmpty &&
                     _isValidPhone &&
                     !_submittingBooking
-                ? () => _submitBookingRequestWithDates(_selectedStart!, _selectedEnd!)
+                ? () => _submitBookingRequestWithDates(
+                    _selectedStart!,
+                    _selectedEnd!,
+                  )
                 : null,
             leading: _submittingBooking
                 ? const SizedBox(
                     width: 16,
                     height: 16,
-                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: Colors.white,
+                    ),
                   )
                 : const Icon(Icons.send),
-            label: Text(_submittingBooking ? 'Sending...' : 'Send booking request'),
+            label: Text(
+              _submittingBooking ? 'Sending...' : 'Send booking request',
+            ),
           ),
         ],
       ),
     );
   }
 
-  Future<void> _submitBookingRequestWithDates(DateTime start, DateTime end) async {
+  Future<void> _submitBookingRequestWithDates(
+    DateTime start,
+    DateTime end,
+  ) async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
 
@@ -1200,7 +1383,9 @@ class _ViewListingPageState extends State<ViewListingPage> {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-              content: Text('Selected dates are no longer available. Please choose different dates.'),
+              content: Text(
+                'Selected dates are no longer available. Please choose different dates.',
+              ),
               backgroundColor: Colors.red,
             ),
           );
@@ -1260,14 +1445,20 @@ class _ViewListingPageState extends State<ViewListingPage> {
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Booking request sent successfully!'), backgroundColor: Colors.green),
+          const SnackBar(
+            content: Text('Booking request sent successfully!'),
+            backgroundColor: Colors.green,
+          ),
         );
       }
     } catch (e) {
       setState(() => _submittingBooking = false);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error sending request: $e'), backgroundColor: Colors.red),
+          SnackBar(
+            content: Text('Error sending request: $e'),
+            backgroundColor: Colors.red,
+          ),
         );
       }
     }
@@ -1305,7 +1496,9 @@ class _ViewListingPageState extends State<ViewListingPage> {
                 if (canPop) {
                   Navigator.of(context).pop();
                 } else {
-                  Navigator.of(context).pushNamedAndRemoveUntil('/home', (route) => false);
+                  Navigator.of(
+                    context,
+                  ).pushNamedAndRemoveUntil('/home', (route) => false);
                 }
               },
             );
@@ -1332,7 +1525,8 @@ class _ViewListingPageState extends State<ViewListingPage> {
                 Navigator.of(context)
                     .push(
                       MaterialPageRoute(
-                        builder: (_) => EditListingPage(listingId: widget.listingId),
+                        builder: (_) =>
+                            EditListingPage(listingId: widget.listingId),
                       ),
                     )
                     .then((_) => _load());
@@ -1344,719 +1538,845 @@ class _ViewListingPageState extends State<ViewListingPage> {
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : _error != null
-              ? Center(
-                  child: Text(
-                    _error!,
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(
-                      color: Colors.redAccent,
-                      fontWeight: FontWeight.w700,
+          ? Center(
+              child: Text(
+                _error!,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  color: Colors.redAccent,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            )
+          : LayoutBuilder(
+              builder: (context, constraints) {
+                final isWide = constraints.maxWidth >= 900;
+                const contentMax = 1000.0;
+
+                final horizontalPad = math.max(
+                  16.0,
+                  (constraints.maxWidth - contentMax) / 2 + 16.0,
+                );
+
+                return Container(
+                  decoration: bg,
+                  child: SingleChildScrollView(
+                    padding: EdgeInsets.symmetric(
+                      horizontal: isWide ? horizontalPad : 16.0,
+                      vertical: 16.0,
                     ),
-                  ),
-                )
-              : LayoutBuilder(
-                  builder: (context, constraints) {
-                    final isWide = constraints.maxWidth >= 900;
-                    const contentMax = 1000.0;
-
-                    final horizontalPad = math.max(
-                      16.0,
-                      (constraints.maxWidth - contentMax) / 2 + 16.0,
-                    );
-
-                    return Container(
-                      decoration: bg,
-                      child: SingleChildScrollView(
-                        padding: EdgeInsets.symmetric(
-                          horizontal: isWide ? horizontalPad : 16.0,
-                          vertical: 16.0,
-                        ),
-                        child: Center(
-                          child: ConstrainedBox(
-                            constraints: const BoxConstraints(maxWidth: contentMax),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.stretch,
-                              children: [
-                                // Photos
-                                _MoonCard(
-                                  isDark: isDark,
-                                  child: _photos.isEmpty
-                                      ? Container(
-                                          height: 180,
-                                          alignment: Alignment.center,
-                                          child: Text(
-                                            'No photos',
-                                            style: TextStyle(
-                                              color: cs.onSurface.withOpacity(.7),
+                    child: Center(
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: contentMax),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            // Photos
+                            _MoonCard(
+                              isDark: isDark,
+                              child: _photos.isEmpty
+                                  ? Container(
+                                      height: 180,
+                                      alignment: Alignment.center,
+                                      child: Text(
+                                        'No photos',
+                                        style: TextStyle(
+                                          color: cs.onSurface.withOpacity(.7),
+                                        ),
+                                      ),
+                                    )
+                                  : SizedBox(
+                                      height: 220,
+                                      child: PageView.builder(
+                                        controller: _photoCtrl,
+                                        padEnds: false,
+                                        itemCount: _photos.length,
+                                        itemBuilder: (_, i) {
+                                          return Padding(
+                                            padding: const EdgeInsets.symmetric(
+                                              horizontal: 6,
                                             ),
-                                          ),
-                                        )
-                                      : SizedBox(
-                                          height: 220,
-                                          child: PageView.builder(
-                                            controller: _photoCtrl,
-                                            padEnds: false,
-                                            itemCount: _photos.length,
-                                            itemBuilder: (_, i) {
-                                              return Padding(
-                                                padding: const EdgeInsets.symmetric(horizontal: 6),
-                                                child: ClipRRect(
-                                                  borderRadius: BorderRadius.circular(14),
-                                                  child: Stack(
-                                                    fit: StackFit.expand,
-                                                    children: [
-                                                      Image.network(
-                                                        _photos[i],
-                                                        fit: BoxFit.cover,
-                                                      ),
-                                                      Positioned(
-                                                        right: 8,
-                                                        bottom: 8,
-                                                        child: Container(
-                                                          padding: const EdgeInsets.symmetric(
+                                            child: ClipRRect(
+                                              borderRadius:
+                                                  BorderRadius.circular(14),
+                                              child: Stack(
+                                                fit: StackFit.expand,
+                                                children: [
+                                                  Image.network(
+                                                    _photos[i],
+                                                    fit: BoxFit.cover,
+                                                  ),
+                                                  Positioned(
+                                                    right: 8,
+                                                    bottom: 8,
+                                                    child: Container(
+                                                      padding:
+                                                          const EdgeInsets.symmetric(
                                                             horizontal: 8,
                                                             vertical: 4,
                                                           ),
-                                                          decoration: BoxDecoration(
-                                                            color: Colors.black54,
-                                                            borderRadius: BorderRadius.circular(12),
-                                                          ),
-                                                          child: Text(
-                                                            '${i + 1}/${_photos.length}',
-                                                            style: const TextStyle(
-                                                              color: Colors.white,
-                                                              fontSize: 12,
+                                                      decoration: BoxDecoration(
+                                                        color: Colors.black54,
+                                                        borderRadius:
+                                                            BorderRadius.circular(
+                                                              12,
                                                             ),
-                                                          ),
-                                                        ),
                                                       ),
-                                                    ],
-                                                  ),
-                                                ),
-                                              );
-                                            },
-                                          ),
-                                        ),
-                                ),
-
-                                const SizedBox(height: 16),
-
-                                // Header + bouton Edit + ratings
-                                _MoonCard(
-                                  isDark: isDark,
-                                  child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      Row(
-                                        crossAxisAlignment: CrossAxisAlignment.start,
-                                        children: [
-                                          Expanded(
-                                            child: Column(
-                                              crossAxisAlignment: CrossAxisAlignment.start,
-                                              children: [
-                                                Text(
-                                                  _type == 'entire_home' ? 'Entire home' : 'Single room',
-                                                  style: TextStyle(
-                                                    fontSize: 18,
-                                                    fontWeight: FontWeight.w800,
-                                                    color: cs.onSurface,
-                                                  ),
-                                                ),
-                                                const SizedBox(height: 4),
-                                                Text(
-                                                  '$_address, $_npa $_city',
-                                                  style: TextStyle(
-                                                    fontSize: 14,
-                                                    color: cs.onSurface.withOpacity(.8),
-                                                  ),
-                                                ),
-                                                const SizedBox(height: 8),
-                                                _buildRatingsPreview(context),
-                                              ],
-                                            ),
-                                          ),
-                                          if (_isOwner)
-                                            MoonButton(
-                                              onTap: () async {
-                                                await Navigator.of(context).push(
-                                                  MaterialPageRoute(
-                                                    builder: (_) => EditListingPage(
-                                                      listingId: widget.listingId,
-                                                    ),
-                                                  ),
-                                                );
-                                                _load();
-                                              },
-                                              leading: const Icon(Icons.edit),
-                                              label: const Text('Edit'),
-                                            ),
-                                        ],
-                                      ),
-                                      const SizedBox(height: 12),
-                                      Wrap(
-                                        spacing: 16,
-                                        runSpacing: 8,
-                                        children: [
-                                          _chip(
-                                            context,
-                                            icon: Icons.price_change_outlined,
-                                            text: _price != null ? '${_price!.toStringAsFixed(0)} CHF/mo' : '—',
-                                          ),
-                                          _chip(
-                                            context,
-                                            icon: Icons.square_foot_outlined,
-                                            text: _surface != null ? '${_surface!.toStringAsFixed(0)} m²' : '—',
-                                          ),
-                                          _chip(
-                                            context,
-                                            icon: Icons.meeting_room_outlined,
-                                            text: _rooms != null ? '$_rooms rooms' : '—',
-                                          ),
-                                          _chip(
-                                            context,
-                                            icon: Icons.unfold_more_outlined,
-                                            text: _floor != null ? 'Floor $_floor' : '—',
-                                          ),
-                                          _chip(
-                                            context,
-                                            icon: Icons.directions_bus_outlined,
-                                            text: _distTransportKm != null
-                                                ? '${_distTransportKm!.toStringAsFixed(1)} km PT'
-                                                : '—',
-                                          ),
-                                          if (_proximHesKm != null)
-                                            _chip(
-                                              context,
-                                              icon: Icons.school_outlined,
-                                              text: _nearestHesName != null && _nearestHesName!.trim().isNotEmpty
-                                                  ? '${_proximHesKm!.toStringAsFixed(1)} km • $_nearestHesName'
-                                                  : '${_proximHesKm!.toStringAsFixed(1)} km HES',
-                                            )
-                                          else
-                                            MoonButton(
-                                              isFullWidth: false,
-                                              onTap: _computingHes ? null : () => _computeNearestHes(persist: true),
-                                              leading: _computingHes
-                                                  ? const SizedBox(
-                                                      width: 16,
-                                                      height: 16,
-                                                      child: CircularProgressIndicator(strokeWidth: 2),
-                                                    )
-                                                  : const Icon(Icons.school_outlined),
-                                              label: const Text('Nearest HES'),
-                                            ),
-                                        ],
-                                      ),
-                                    ],
-                                  ),
-                                ),
-
-                                const SizedBox(height: 16),
-
-                                // Amenities
-                                _MoonCard(
-                                  isDark: isDark,
-                                  child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          const Icon(Icons.tune, size: 20),
-                                          const SizedBox(width: 8),
-                                          Text(
-                                            'Amenities',
-                                            style: TextStyle(
-                                              fontSize: 18,
-                                              fontWeight: FontWeight.w800,
-                                              color: cs.onSurface,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                      const SizedBox(height: 10),
-                                      Wrap(
-                                        spacing: 8,
-                                        runSpacing: 8,
-                                        children: [
-                                          _amenityPill(context, 'Furnished', _isFurnish),
-                                          _amenityPill(context, 'Wi-Fi included', _wifiIncl),
-                                          _amenityPill(context, 'Charges included', _chargesIncl),
-                                          _amenityPill(context, 'Car park', _carPark),
-                                        ],
-                                      ),
-                                    ],
-                                  ),
-                                ),
-
-                                const SizedBox(height: 16),
-
-                                // Price estimation
-                                _MoonCard(
-                                  isDark: isDark,
-                                  child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          const Icon(Icons.analytics_outlined, size: 20),
-                                          const SizedBox(width: 8),
-                                          Text(
-                                            'Price estimation',
-                                            style: TextStyle(
-                                              fontSize: 18,
-                                              fontWeight: FontWeight.w800,
-                                              color: cs.onSurface,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                      const SizedBox(height: 12),
-                                      if (_estimatedPrice != null) ...[
-                                        Container(
-                                          padding: const EdgeInsets.all(16),
-                                          decoration: BoxDecoration(
-                                            borderRadius: BorderRadius.circular(12),
-                                            border: Border.all(
-                                              color: cs.primary.withOpacity(0.12),
-                                              width: 1,
-                                            ),
-                                          ),
-                                          child: Row(
-                                            crossAxisAlignment: CrossAxisAlignment.start,
-                                            children: [
-                                              Icon(Icons.trending_up, color: cs.primary, size: 24),
-                                              const SizedBox(width: 12),
-                                              Expanded(
-                                                child: Column(
-                                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                                  children: [
-                                                    Text(
-                                                      'Estimated price',
-                                                      style: TextStyle(
-                                                        color: cs.onSurface.withOpacity(.8),
-                                                        fontSize: 14,
-                                                      ),
-                                                    ),
-                                                    Text(
-                                                      '${((_estimatedPrice! / 0.05).round() * 0.05).toStringAsFixed(2)} CHF/month',
-                                                      style: const TextStyle(
-                                                        fontSize: 18,
-                                                        fontWeight: FontWeight.w800,
-                                                      ),
-                                                      overflow: TextOverflow.ellipsis,
-                                                    ),
-                                                  ],
-                                                ),
-                                              ),
-                                              if (_price != null) ...[
-                                                const SizedBox(width: 12),
-                                                Expanded(
-                                                  child: Column(
-                                                    crossAxisAlignment: CrossAxisAlignment.end,
-                                                    children: [
-                                                      Text(
-                                                        'Actual price',
-                                                        style: TextStyle(
-                                                          color: cs.onSurface.withOpacity(.8),
-                                                          fontSize: 14,
-                                                        ),
-                                                      ),
-                                                      Text(
-                                                        '${((_price! / 0.05).round() * 0.05).toStringAsFixed(2)} CHF/month',
-                                                        style: TextStyle(
-                                                          color: cs.onSurface,
-                                                          fontSize: 16,
-                                                          fontWeight: FontWeight.w600,
-                                                        ),
-                                                        overflow: TextOverflow.ellipsis,
-                                                      ),
-                                                      Text(
-                                                        '${((_price! - _estimatedPrice!) / 0.05).round() * 0.05 >= 0 ? '+' : ''}${(((_price! - _estimatedPrice!) / 0.05).round() * 0.05).toStringAsFixed(2)} CHF/month',
-                                                        style: TextStyle(
-                                                          color: (_price! > _estimatedPrice!) ? Colors.red : Colors.green,
+                                                      child: Text(
+                                                        '${i + 1}/${_photos.length}',
+                                                        style: const TextStyle(
+                                                          color: Colors.white,
                                                           fontSize: 12,
-                                                          fontWeight: FontWeight.w600,
                                                         ),
-                                                        overflow: TextOverflow.ellipsis,
                                                       ),
-                                                    ],
-                                                  ),
-                                                ),
-                                              ],
-                                            ],
-                                          ),
-                                        ),
-                                        const SizedBox(height: 12),
-                                      ],
-                                      if (_estimateError != null) ...[
-                                        Container(
-                                          padding: const EdgeInsets.all(12),
-                                          decoration: BoxDecoration(
-                                            color: Colors.red.withOpacity(.1),
-                                            borderRadius: BorderRadius.circular(8),
-                                          ),
-                                          child: Row(
-                                            children: [
-                                              const Icon(Icons.error_outline, color: Colors.red, size: 20),
-                                              const SizedBox(width: 8),
-                                              Expanded(
-                                                child: Text(
-                                                  _estimateError!,
-                                                  style: const TextStyle(color: Colors.red),
-                                                ),
-                                              ),
-                                            ],
-                                          ),
-                                        ),
-                                        const SizedBox(height: 12),
-                                      ],
-                                      MoonFilledButton(
-                                        onTap: _estimatingPrice ? null : _estimatePrice,
-                                        isFullWidth: true,
-                                        leading: _estimatingPrice
-                                            ? const SizedBox(
-                                                width: 16,
-                                                height: 16,
-                                                child: CircularProgressIndicator(strokeWidth: 2),
-                                              )
-                                            : const Icon(Icons.calculate_outlined),
-                                        label: Text(_estimatingPrice ? 'Estimating...' : 'Estimate price'),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-
-                                const SizedBox(height: 16),
-
-                                // Public transport → HES
-                                _MoonCard(
-                                  isDark: isDark,
-                                  child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      Row(
-                                        mainAxisAlignment: MainAxisAlignment.start,
-                                        children: const [
-                                          Icon(Icons.alt_route_outlined, size: 20),
-                                          SizedBox(width: 8),
-                                        ],
-                                      ),
-                                      Text(
-                                        'Public transport to HES (next 2h)',
-                                        style: TextStyle(
-                                          fontSize: 18,
-                                          fontWeight: FontWeight.w800,
-                                          color: cs.onSurface,
-                                        ),
-                                      ),
-                                      const SizedBox(height: 8),
-                                      Text(
-                                        'Swipe horizontally to browse routes.',
-                                        style: TextStyle(
-                                          fontSize: 12,
-                                          fontStyle: FontStyle.italic,
-                                          color: cs.onSurface.withOpacity(.7),
-                                        ),
-                                      ),
-                                      const SizedBox(height: 8),
-                                      if (_nearestHesName != null)
-                                        Text(
-                                          'Destination: $_nearestHesName',
-                                          style: TextStyle(
-                                            color: cs.onSurface.withOpacity(.8),
-                                          ),
-                                        ),
-                                      const SizedBox(height: 8),
-                                      if (_ptError != null)
-                                        Text(
-                                          _ptError!,
-                                          style: const TextStyle(
-                                            color: Colors.redAccent,
-                                            fontWeight: FontWeight.w600,
-                                          ),
-                                        )
-                                      else if (_loadingPt)
-                                        const Padding(
-                                          padding: EdgeInsets.all(8.0),
-                                          child: LinearProgressIndicator(),
-                                        )
-                                      else if (_ptRoutes.isEmpty)
-                                        Text(
-                                          'No routes found in the next 2 hours.',
-                                          style: TextStyle(
-                                            color: cs.onSurface.withOpacity(.7),
-                                          ),
-                                        )
-                                      else ...[
-                                        Builder(
-                                          builder: (ctx) {
-                                            final pvHeight =
-                                                math.min(MediaQuery.of(ctx).size.height * 0.5, 420.0);
-                                            return SizedBox(
-                                              height: pvHeight,
-                                              child: PageView.builder(
-                                                controller: _ptCtrl,
-                                                padEnds: true,
-                                                itemCount: _ptRoutes.length,
-                                                onPageChanged: (i) => setState(() => _ptPage = i),
-                                                itemBuilder: (ctx, i) {
-                                                  final r = _ptRoutes[i];
-                                                  return _routeCard(context, r);
-                                                },
-                                              ),
-                                            );
-                                          },
-                                        ),
-                                        _dots(context, count: _ptRoutes.length, index: _ptPage),
-                                      ],
-                                    ],
-                                  ),
-                                ),
-
-                                const SizedBox(height: 16),
-
-                                // Bars à proximité
-                                _MoonCard(
-                                  isDark: isDark,
-                                  child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      Row(
-                                        mainAxisAlignment: MainAxisAlignment.start,
-                                        children: const [
-                                          Icon(Icons.local_bar_outlined, size: 20),
-                                          SizedBox(width: 8),
-                                        ],
-                                      ),
-                                      Text(
-                                        'Nearby bars (best rated first)',
-                                        style: TextStyle(
-                                          fontSize: 18,
-                                          fontWeight: FontWeight.w800,
-                                          color: cs.onSurface,
-                                        ),
-                                      ),
-                                      const SizedBox(height: 8),
-                                      Text(
-                                        'Swipe horizontally. Tap a card to expand details.',
-                                        style: TextStyle(
-                                          fontSize: 12,
-                                          fontStyle: FontStyle.italic,
-                                          color: cs.onSurface.withOpacity(.7),
-                                        ),
-                                      ),
-                                      const SizedBox(height: 8),
-                                      if (_barsError != null)
-                                        Text(
-                                          _barsError!,
-                                          style: const TextStyle(
-                                            color: Colors.redAccent,
-                                            fontWeight: FontWeight.w600,
-                                          ),
-                                        )
-                                      else if (_loadingBars)
-                                        const Padding(
-                                          padding: EdgeInsets.all(8.0),
-                                          child: LinearProgressIndicator(),
-                                        )
-                                      else if (_bars.isEmpty)
-                                        Text(
-                                          'No bars found nearby.',
-                                          style: TextStyle(
-                                            color: cs.onSurface.withOpacity(.7),
-                                          ),
-                                        )
-                                      else ...[
-                                        SizedBox(
-                                          height: 170,
-                                          child: PageView.builder(
-                                            controller: _barsCtrl,
-                                            padEnds: true,
-                                            itemCount: _bars.length,
-                                            onPageChanged: (i) => setState(() {
-                                              _barsPage = i;
-                                              _expandedBarIndex = null;
-                                            }),
-                                            itemBuilder: (ctx, i) {
-                                              final p = _bars[i];
-                                              final expanded = _expandedBarIndex == i;
-                                              return _barCard(
-                                                context,
-                                                p,
-                                                index: i,
-                                                expanded: expanded,
-                                                onTap: () {
-                                                  setState(() {
-                                                    _expandedBarIndex = expanded ? null : i;
-                                                  });
-                                                },
-                                              );
-                                            },
-                                          ),
-                                        ),
-                                        _dots(context, count: _bars.length, index: _barsPage),
-                                        if (_bars.length > 1)
-                                          Padding(
-                                            padding: const EdgeInsets.only(top: 6),
-                                            child: Text(
-                                              '${_barsPage + 1} / ${_bars.length}',
-                                              textAlign: TextAlign.center,
-                                              style: TextStyle(
-                                                color: cs.onSurface.withOpacity(.6),
-                                                fontSize: 12,
-                                              ),
-                                            ),
-                                          ),
-                                      ],
-                                    ],
-                                  ),
-                                ),
-
-                                const SizedBox(height: 16),
-
-                                // Calendrier disponibilité
-                                _MoonCard(
-                                  isDark: isDark,
-                                  child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                                    children: [
-                                      Row(
-                                        children: [
-                                          Expanded(
-                                            child: Row(
-                                              mainAxisSize: MainAxisSize.min,
-                                              children: [
-                                                const Icon(Icons.calendar_today_outlined, size: 20),
-                                                const SizedBox(width: 8),
-                                                Flexible(
-                                                  child: Text(
-                                                    'Availability',
-                                                    style: TextStyle(
-                                                      fontSize: 18,
-                                                      fontWeight: FontWeight.w800,
-                                                      color: cs.onSurface,
                                                     ),
-                                                    overflow: TextOverflow.ellipsis,
                                                   ),
-                                                ),
-                                              ],
-                                            ),
-                                          ),
-                                          IconButton(
-                                            tooltip: 'Previous month',
-                                            onPressed: _prevMonth,
-                                            icon: const Icon(Icons.chevron_left, size: 20),
-                                            padding: const EdgeInsets.all(8),
-                                            constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-                                          ),
-                                          Container(
-                                            constraints: const BoxConstraints(minWidth: 80),
-                                            child: Text(
-                                              '${_shownMonth.year}-${_shownMonth.month.toString().padLeft(2, '0')}',
-                                              style: TextStyle(
-                                                fontWeight: FontWeight.w700,
-                                                color: cs.onSurface,
-                                                fontSize: 14,
+                                                ],
                                               ),
-                                              textAlign: TextAlign.center,
                                             ),
-                                          ),
-                                          IconButton(
-                                            tooltip: 'Next month',
-                                            onPressed: _nextMonth,
-                                            icon: const Icon(Icons.chevron_right, size: 20),
-                                            padding: const EdgeInsets.all(8),
-                                            constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-                                          ),
-                                        ],
+                                          );
+                                        },
                                       ),
-                                      const SizedBox(height: 6),
-                                      if (_availStart == null)
-                                        Text(
-                                          'No availability information.',
-                                          style: TextStyle(
-                                            color: cs.onSurface.withOpacity(.7),
-                                          ),
-                                        )
-                                      else ...[
-                                        GridView.count(
-                                          shrinkWrap: true,
-                                          physics: const NeverScrollableScrollPhysics(),
-                                          crossAxisCount: 7,
-                                          children: _buildCalendar(context),
-                                        ),
-                                        const SizedBox(height: 8),
-                                        // Légende calendrier
-                                        Wrap(
-                                          spacing: 16,
-                                          runSpacing: 8,
-                                          children: [
-                                            _buildLegendItem(
-                                              context,
-                                              'Available',
-                                              cs.primary.withOpacity(.25),
-                                              cs.primary.withOpacity(.6),
-                                            ),
-                                            _buildLegendItem(
-                                              context,
-                                              'Booked',
-                                              Colors.red.withOpacity(.2),
-                                              Colors.red.withOpacity(.5),
-                                            ),
-                                          ],
-                                        ),
-                                        const SizedBox(height: 8),
-                                        Row(
+                                    ),
+                            ),
+
+                            const SizedBox(height: 16),
+
+                            // Header + bouton Edit + ratings
+                            _MoonCard(
+                              isDark: isDark,
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
                                           children: [
                                             Text(
-                                              _availEnd == null
-                                                  ? 'From ${_fmt(_availStart!)} • no end'
-                                                  : '${_fmt(_availStart!)} → ${_fmt(_availEnd!)}',
+                                              _type == 'entire_home'
+                                                  ? 'Entire home'
+                                                  : 'Single room',
                                               style: TextStyle(
-                                                color: cs.onSurface.withOpacity(.8),
-                                                fontStyle: FontStyle.italic,
+                                                fontSize: 18,
+                                                fontWeight: FontWeight.w800,
+                                                color: cs.onSurface,
+                                              ),
+                                            ),
+                                            const SizedBox(height: 4),
+                                            Text(
+                                              '$_address, $_npa $_city',
+                                              style: TextStyle(
+                                                fontSize: 14,
+                                                color: cs.onSurface.withOpacity(
+                                                  .8,
+                                                ),
+                                              ),
+                                            ),
+                                            const SizedBox(height: 8),
+                                            _buildRatingsPreview(context),
+                                          ],
+                                        ),
+                                      ),
+                                      if (_isOwner)
+                                        MoonButton(
+                                          onTap: () async {
+                                            await Navigator.of(context).push(
+                                              MaterialPageRoute(
+                                                builder: (_) => EditListingPage(
+                                                  listingId: widget.listingId,
+                                                ),
+                                              ),
+                                            );
+                                            _load();
+                                          },
+                                          leading: const Icon(Icons.edit),
+                                          label: const Text('Edit'),
+                                        ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 12),
+                                  Wrap(
+                                    spacing: 16,
+                                    runSpacing: 8,
+                                    children: [
+                                      _chip(
+                                        context,
+                                        icon: Icons.price_change_outlined,
+                                        text: _price != null
+                                            ? '${_price!.toStringAsFixed(0)} CHF/mo'
+                                            : '—',
+                                      ),
+                                      _chip(
+                                        context,
+                                        icon: Icons.square_foot_outlined,
+                                        text: _surface != null
+                                            ? '${_surface!.toStringAsFixed(0)} m²'
+                                            : '—',
+                                      ),
+                                      _chip(
+                                        context,
+                                        icon: Icons.meeting_room_outlined,
+                                        text: _rooms != null
+                                            ? '$_rooms rooms'
+                                            : '—',
+                                      ),
+                                      _chip(
+                                        context,
+                                        icon: Icons.unfold_more_outlined,
+                                        text: _floor != null
+                                            ? 'Floor $_floor'
+                                            : '—',
+                                      ),
+                                      _chip(
+                                        context,
+                                        icon: Icons.directions_bus_outlined,
+                                        text: _distTransportKm != null
+                                            ? '${_distTransportKm!.toStringAsFixed(1)} km PT'
+                                            : '—',
+                                      ),
+                                      if (_proximHesKm != null)
+                                        _chip(
+                                          context,
+                                          icon: Icons.school_outlined,
+                                          text:
+                                              _nearestHesName != null &&
+                                                  _nearestHesName!
+                                                      .trim()
+                                                      .isNotEmpty
+                                              ? '${_proximHesKm!.toStringAsFixed(1)} km • $_nearestHesName'
+                                              : '${_proximHesKm!.toStringAsFixed(1)} km HES',
+                                        )
+                                      else
+                                        MoonButton(
+                                          isFullWidth: false,
+                                          onTap: _computingHes
+                                              ? null
+                                              : () => _computeNearestHes(
+                                                  persist: true,
+                                                ),
+                                          leading: _computingHes
+                                              ? const SizedBox(
+                                                  width: 16,
+                                                  height: 16,
+                                                  child:
+                                                      CircularProgressIndicator(
+                                                        strokeWidth: 2,
+                                                      ),
+                                                )
+                                              : const Icon(
+                                                  Icons.school_outlined,
+                                                ),
+                                          label: const Text('Nearest HES'),
+                                        ),
+                                    ],
+                                  ),
+                                ],
+                              ),
+                            ),
+
+                            const SizedBox(height: 16),
+
+                            // Amenities
+                            _MoonCard(
+                              isDark: isDark,
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      const Icon(Icons.tune, size: 20),
+                                      const SizedBox(width: 8),
+                                      Text(
+                                        'Amenities',
+                                        style: TextStyle(
+                                          fontSize: 18,
+                                          fontWeight: FontWeight.w800,
+                                          color: cs.onSurface,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 10),
+                                  Wrap(
+                                    spacing: 8,
+                                    runSpacing: 8,
+                                    children: [
+                                      _amenityPill(
+                                        context,
+                                        'Furnished',
+                                        _isFurnish,
+                                      ),
+                                      _amenityPill(
+                                        context,
+                                        'Wi-Fi included',
+                                        _wifiIncl,
+                                      ),
+                                      _amenityPill(
+                                        context,
+                                        'Charges included',
+                                        _chargesIncl,
+                                      ),
+                                      _amenityPill(
+                                        context,
+                                        'Car park',
+                                        _carPark,
+                                      ),
+                                    ],
+                                  ),
+                                ],
+                              ),
+                            ),
+
+                            const SizedBox(height: 16),
+
+                            // Price estimation
+                            _MoonCard(
+                              isDark: isDark,
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      const Icon(
+                                        Icons.analytics_outlined,
+                                        size: 20,
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Text(
+                                        'Price estimation',
+                                        style: TextStyle(
+                                          fontSize: 18,
+                                          fontWeight: FontWeight.w800,
+                                          color: cs.onSurface,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 12),
+                                  if (_estimatedPrice != null) ...[
+                                    Container(
+                                      padding: const EdgeInsets.all(16),
+                                      decoration: BoxDecoration(
+                                        borderRadius: BorderRadius.circular(12),
+                                        border: Border.all(
+                                          color: cs.primary.withOpacity(0.12),
+                                          width: 1,
+                                        ),
+                                      ),
+                                      child: Row(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Icon(
+                                            Icons.trending_up,
+                                            color: cs.primary,
+                                            size: 24,
+                                          ),
+                                          const SizedBox(width: 12),
+                                          Expanded(
+                                            child: Column(
+                                              crossAxisAlignment:
+                                                  CrossAxisAlignment.start,
+                                              children: [
+                                                Text(
+                                                  'Estimated price',
+                                                  style: TextStyle(
+                                                    color: cs.onSurface
+                                                        .withOpacity(.8),
+                                                    fontSize: 14,
+                                                  ),
+                                                ),
+                                                Text(
+                                                  '${((_estimatedPrice! / 0.05).round() * 0.05).toStringAsFixed(2)} CHF/month',
+                                                  style: const TextStyle(
+                                                    fontSize: 18,
+                                                    fontWeight: FontWeight.w800,
+                                                  ),
+                                                  overflow:
+                                                      TextOverflow.ellipsis,
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                          if (_price != null) ...[
+                                            const SizedBox(width: 12),
+                                            Expanded(
+                                              child: Column(
+                                                crossAxisAlignment:
+                                                    CrossAxisAlignment.end,
+                                                children: [
+                                                  Text(
+                                                    'Actual price',
+                                                    style: TextStyle(
+                                                      color: cs.onSurface
+                                                          .withOpacity(.8),
+                                                      fontSize: 14,
+                                                    ),
+                                                  ),
+                                                  Text(
+                                                    '${((_price! / 0.05).round() * 0.05).toStringAsFixed(2)} CHF/month',
+                                                    style: TextStyle(
+                                                      color: cs.onSurface,
+                                                      fontSize: 16,
+                                                      fontWeight:
+                                                          FontWeight.w600,
+                                                    ),
+                                                    overflow:
+                                                        TextOverflow.ellipsis,
+                                                  ),
+                                                  Text(
+                                                    '${((_price! - _estimatedPrice!) / 0.05).round() * 0.05 >= 0 ? '+' : ''}${(((_price! - _estimatedPrice!) / 0.05).round() * 0.05).toStringAsFixed(2)} CHF/month',
+                                                    style: TextStyle(
+                                                      color:
+                                                          (_price! >
+                                                              _estimatedPrice!)
+                                                          ? Colors.red
+                                                          : Colors.green,
+                                                      fontSize: 12,
+                                                      fontWeight:
+                                                          FontWeight.w600,
+                                                    ),
+                                                    overflow:
+                                                        TextOverflow.ellipsis,
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
+                                          ],
+                                        ],
+                                      ),
+                                    ),
+                                    const SizedBox(height: 12),
+                                  ],
+                                  if (_estimateError != null) ...[
+                                    Container(
+                                      padding: const EdgeInsets.all(12),
+                                      decoration: BoxDecoration(
+                                        color: Colors.red.withOpacity(.1),
+                                        borderRadius: BorderRadius.circular(8),
+                                      ),
+                                      child: Row(
+                                        children: [
+                                          const Icon(
+                                            Icons.error_outline,
+                                            color: Colors.red,
+                                            size: 20,
+                                          ),
+                                          const SizedBox(width: 8),
+                                          Expanded(
+                                            child: Text(
+                                              _estimateError!,
+                                              style: const TextStyle(
+                                                color: Colors.red,
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                    const SizedBox(height: 12),
+                                  ],
+                                  MoonFilledButton(
+                                    onTap: _estimatingPrice
+                                        ? null
+                                        : _estimatePrice,
+                                    isFullWidth: true,
+                                    leading: _estimatingPrice
+                                        ? const SizedBox(
+                                            width: 16,
+                                            height: 16,
+                                            child: CircularProgressIndicator(
+                                              strokeWidth: 2,
+                                            ),
+                                          )
+                                        : const Icon(Icons.calculate_outlined),
+                                    label: Text(
+                                      _estimatingPrice
+                                          ? 'Estimating...'
+                                          : 'Estimate price',
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+
+                            const SizedBox(height: 16),
+
+                            // Public transport → HES (student's HES if student)
+                            _MoonCard(
+                              isDark: isDark,
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    mainAxisAlignment: MainAxisAlignment.start,
+                                    children: const [
+                                      Icon(Icons.alt_route_outlined, size: 20),
+                                      SizedBox(width: 8),
+                                    ],
+                                  ),
+                                  Text(
+                                    'Public transport to HES (next 2h)',
+                                    style: TextStyle(
+                                      fontSize: 18,
+                                      fontWeight: FontWeight.w800,
+                                      color: cs.onSurface,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    'Swipe horizontally to browse routes.',
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      fontStyle: FontStyle.italic,
+                                      color: cs.onSurface.withOpacity(.7),
+                                    ),
+                                  ),
+                                  const SizedBox(height: 8),
+                                  if (_destHesName != null)
+                                    Text(
+                                      _destIsUserSchool
+                                          ? 'Destination: $_destHesName (your HES)'
+                                          : 'Destination: $_destHesName',
+                                      style: TextStyle(
+                                        color: cs.onSurface.withOpacity(.8),
+                                      ),
+                                    ),
+                                  const SizedBox(height: 8),
+                                  if (_ptError != null)
+                                    Text(
+                                      _ptError!,
+                                      style: const TextStyle(
+                                        color: Colors.redAccent,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    )
+                                  else if (_loadingPt)
+                                    const Padding(
+                                      padding: EdgeInsets.all(8.0),
+                                      child: LinearProgressIndicator(),
+                                    )
+                                  else if (_ptRoutes.isEmpty)
+                                    Text(
+                                      'No routes found in the next 2 hours.',
+                                      style: TextStyle(
+                                        color: cs.onSurface.withOpacity(.7),
+                                      ),
+                                    )
+                                  else ...[
+                                    Builder(
+                                      builder: (ctx) {
+                                        final pvHeight = math.min(
+                                          MediaQuery.of(ctx).size.height * 0.5,
+                                          420.0,
+                                        );
+                                        return SizedBox(
+                                          height: pvHeight,
+                                          child: PageView.builder(
+                                            controller: _ptCtrl,
+                                            padEnds: true,
+                                            itemCount: _ptRoutes.length,
+                                            onPageChanged: (i) =>
+                                                setState(() => _ptPage = i),
+                                            itemBuilder: (ctx, i) {
+                                              final r = _ptRoutes[i];
+                                              return _routeCard(context, r);
+                                            },
+                                          ),
+                                        );
+                                      },
+                                    ),
+                                    _dots(
+                                      context,
+                                      count: _ptRoutes.length,
+                                      index: _ptPage,
+                                    ),
+                                  ],
+                                ],
+                              ),
+                            ),
+
+                            const SizedBox(height: 16),
+
+                            // Bars à proximité
+                            _MoonCard(
+                              isDark: isDark,
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    mainAxisAlignment: MainAxisAlignment.start,
+                                    children: const [
+                                      Icon(Icons.local_bar_outlined, size: 20),
+                                      SizedBox(width: 8),
+                                    ],
+                                  ),
+                                  Text(
+                                    'Nearby bars (best rated first)',
+                                    style: TextStyle(
+                                      fontSize: 18,
+                                      fontWeight: FontWeight.w800,
+                                      color: cs.onSurface,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    'Swipe horizontally. Tap a card to expand details.',
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      fontStyle: FontStyle.italic,
+                                      color: cs.onSurface.withOpacity(.7),
+                                    ),
+                                  ),
+                                  const SizedBox(height: 8),
+                                  if (_barsError != null)
+                                    Text(
+                                      _barsError!,
+                                      style: const TextStyle(
+                                        color: Colors.redAccent,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    )
+                                  else if (_loadingBars)
+                                    const Padding(
+                                      padding: EdgeInsets.all(8.0),
+                                      child: LinearProgressIndicator(),
+                                    )
+                                  else if (_bars.isEmpty)
+                                    Text(
+                                      'No bars found nearby.',
+                                      style: TextStyle(
+                                        color: cs.onSurface.withOpacity(.7),
+                                      ),
+                                    )
+                                  else ...[
+                                    SizedBox(
+                                      height: 170,
+                                      child: PageView.builder(
+                                        controller: _barsCtrl,
+                                        padEnds: true,
+                                        itemCount: _bars.length,
+                                        onPageChanged: (i) => setState(() {
+                                          _barsPage = i;
+                                          _expandedBarIndex = null;
+                                        }),
+                                        itemBuilder: (ctx, i) {
+                                          final p = _bars[i];
+                                          final expanded =
+                                              _expandedBarIndex == i;
+                                          return _barCard(
+                                            context,
+                                            p,
+                                            index: i,
+                                            expanded: expanded,
+                                            onTap: () {
+                                              setState(() {
+                                                _expandedBarIndex = expanded
+                                                    ? null
+                                                    : i;
+                                              });
+                                            },
+                                          );
+                                        },
+                                      ),
+                                    ),
+                                    _dots(
+                                      context,
+                                      count: _bars.length,
+                                      index: _barsPage,
+                                    ),
+                                    if (_bars.length > 1)
+                                      Padding(
+                                        padding: const EdgeInsets.only(top: 6),
+                                        child: Text(
+                                          '${_barsPage + 1} / ${_bars.length}',
+                                          textAlign: TextAlign.center,
+                                          style: TextStyle(
+                                            color: cs.onSurface.withOpacity(.6),
+                                            fontSize: 12,
+                                          ),
+                                        ),
+                                      ),
+                                  ],
+                                ],
+                              ),
+                            ),
+
+                            const SizedBox(height: 16),
+
+                            // Calendrier disponibilité
+                            _MoonCard(
+                              isDark: isDark,
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                children: [
+                                  Row(
+                                    children: [
+                                      Expanded(
+                                        child: Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            const Icon(
+                                              Icons.calendar_today_outlined,
+                                              size: 20,
+                                            ),
+                                            const SizedBox(width: 8),
+                                            Flexible(
+                                              child: Text(
+                                                'Availability',
+                                                style: TextStyle(
+                                                  fontSize: 18,
+                                                  fontWeight: FontWeight.w800,
+                                                  color: cs.onSurface,
+                                                ),
+                                                overflow: TextOverflow.ellipsis,
                                               ),
                                             ),
                                           ],
                                         ),
-                                      ],
+                                      ),
+                                      IconButton(
+                                        tooltip: 'Previous month',
+                                        onPressed: _prevMonth,
+                                        icon: const Icon(
+                                          Icons.chevron_left,
+                                          size: 20,
+                                        ),
+                                        padding: const EdgeInsets.all(8),
+                                        constraints: const BoxConstraints(
+                                          minWidth: 36,
+                                          minHeight: 36,
+                                        ),
+                                      ),
+                                      Container(
+                                        constraints: const BoxConstraints(
+                                          minWidth: 80,
+                                        ),
+                                        child: Text(
+                                          '${_shownMonth.year}-${_shownMonth.month.toString().padLeft(2, '0')}',
+                                          style: TextStyle(
+                                            fontWeight: FontWeight.w700,
+                                            color: cs.onSurface,
+                                            fontSize: 14,
+                                          ),
+                                          textAlign: TextAlign.center,
+                                        ),
+                                      ),
+                                      IconButton(
+                                        tooltip: 'Next month',
+                                        onPressed: _nextMonth,
+                                        icon: const Icon(
+                                          Icons.chevron_right,
+                                          size: 20,
+                                        ),
+                                        padding: const EdgeInsets.all(8),
+                                        constraints: const BoxConstraints(
+                                          minWidth: 36,
+                                          minHeight: 36,
+                                        ),
+                                      ),
                                     ],
                                   ),
-                                ),
-
-                                // Formulaire de réservation (étudiant)
-                                if (_isStudent) _buildBookingPanel(context),
-
-                                const SizedBox(height: 24),
-
-                                if (_isOwner)
-                                  MoonFilledButton(
-                                    isFullWidth: true,
-                                    onTap: () async {
-                                      await Navigator.of(context).push(
-                                        MaterialPageRoute(
-                                          builder: (_) => EditListingPage(listingId: widget.listingId),
+                                  const SizedBox(height: 6),
+                                  if (_availStart == null)
+                                    Text(
+                                      'No availability information.',
+                                      style: TextStyle(
+                                        color: cs.onSurface.withOpacity(.7),
+                                      ),
+                                    )
+                                  else ...[
+                                    GridView.count(
+                                      shrinkWrap: true,
+                                      physics:
+                                          const NeverScrollableScrollPhysics(),
+                                      crossAxisCount: 7,
+                                      children: _buildCalendar(context),
+                                    ),
+                                    const SizedBox(height: 8),
+                                    // Légende calendrier
+                                    Wrap(
+                                      spacing: 16,
+                                      runSpacing: 8,
+                                      children: [
+                                        _buildLegendItem(
+                                          context,
+                                          'Available',
+                                          cs.primary.withOpacity(.25),
+                                          cs.primary.withOpacity(.6),
                                         ),
-                                      );
-                                      _load();
-                                    },
-                                    leading: const Icon(Icons.edit),
-                                    label: const Text('Edit listing'),
-                                  ),
-                              ],
+                                        _buildLegendItem(
+                                          context,
+                                          'Booked',
+                                          Colors.red.withOpacity(.2),
+                                          Colors.red.withOpacity(.5),
+                                        ),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 8),
+                                    Row(
+                                      children: [
+                                        Text(
+                                          _availEnd == null
+                                              ? 'From ${_fmt(_availStart!)} • no end'
+                                              : '${_fmt(_availStart!)} → ${_fmt(_availEnd!)}',
+                                          style: TextStyle(
+                                            color: cs.onSurface.withOpacity(.8),
+                                            fontStyle: FontStyle.italic,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ],
+                                ],
+                              ),
                             ),
-                          ),
+
+                            // Formulaire de réservation (étudiant)
+                            if (_isStudent) _buildBookingPanel(context),
+
+                            const SizedBox(height: 24),
+
+                            if (_isOwner)
+                              MoonFilledButton(
+                                isFullWidth: true,
+                                onTap: () async {
+                                  await Navigator.of(context).push(
+                                    MaterialPageRoute(
+                                      builder: (_) => EditListingPage(
+                                        listingId: widget.listingId,
+                                      ),
+                                    ),
+                                  );
+                                  _load();
+                                },
+                                leading: const Icon(Icons.edit),
+                                label: const Text('Edit listing'),
+                              ),
+                          ],
                         ),
                       ),
-                    );
-                  },
-                ),
+                    ),
+                  ),
+                );
+              },
+            ),
     );
   }
 
-  Widget _buildLegendItem(BuildContext context, String label, Color bgColor, Color borderColor) {
+  Widget _buildLegendItem(
+    BuildContext context,
+    String label,
+    Color bgColor,
+    Color borderColor,
+  ) {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -2123,7 +2443,9 @@ class _ViewListingPageState extends State<ViewListingPage> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
-        color: on ? cs.primary.withOpacity(.15) : Theme.of(context).cardColor.withOpacity(.85),
+        color: on
+            ? cs.primary.withOpacity(.15)
+            : Theme.of(context).cardColor.withOpacity(.85),
         borderRadius: BorderRadius.circular(999),
         border: Border.all(
           color: on ? cs.primary.withOpacity(.5) : cs.primary.withOpacity(.12),
@@ -2235,7 +2557,8 @@ class _ViewListingPageState extends State<ViewListingPage> {
                               ),
                           ] else ...[
                             Text(
-                              '${s.transitLine ?? 'Transit'} • ${s.transitHeadsign ?? ''}'.trim(),
+                              '${s.transitLine ?? 'Transit'} • ${s.transitHeadsign ?? ''}'
+                                  .trim(),
                               style: const TextStyle(
                                 fontWeight: FontWeight.w700,
                               ),
@@ -2310,7 +2633,9 @@ class _ViewListingPageState extends State<ViewListingPage> {
         child: LayoutBuilder(
           builder: (ctx, constraints) {
             return SingleChildScrollView(
-              physics: expanded ? const BouncingScrollPhysics() : const NeverScrollableScrollPhysics(),
+              physics: expanded
+                  ? const BouncingScrollPhysics()
+                  : const NeverScrollableScrollPhysics(),
               child: ConstrainedBox(
                 constraints: BoxConstraints(minHeight: constraints.maxHeight),
                 child: Column(
@@ -2325,7 +2650,9 @@ class _ViewListingPageState extends State<ViewListingPage> {
                         fontSize: 16,
                       ),
                       maxLines: expanded ? 3 : 1,
-                      overflow: expanded ? TextOverflow.visible : TextOverflow.ellipsis,
+                      overflow: expanded
+                          ? TextOverflow.visible
+                          : TextOverflow.ellipsis,
                     ),
                     const SizedBox(height: 4),
 
@@ -2342,7 +2669,9 @@ class _ViewListingPageState extends State<ViewListingPage> {
                               color: cs.onSurface.withOpacity(.8),
                             ),
                             maxLines: expanded ? null : 2,
-                            overflow: expanded ? TextOverflow.visible : TextOverflow.ellipsis,
+                            overflow: expanded
+                                ? TextOverflow.visible
+                                : TextOverflow.ellipsis,
                           ),
                         ),
                       ],
@@ -2353,7 +2682,11 @@ class _ViewListingPageState extends State<ViewListingPage> {
                     if (p.rating != null)
                       Row(
                         children: [
-                          Icon(Icons.star_rate_rounded, size: 16, color: cs.primary),
+                          Icon(
+                            Icons.star_rate_rounded,
+                            size: 16,
+                            color: cs.primary,
+                          ),
                           const SizedBox(width: 4),
                           Text(
                             '${p.rating!.toStringAsFixed(1)}'
@@ -2376,8 +2709,9 @@ class _ViewListingPageState extends State<ViewListingPage> {
                       duration: const Duration(milliseconds: 180),
                       sizeCurve: Curves.easeOut,
                       alignment: Alignment.topLeft,
-                      crossFadeState:
-                          expanded ? CrossFadeState.showSecond : CrossFadeState.showFirst,
+                      crossFadeState: expanded
+                          ? CrossFadeState.showSecond
+                          : CrossFadeState.showFirst,
                       firstChild: const SizedBox.shrink(),
                       secondChild: Padding(
                         padding: const EdgeInsets.only(top: 10),
@@ -2386,7 +2720,9 @@ class _ViewListingPageState extends State<ViewListingPage> {
                           decoration: BoxDecoration(
                             color: cs.primary.withOpacity(.06),
                             borderRadius: BorderRadius.circular(10),
-                            border: Border.all(color: cs.primary.withOpacity(.15)),
+                            border: Border.all(
+                              color: cs.primary.withOpacity(.15),
+                            ),
                           ),
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
@@ -2500,15 +2836,15 @@ class _TransitStep {
   final DateTime? arrivalTime;
 
   _TransitStep.walk({this.instruction, this.distanceText, this.durationText})
-      : type = _StepType.walk,
-        transitLine = null,
-        transitHeadsign = null,
-        departureStop = null,
-        arrivalStop = null,
-        platform = null,
-        numStops = null,
-        departureTime = null,
-        arrivalTime = null;
+    : type = _StepType.walk,
+      transitLine = null,
+      transitHeadsign = null,
+      departureStop = null,
+      arrivalStop = null,
+      platform = null,
+      numStops = null,
+      departureTime = null,
+      arrivalTime = null;
 
   _TransitStep.transit({
     this.transitLine,
@@ -2521,8 +2857,8 @@ class _TransitStep {
     this.arrivalTime,
     this.distanceText,
     this.durationText,
-  })  : type = _StepType.transit,
-        instruction = null;
+  }) : type = _StepType.transit,
+       instruction = null;
 }
 
 class _TransitRoute {
@@ -2542,24 +2878,28 @@ class _TransitRoute {
     required this.steps,
   });
 
-  static _TransitRoute? fromGoogle(Map leg, Map route) {
+  static _TransitRoute? fromGoogle(Map leg, Map route, {DateTime? anchor}) {
     try {
-      final dep = _parseGoogleTime(leg['departure_time']);
-      final arr = _parseGoogleTime(leg['arrival_time']);
       final durText = (leg['duration']?['text'] ?? '').toString();
+      final durSec = (leg['duration']?['value'] as num?)?.toInt(); // seconds
       final summary = (route['summary'] ?? '').toString();
 
       final rawSteps = (leg['steps'] as List?) ?? const [];
       final steps = <_TransitStep>[];
 
+      DateTime? firstTransitDep;
+      DateTime? lastTransitArr;
+
       for (final s in rawSteps) {
         final travelMode = (s['travel_mode'] ?? '').toString();
+
         if (travelMode == 'WALKING') {
           steps.add(
             _TransitStep.walk(
-              instruction: (s['html_instructions'] ?? '')
-                  .toString()
-                  .replaceAll(RegExp(r'<[^>]+>'), ''),
+              instruction: (s['html_instructions'] ?? '').toString().replaceAll(
+                RegExp(r'<[^>]+>'),
+                '',
+              ),
               distanceText: (s['distance']?['text'] ?? '').toString(),
               durationText: (s['duration']?['text'] ?? '').toString(),
             ),
@@ -2570,11 +2910,15 @@ class _TransitRoute {
           final depStop = td['departure_stop']?['name']?.toString();
           final arrStop = td['arrival_stop']?['name']?.toString();
           final headsign = (td['headsign'] ?? '').toString();
-          final lineName = (line['short_name'] ?? line['name'] ?? '').toString();
+          final lineName = (line['short_name'] ?? line['name'] ?? '')
+              .toString();
           final numStops = (td['num_stops'] as num?)?.toInt();
           final depTime = _parseGoogleTime(td['departure_time']);
           final arrTime = _parseGoogleTime(td['arrival_time']);
           final platform = (td['departure_platform'] ?? '').toString();
+
+          firstTransitDep ??= depTime;
+          if (arrTime != null) lastTransitArr = arrTime;
 
           steps.add(
             _TransitStep.transit(
@@ -2593,9 +2937,31 @@ class _TransitRoute {
         }
       }
 
+      // Prefer leg-level times
+      DateTime? legDep = _parseGoogleTime(leg['departure_time']);
+      DateTime? legArr = _parseGoogleTime(leg['arrival_time']);
+
+      // Fallback to transit-step times if available
+      legDep ??= firstTransitDep;
+      legArr ??= lastTransitArr;
+
+      // If still missing (e.g., walking-only route), use anchor + duration
+      if (legDep == null && anchor != null) {
+        legDep = anchor;
+        if (durSec != null) legArr ??= anchor.add(Duration(seconds: durSec));
+      }
+      if (legArr == null && legDep != null && durSec != null) {
+        legArr = legDep.add(Duration(seconds: durSec));
+      }
+
+      // If we still couldn't establish times, give up on this route
+      if (legDep == null || legArr == null) {
+        return null;
+      }
+
       return _TransitRoute(
-        departureTime: dep ?? DateTime.now(),
-        arrivalTime: arr ?? DateTime.now(),
+        departureTime: legDep,
+        arrivalTime: legArr,
         totalText: durText,
         summary: summary,
         steps: steps,
@@ -2609,7 +2975,10 @@ class _TransitRoute {
     if (obj == null) return null;
     final v = obj['value'];
     if (v is int) {
-      return DateTime.fromMillisecondsSinceEpoch(v * 1000, isUtc: false).toLocal();
+      return DateTime.fromMillisecondsSinceEpoch(
+        v * 1000,
+        isUtc: false,
+      ).toLocal();
     }
     return null;
   }
