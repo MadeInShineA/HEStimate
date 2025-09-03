@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:moon_design/moon_design.dart';
+import 'package:fl_chart/fl_chart.dart';
 
 class AdminPage extends StatefulWidget {
   @override
@@ -25,10 +26,15 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
   Map<String, int> _usersByRole = {'student': 0, 'homeowner': 0, 'admin': 0};
   Map<String, int> _listingsByType = {'room': 0, 'entire_home': 0};
 
+  // Analytics data
+  List<FlSpot> _dailyListingsData = [];
+  List<FlSpot> _dailyBookingsData = [];
+  List<String> _chartDates = [];
+
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 3, vsync: this);
+    _tabController = TabController(length: 2, vsync: this); // Reduced from 3 to 2
     _checkAdminRole();
   }
 
@@ -55,6 +61,7 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
           
           if (_isAdmin) {
             await _loadDashboardData();
+            await _loadAnalyticsData();
           }
         }
       }
@@ -75,6 +82,102 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
     } catch (e) {
       print('Erreur lors du chargement des données: $e');
     }
+  }
+
+  Future<void> _loadAnalyticsData() async {
+    try {
+      await Future.wait([
+        _loadDailyListingsData(),
+        _loadDailyBookingsData(),
+      ]);
+    } catch (e) {
+      print('Erreur lors du chargement des données analytiques: $e');
+    }
+  }
+
+  Future<void> _loadDailyListingsData() async {
+    final now = DateTime.now();
+    final thirtyDaysAgo = now.subtract(const Duration(days: 30));
+    
+    QuerySnapshot snapshot = await _firestore
+        .collection('listings')
+        .where('createdAt', isGreaterThanOrEqualTo: Timestamp.fromDate(thirtyDaysAgo))
+        .orderBy('createdAt')
+        .get();
+
+    Map<String, int> dailyCounts = {};
+    List<String> dates = [];
+    
+    // Initialize all dates with 0
+    for (int i = 0; i < 30; i++) {
+      final date = thirtyDaysAgo.add(Duration(days: i));
+      final dateKey = '${date.day}/${date.month}';
+      dailyCounts[dateKey] = 0;
+      dates.add(dateKey);
+    }
+
+    // Count actual listings
+    for (var doc in snapshot.docs) {
+      final data = doc.data() as Map<String, dynamic>;
+      if (data['createdAt'] != null) {
+        final createdAt = (data['createdAt'] as Timestamp).toDate();
+        final dateKey = '${createdAt.day}/${createdAt.month}';
+        if (dailyCounts.containsKey(dateKey)) {
+          dailyCounts[dateKey] = dailyCounts[dateKey]! + 1;
+        }
+      }
+    }
+
+    setState(() {
+      _dailyListingsData = dailyCounts.entries
+          .toList()
+          .asMap()
+          .entries
+          .map((entry) => FlSpot(entry.key.toDouble(), entry.value.value.toDouble()))
+          .toList();
+      _chartDates = dates;
+    });
+  }
+
+  Future<void> _loadDailyBookingsData() async {
+    final now = DateTime.now();
+    final thirtyDaysAgo = now.subtract(const Duration(days: 30));
+    
+    QuerySnapshot snapshot = await _firestore
+        .collection('booking_requests')
+        .where('createdAt', isGreaterThanOrEqualTo: Timestamp.fromDate(thirtyDaysAgo))
+        .orderBy('createdAt')
+        .get();
+
+    Map<String, int> dailyCounts = {};
+    
+    // Initialize all dates with 0
+    for (int i = 0; i < 30; i++) {
+      final date = thirtyDaysAgo.add(Duration(days: i));
+      final dateKey = '${date.day}/${date.month}';
+      dailyCounts[dateKey] = 0;
+    }
+
+    // Count actual bookings
+    for (var doc in snapshot.docs) {
+      final data = doc.data() as Map<String, dynamic>;
+      if (data['createdAt'] != null) {
+        final createdAt = (data['createdAt'] as Timestamp).toDate();
+        final dateKey = '${createdAt.day}/${createdAt.month}';
+        if (dailyCounts.containsKey(dateKey)) {
+          dailyCounts[dateKey] = dailyCounts[dateKey]! + 1;
+        }
+      }
+    }
+
+    setState(() {
+      _dailyBookingsData = dailyCounts.entries
+          .toList()
+          .asMap()
+          .entries
+          .map((entry) => FlSpot(entry.key.toDouble(), entry.value.value.toDouble()))
+          .toList();
+    });
   }
 
   Future<void> _loadUsersData() async {
@@ -209,8 +312,7 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
           controller: _tabController,
           tabs: const [
             Tab(icon: Icon(Icons.dashboard_outlined), text: 'Dashboard'),
-            Tab(icon: Icon(Icons.people_outline), text: 'Users'),
-            Tab(icon: Icon(Icons.home_work_outlined), text: 'Listings'),
+            Tab(icon: Icon(Icons.analytics_outlined), text: 'Analytics'),
           ],
         ),
       ),
@@ -220,8 +322,7 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
           controller: _tabController,
           children: [
             _buildDashboardTab(isDark),
-            _buildUsersTab(isDark),
-            _buildListingsTab(isDark),
+            _buildAnalyticsTab(isDark),
           ],
         ),
       ),
@@ -435,37 +536,10 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
                       ],
                     ),
                   ),
-                ],
-              ),
-            ),
-          ),
-        );
-      },
-    );
-  }
-
-  Widget _buildUsersTab(bool isDark) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final isWide = constraints.maxWidth >= 900;
-        const contentMax = 1000.0;
-
-        final horizontalPad = math.max(
-          16.0,
-          (constraints.maxWidth - contentMax) / 2 + 16.0,
-        );
-
-        return SingleChildScrollView(
-          padding: EdgeInsets.symmetric(
-            horizontal: isWide ? horizontalPad : 16.0,
-            vertical: 16.0,
-          ),
-          child: Center(
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: contentMax),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
+                  
+                  const SizedBox(height: 16),
+                  
+                  // Users management section
                   _MoonCard(
                     isDark: isDark,
                     child: Column(
@@ -473,192 +547,119 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
                       children: [
                         Row(
                           children: [
-                            const Icon(Icons.people_outline, size: 24),
+                            const Icon(Icons.people_outline, size: 20),
                             const SizedBox(width: 8),
                             Text(
-                              'User Management',
+                              'Recent Users',
                               style: TextStyle(
-                                fontSize: 24,
+                                fontSize: 18,
                                 fontWeight: FontWeight.w800,
                                 color: Theme.of(context).colorScheme.onSurface,
                               ),
                             ),
                           ],
                         ),
-                        const SizedBox(height: 8),
-                        Text(
-                          'Manage platform users and their roles',
-                          style: TextStyle(
-                            color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  
-                  StreamBuilder<QuerySnapshot>(
-                    stream: _firestore.collection('users').snapshots(),
-                    builder: (context, snapshot) {
-                      if (snapshot.hasError) {
-                        return _MoonCard(
-                          isDark: isDark,
-                          child: Center(
-                            child: Text(
-                              'Error loading users: ${snapshot.error}',
-                              style: const TextStyle(color: Colors.red),
-                            ),
-                          ),
-                        );
-                      }
+                        const SizedBox(height: 16),
+                        StreamBuilder<QuerySnapshot>(
+                          stream: _firestore
+                              .collection('users')
+                              .orderBy('createdAt', descending: true)
+                              .limit(5)
+                              .snapshots(),
+                          builder: (context, snapshot) {
+                            if (!snapshot.hasData) {
+                              return const Center(child: CircularProgressIndicator());
+                            }
 
-                      if (snapshot.connectionState == ConnectionState.waiting) {
-                        return _MoonCard(
-                          isDark: isDark,
-                          child: const Center(
-                            child: Padding(
-                              padding: EdgeInsets.all(32.0),
-                              child: CircularProgressIndicator(),
-                            ),
-                          ),
-                        );
-                      }
+                            return Column(
+                              children: snapshot.data!.docs.map((user) {
+                                Map<String, dynamic> userData = user.data() as Map<String, dynamic>;
+                                String userId = user.id;
+                                bool isCurrentAdmin = userId == _auth.currentUser?.uid;
 
-                      List<DocumentSnapshot> users = snapshot.data!.docs;
-                      
-                      return Column(
-                        children: users.map((user) {
-                          Map<String, dynamic> userData = user.data() as Map<String, dynamic>;
-                          String userId = user.id;
-                          
-                          // Vérifier si c'est l'admin actuellement connecté
-                          bool isCurrentAdmin = userId == _auth.currentUser?.uid;
-
-                          return Padding(
-                            padding: const EdgeInsets.only(bottom: 12),
-                            child: _MoonCard(
-                              isDark: isDark,
-                              child: Row(
-                                children: [
-                                  Container(
-                                    width: 50,
-                                    height: 50,
-                                    decoration: BoxDecoration(
-                                      color: _getRoleColor(userData['role']).withOpacity(0.15),
-                                      borderRadius: BorderRadius.circular(25),
-                                      border: Border.all(
-                                        color: _getRoleColor(userData['role']).withOpacity(0.3),
-                                        width: isCurrentAdmin ? 2 : 1,
-                                      ),
-                                    ),
-                                    child: Icon(
-                                      _getRoleIcon(userData['role']),
-                                      color: _getRoleColor(userData['role']),
-                                      size: 24,
+                                return Container(
+                                  margin: const EdgeInsets.only(bottom: 8),
+                                  padding: const EdgeInsets.all(12),
+                                  decoration: BoxDecoration(
+                                    color: Theme.of(context).colorScheme.surface.withOpacity(0.5),
+                                    borderRadius: BorderRadius.circular(8),
+                                    border: Border.all(
+                                      color: Theme.of(context).colorScheme.outline.withOpacity(0.2),
                                     ),
                                   ),
-                                  const SizedBox(width: 16),
-                                  Expanded(
-                                    child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      children: [
-                                        Row(
+                                  child: Row(
+                                    children: [
+                                      Container(
+                                        width: 40,
+                                        height: 40,
+                                        decoration: BoxDecoration(
+                                          color: _getRoleColor(userData['role']).withOpacity(0.15),
+                                          borderRadius: BorderRadius.circular(20),
+                                        ),
+                                        child: Icon(
+                                          _getRoleIcon(userData['role']),
+                                          color: _getRoleColor(userData['role']),
+                                          size: 20,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 12),
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment: CrossAxisAlignment.start,
                                           children: [
-                                            Text(
-                                              userData['name'] ?? 'No name',
-                                              style: const TextStyle(
-                                                fontWeight: FontWeight.w700,
-                                                fontSize: 16,
-                                              ),
-                                            ),
-                                            if (isCurrentAdmin) ...[
-                                              const SizedBox(width: 8),
-                                              Container(
-                                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                                decoration: BoxDecoration(
-                                                  color: Colors.blue.withOpacity(0.15),
-                                                  borderRadius: BorderRadius.circular(8),
-                                                ),
-                                                child: const Text(
-                                                  'You',
-                                                  style: TextStyle(
-                                                    fontSize: 10,
-                                                    fontWeight: FontWeight.w700,
-                                                    color: Colors.blue,
+                                            Row(
+                                              children: [
+                                                Text(
+                                                  userData['name'] ?? 'No name',
+                                                  style: const TextStyle(
+                                                    fontWeight: FontWeight.w600,
                                                   ),
                                                 ),
-                                              ),
-                                            ],
-                                          ],
-                                        ),
-                                        const SizedBox(height: 4),
-                                        Text(
-                                          userData['email'] ?? 'No email',
-                                          style: TextStyle(
-                                            color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
-                                          ),
-                                        ),
-                                        const SizedBox(height: 2),
-                                        Row(
-                                          children: [
-                                            Container(
-                                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                                              decoration: BoxDecoration(
-                                                color: _getRoleColor(userData['role']).withOpacity(0.15),
-                                                borderRadius: BorderRadius.circular(12),
-                                              ),
-                                              child: Text(
-                                                _getRoleName(userData['role']),
-                                                style: TextStyle(
-                                                  fontSize: 12,
-                                                  fontWeight: FontWeight.w600,
-                                                  color: _getRoleColor(userData['role']),
-                                                ),
-                                              ),
+                                                if (isCurrentAdmin) ...[
+                                                  const SizedBox(width: 8),
+                                                  Container(
+                                                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                                                    decoration: BoxDecoration(
+                                                      color: Colors.blue.withOpacity(0.15),
+                                                      borderRadius: BorderRadius.circular(4),
+                                                    ),
+                                                    child: const Text(
+                                                      'You',
+                                                      style: TextStyle(
+                                                        fontSize: 9,
+                                                        fontWeight: FontWeight.w700,
+                                                        color: Colors.blue,
+                                                      ),
+                                                    ),
+                                                  ),
+                                                ],
+                                              ],
                                             ),
-                                            if (userData['school']?.toString().isNotEmpty == true) ...[
-                                              const SizedBox(width: 8),
-                                              Text(
-                                                '• ${userData['school']}',
-                                                style: TextStyle(
-                                                  fontSize: 12,
-                                                  color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
-                                                ),
-                                              ),
-                                            ],
-                                          ],
-                                        ),
-                                        if (userData['createdAt'] != null)
-                                          Padding(
-                                            padding: const EdgeInsets.only(top: 2),
-                                            child: Text(
-                                              'Joined: ${_formatDate(userData['createdAt'])}',
+                                            Text(
+                                              _getRoleName(userData['role']),
                                               style: TextStyle(
-                                                fontSize: 11,
-                                                color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5),
+                                                fontSize: 12,
+                                                color: _getRoleColor(userData['role']),
+                                                fontWeight: FontWeight.w500,
                                               ),
                                             ),
-                                          ),
-                                      ],
-                                    ),
+                                          ],
+                                        ),
+                                      ),
+                                      if (!isCurrentAdmin)
+                                        IconButton(
+                                          onPressed: () => _showDeleteDialog(userId, userData['name']),
+                                          icon: const Icon(Icons.delete_outline, color: Colors.red, size: 18),
+                                        ),
+                                    ],
                                   ),
-                                  // N'afficher le bouton de suppression que si ce n'est pas l'admin actuellement connecté
-                                  if (!isCurrentAdmin)
-                                    MoonButton(
-                                      onTap: () => _showDeleteDialog(userId, userData['name']),
-                                      backgroundColor: Colors.red.withOpacity(0.1),
-                                      leading: const Icon(Icons.delete_outline, color: Colors.red, size: 18),
-                                    )
-                                  else
-                                    // Espace vide pour maintenir l'alignement
-                                    const SizedBox(width: 48),
-                                ],
-                              ),
-                            ),
-                          );
-                        }).toList(),
-                      );
-                    },
+                                );
+                              }).toList(),
+                            );
+                          },
+                        ),
+                      ],
+                    ),
                   ),
                 ],
               ),
@@ -669,7 +670,10 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
     );
   }
 
-  Widget _buildListingsTab(bool isDark) {
+  Widget _buildAnalyticsTab(bool isDark) {
+    double maxYListings = _dailyListingsData.isEmpty ? 1 : _dailyListingsData.map((spot) => spot.y).reduce(math.max);
+    double intervalListings = (maxYListings / 5).ceilToDouble().clamp(1, double.infinity);
+
     return LayoutBuilder(
       builder: (context, constraints) {
         final isWide = constraints.maxWidth >= 900;
@@ -698,10 +702,10 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
                       children: [
                         Row(
                           children: [
-                            const Icon(Icons.home_work_outlined, size: 24),
+                            const Icon(Icons.analytics_outlined, size: 24),
                             const SizedBox(width: 8),
                             Text(
-                              'Listings Management',
+                              'Analytics Dashboard',
                               style: TextStyle(
                                 fontSize: 24,
                                 fontWeight: FontWeight.w800,
@@ -712,7 +716,7 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
                         ),
                         const SizedBox(height: 8),
                         Text(
-                          'Monitor and manage all property listings',
+                          'Daily trends and insights over the last 30 days',
                           style: TextStyle(
                             color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
                           ),
@@ -721,134 +725,259 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
                     ),
                   ),
                   const SizedBox(height: 16),
-                  
-                  StreamBuilder<QuerySnapshot>(
-                    stream: _firestore.collection('listings').snapshots(),
-                    builder: (context, snapshot) {
-                      if (snapshot.hasError) {
-                        return _MoonCard(
-                          isDark: isDark,
-                          child: Center(
-                            child: Text(
-                              'Error loading listings: ${snapshot.error}',
-                              style: const TextStyle(color: Colors.red),
-                            ),
-                          ),
-                        );
-                      }
 
-                      if (snapshot.connectionState == ConnectionState.waiting) {
-                        return _MoonCard(
-                          isDark: isDark,
-                          child: const Center(
-                            child: Padding(
-                              padding: EdgeInsets.all(32.0),
-                              child: CircularProgressIndicator(),
-                            ),
-                          ),
-                        );
-                      }
-
-                      List<DocumentSnapshot> listings = snapshot.data!.docs;
-                      
-                      return Column(
-                        children: listings.map((listing) {
-                          Map<String, dynamic> data = listing.data() as Map<String, dynamic>;
-                          String listingId = listing.id;
-
-                          return Padding(
-                            padding: const EdgeInsets.only(bottom: 12),
-                            child: _MoonCard(
-                              isDark: isDark,
-                              child: Row(
-                                children: [
-                                  Container(
-                                    width: 50,
-                                    height: 50,
-                                    decoration: BoxDecoration(
-                                      color: Theme.of(context).colorScheme.primary.withOpacity(0.15),
-                                      borderRadius: BorderRadius.circular(25),
-                                      border: Border.all(
-                                        color: Theme.of(context).colorScheme.primary.withOpacity(0.3),
-                                      ),
-                                    ),
-                                    child: Icon(
-                                      data['type'] == 'entire_home' ? Icons.home : Icons.meeting_room,
-                                      color: Theme.of(context).colorScheme.primary,
-                                      size: 24,
-                                    ),
-                                  ),
-                                  const SizedBox(width: 16),
-                                  Expanded(
-                                    child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      children: [
-                                        Text(
-                                          data['type'] == 'entire_home' ? 'Entire Home' : 'Single Room',
-                                          style: const TextStyle(
-                                            fontWeight: FontWeight.w700,
-                                            fontSize: 16,
-                                          ),
-                                        ),
-                                        const SizedBox(height: 4),
-                                        Text(
-                                          '${data['address'] ?? ''}, ${data['npa'] ?? ''} ${data['city'] ?? ''}',
-                                          style: TextStyle(
-                                            color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
-                                          ),
-                                        ),
-                                        const SizedBox(height: 2),
-                                        Row(
-                                          children: [
-                                            if (data['price'] != null) ...[
-                                              Icon(
-                                                Icons.price_change_outlined,
-                                                size: 14,
-                                                color: Theme.of(context).colorScheme.primary,
-                                              ),
-                                              const SizedBox(width: 4),
-                                              Text(
-                                                '${(data['price'] as num).toStringAsFixed(0)} CHF/mo',
-                                                style: TextStyle(
-                                                  fontSize: 12,
-                                                  fontWeight: FontWeight.w600,
-                                                  color: Theme.of(context).colorScheme.primary,
-                                                ),
-                                              ),
-                                            ],
-                                            if (data['surface'] != null) ...[
-                                              const SizedBox(width: 12),
-                                              Icon(
-                                                Icons.square_foot_outlined,
-                                                size: 14,
-                                                color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
-                                              ),
-                                              const SizedBox(width: 4),
-                                              Text(
-                                                '${(data['surface'] as num).toStringAsFixed(0)} m²',
-                                                style: TextStyle(
-                                                  fontSize: 12,
-                                                  color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
-                                                ),
-                                              ),
-                                            ],
-                                          ],
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                  MoonButton(
-                                    onTap: () => _showDeleteListingDialog(listingId, data['address']),
-                                    backgroundColor: Colors.red.withOpacity(0.1),
-                                    leading: const Icon(Icons.delete_outline, color: Colors.red, size: 18),
-                                  ),
-                                ],
+                  // New Listings Chart
+                  _MoonCard(
+                    isDark: isDark,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            const Icon(Icons.home_work_outlined, size: 20, color: Colors.green),
+                            const SizedBox(width: 8),
+                            Text(
+                              'New Listings per Day',
+                              style: TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.w800,
+                                color: Theme.of(context).colorScheme.onSurface,
                               ),
                             ),
-                          );
-                        }).toList(),
-                      );
-                    },
+                          ],
+                        ),
+                        const SizedBox(height: 20),
+                        SizedBox(
+                          height: 200,
+                          child: _dailyListingsData.isEmpty 
+                              ? const Center(child: CircularProgressIndicator())
+                              : LineChart(
+                                  LineChartData(
+                                    gridData: FlGridData(
+                                      show: true,
+                                      drawVerticalLine: false,
+                                      horizontalInterval: 1,
+                                      getDrawingHorizontalLine: (value) {
+                                        return FlLine(
+                                          color: Theme.of(context).colorScheme.outline.withOpacity(0.2),
+                                          strokeWidth: 1,
+                                        );
+                                      },
+                                    ),
+                                    titlesData: FlTitlesData(
+                                      show: true,
+                                      rightTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                                      topTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                                      bottomTitles: AxisTitles(
+                                        sideTitles: SideTitles(
+                                          showTitles: true,
+                                          reservedSize: 30,
+                                          interval: 5,
+                                          getTitlesWidget: (value, meta) {
+                                            final index = value.toInt();
+                                            if (index >= 0 && index < _chartDates.length) {
+                                              return SideTitleWidget(
+                                                axisSide: meta.axisSide,
+                                                child: Text(
+                                                  _chartDates[index],
+                                                  style: TextStyle(
+                                                    color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+                                                    fontSize: 10,
+                                                  ),
+                                                ),
+                                              );
+                                            }
+                                            return const Text('');
+                                          },
+                                        ),
+                                      ),
+                                      leftTitles: AxisTitles(
+                                        sideTitles: SideTitles(
+                                          showTitles: true,
+                                          interval: intervalListings,
+                                          getTitlesWidget: (value, meta) {
+                                            return Text(
+                                              value.toInt().toString(),
+                                              style: TextStyle(
+                                                color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+                                                fontSize: 10,
+                                              ),
+                                            );
+                                          },
+                                          reservedSize: 32,
+                                        ),
+                                      ),
+                                    ),
+                                    borderData: FlBorderData(show: false),
+                                    minX: 0,
+                                    maxX: (_dailyListingsData.length - 1).toDouble(),
+                                    minY: 0,
+                                    maxY: _dailyListingsData.map((spot) => spot.y).reduce(math.max) + 1,
+                                    lineBarsData: [
+                                      LineChartBarData(
+                                        spots: _dailyListingsData,
+                                        gradient: LinearGradient(
+                                          colors: [Colors.green.withOpacity(0.8), Colors.green],
+                                        ),
+                                        barWidth: 3,
+                                        isStrokeCapRound: true,
+                                        dotData: FlDotData(
+                                          show: true,
+                                          getDotPainter: (spot, percent, barData, index) {
+                                            return FlDotCirclePainter(
+                                              radius: 4,
+                                              color: Colors.green,
+                                              strokeWidth: 2,
+                                              strokeColor: Colors.white,
+                                            );
+                                          },
+                                        ),
+                                        belowBarData: BarAreaData(
+                                          show: true,
+                                          gradient: LinearGradient(
+                                            colors: [
+                                              Colors.green.withOpacity(0.3),
+                                              Colors.green.withOpacity(0.1),
+                                            ],
+                                            begin: Alignment.topCenter,
+                                            end: Alignment.bottomCenter,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  
+                  const SizedBox(height: 16),
+                  
+                  // New Bookings Chart
+                  _MoonCard(
+                    isDark: isDark,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            const Icon(Icons.book_online_outlined, size: 20, color: Colors.orange),
+                            const SizedBox(width: 8),
+                            Text(
+                              'New Bookings per Day',
+                              style: TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.w800,
+                                color: Theme.of(context).colorScheme.onSurface,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 20),
+                        SizedBox(
+                          height: 200,
+                          child: _dailyBookingsData.isEmpty 
+                              ? const Center(child: CircularProgressIndicator())
+                              : LineChart(
+                                  LineChartData(
+                                    gridData: FlGridData(
+                                      show: true,
+                                      drawVerticalLine: false,
+                                      horizontalInterval: 1,
+                                      getDrawingHorizontalLine: (value) {
+                                        return FlLine(
+                                          color: Theme.of(context).colorScheme.outline.withOpacity(0.2),
+                                          strokeWidth: 1,
+                                        );
+                                      },
+                                    ),
+                                    titlesData: FlTitlesData(
+                                      show: true,
+                                      rightTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                                      topTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                                      bottomTitles: AxisTitles(
+                                        sideTitles: SideTitles(
+                                          showTitles: true,
+                                          reservedSize: 30,
+                                          interval: 5,
+                                          getTitlesWidget: (value, meta) {
+                                            final index = value.toInt();
+                                            if (index >= 0 && index < _chartDates.length) {
+                                              return SideTitleWidget(
+                                                axisSide: meta.axisSide,
+                                                child: Text(
+                                                  _chartDates[index],
+                                                  style: TextStyle(
+                                                    color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+                                                    fontSize: 10,
+                                                  ),
+                                                ),
+                                              );
+                                            }
+                                            return const Text('');
+                                          },
+                                        ),
+                                      ),
+                                      leftTitles: AxisTitles(
+                                        sideTitles: SideTitles(
+                                          showTitles: true,
+                                          interval: intervalListings,
+                                          getTitlesWidget: (value, meta) {
+                                            return Text(
+                                              value.toInt().toString(),
+                                              style: TextStyle(
+                                                color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+                                                fontSize: 10,
+                                              ),
+                                            );
+                                          },
+                                          reservedSize: 32,
+                                        ),
+                                      ),
+                                    ),
+                                    borderData: FlBorderData(show: false),
+                                    minX: 0,
+                                    maxX: (_dailyBookingsData.length - 1).toDouble(),
+                                    minY: 0,
+                                    maxY: _dailyBookingsData.map((spot) => spot.y).reduce(math.max) + 1,
+                                    lineBarsData: [
+                                      LineChartBarData(
+                                        spots: _dailyBookingsData,
+                                        gradient: LinearGradient(
+                                          colors: [Colors.orange.withOpacity(0.8), Colors.orange],
+                                        ),
+                                        barWidth: 3,
+                                        isStrokeCapRound: true,
+                                        dotData: FlDotData(
+                                          show: true,
+                                          getDotPainter: (spot, percent, barData, index) {
+                                            return FlDotCirclePainter(
+                                              radius: 4,
+                                              color: Colors.orange,
+                                              strokeWidth: 2,
+                                              strokeColor: Colors.white,
+                                            );
+                                          },
+                                        ),
+                                        belowBarData: BarAreaData(
+                                          show: true,
+                                          gradient: LinearGradient(
+                                            colors: [
+                                              Colors.orange.withOpacity(0.3),
+                                              Colors.orange.withOpacity(0.1),
+                                            ],
+                                            begin: Alignment.topCenter,
+                                            end: Alignment.bottomCenter,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                        ),
+                      ],
+                    ),
                   ),
                 ],
               ),
@@ -998,36 +1127,6 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
     );
   }
 
-  Future<void> _showDeleteListingDialog(String listingId, String? address) async {
-    return showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          title: const Text('Delete Listing'),
-          content: Text(
-            'Are you sure you want to delete the listing at "${address ?? 'Unknown address'}"? This action cannot be undone.',
-          ),
-          actions: <Widget>[
-            TextButton(
-              child: const Text('Cancel'),
-              onPressed: () {
-                Navigator.of(context).pop();
-              },
-            ),
-            TextButton(
-              child: const Text('Delete', style: TextStyle(color: Colors.red)),
-              onPressed: () async {
-                Navigator.of(context).pop();
-                await _deleteListing(listingId);
-              },
-            ),
-          ],
-        );
-      },
-    );
-  }
-
   Future<void> _deleteUser(String userId) async {
     // Double vérification pour éviter la suppression de l'admin actuel
     if (userId == _auth.currentUser?.uid) {
@@ -1069,42 +1168,6 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('Error deleting user: $e'),
-          backgroundColor: Colors.red,
-        ),
-      );
-    }
-  }
-
-  Future<void> _deleteListing(String listingId) async {
-    try {
-      // Delete listing document from Firestore
-      await _firestore.collection('listings').doc(listingId).delete();
-      
-      // Also delete any related booking requests
-      QuerySnapshot bookings = await _firestore
-          .collection('booking_requests')
-          .where('listingId', isEqualTo: listingId)
-          .get();
-      
-      for (var booking in bookings.docs) {
-        await booking.reference.delete();
-      }
-      
-      // Show success message
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Listing deleted successfully'),
-          backgroundColor: Colors.green,
-        ),
-      );
-      
-      // Refresh dashboard data
-      await _loadDashboardData();
-    } catch (e) {
-      print('Error deleting listing: $e');
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Error deleting listing: $e'),
           backgroundColor: Colors.red,
         ),
       );
