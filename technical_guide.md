@@ -13,14 +13,12 @@ This document provides guidance for developers to set up, build, test, and exten
 
 ```
 /android       → Native Android integration
-/ios           → Native iOS integration
 /linux         → Linux desktop support
 /macos         → macOS desktop support
 /web           → Web support
 /windows       → Windows desktop support
 /lib           → Main Flutter application code
  └─ main.dart  → Application entry point
-/test          → Unit and widget tests
 
 .env.example   → Example environment variables
 firebase.json  → Firebase configuration placeholder
@@ -98,24 +96,6 @@ Add new tests in the `/test` directory to ensure code quality.
 flutter build apk --release
 ```
 
-### iOS
-
-```bash
-flutter build ios --release
-```
-
-### Web
-
-```bash
-flutter build web
-```
-
-### Desktop (Windows, macOS, Linux)
-
-```bash
-flutter build windows   # or macos / linux
-```
-
 Generated builds will be located in the `/build` directory.
 
 ---
@@ -166,31 +146,13 @@ This ensures every commit and PR is tested automatically.
 
 ### Adding New Screens
 
-- Create a new Dart file in `/lib/` (e.g., `home.dart`, `dashboard.dart`).
+- Create a new Dart file in `/lib/ui` (e.g., `home.dart`, `dashboard.dart`).
 - Use `Navigator.push()` or named routes for navigation.
-
-### State Management
-
-Recommended approaches for larger apps:
-
-- **Provider**
-- **Riverpod**
-- **BLoC Pattern**
 
 ### Services
 
 - Networking (e.g., `http`, `dio`)
 - Firebase services (Auth, Firestore, etc.)
-- Local persistence (e.g., `shared_preferences`, `hive`)
-
----
-
-## 9. Coding Standards
-
-- Follow **Dart Effective Style Guide**.
-- Use `analysis_options.yaml` for linting.
-- Write **unit tests** for new features.
-- Keep UI code separated from business logic.
 
 ---
 
@@ -202,7 +164,7 @@ Planned enhancements include:
 - A results dashboard with charts and statistics.
 - Multi-environment builds using `.env`.
 - Theming and dark mode support.
-- Packaging for production release on Play Store, App Store, and Web.
+- Packaging for production release on Play Store
 
 ---
 
