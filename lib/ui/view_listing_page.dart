@@ -155,27 +155,6 @@ class _ViewListingPageState extends State<ViewListingPage> {
     }
   }
 
-  int _rating = 0;
-
-  Future<void> _loadMyExistingReviewIfAny() async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return;
-
-    // Chercher une review existante de cet utilisateur pour ce listing
-    final query = await FirebaseFirestore.instance
-        .collection('listing_reviews')
-        .where('listingId', isEqualTo: widget.listingId)
-        .where('studentUid', isEqualTo: user.uid)
-        .get();
-
-    if (query.docs.isNotEmpty) {
-      final data = query.docs.first.data();
-      setState(() {
-        _rating = (data['rating'] as num?)?.toInt() ?? 0;
-      });
-    }
-  }
-
   @override
   void initState() {
     super.initState();
