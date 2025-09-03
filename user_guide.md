@@ -1,181 +1,117 @@
 # HEStimate User Guide
 
-Welcome to **HEStimate**!  
-HEStimate is a Flutter-based application scaffold designed to be cross-platform (mobile, web, and desktop) and ready for future extensions such as Firebase integration and environment-based configuration.  
+## Introduction
 
-This guide will walk you through setup, usage, and common troubleshooting scenarios.
-
----
-
-## 1. Installation & Setup
-
-### Prerequisites
-
-Before you begin, ensure the following are installed on your system:
-
-- [Flutter SDK](https://docs.flutter.dev/get-started/install) (latest stable version recommended)
-- Dart SDK (bundled with Flutter)
-- Git
-- An IDE such as **Visual Studio Code**, **Android Studio**, or **IntelliJ IDEA**
-
-Optional but recommended:
-
-- Xcode (for iOS builds, macOS only)
-- Android Studio SDK (for Android builds)
-- Chrome or another supported browser (for web builds)
-
-### Steps to Install
-
-1. Clone the repository:
-
-   ```bash
-   git clone https://github.com/MadeInShineA/HEStimate.git
-   cd HEStimate
-   ```
-
-2. Fetch dependencies:
-
-   ```bash
-   flutter pub get
-   ```
-
-3. Run the application:
-
-   ```bash
-   flutter run
-   ```
-
-4. To run on specific platforms:
-   - **Android/iOS**: connect a device or start an emulator/simulator.
-   - **Web**:  
-
-     ```bash
-     flutter run -d chrome
-     ```
-
-   - **Windows/macOS/Linux**:  
-
-     ```bash
-     flutter run -d windows   # or macos / linux
-     ```
+**HEStimate** is a student-focused accommodation platform that connects property owners (homeowners) with students seeking housing. It works similarly to Airbnb, allowing users to list properties and book stays. Students can browse available listings, filter properties to find the perfect fit, and send booking requests. Property owners can list their accommodations, manage booking requests from students, and communicate with tenants through the app. The platform is tailored for college/university students – for example, it even computes distances to nearby schools – making it easier to find convenient housing. Both **students** and **homeowners** have dedicated features to meet their needs.
 
 ---
 
-## 2. Core Features
+## Browsing and Searching Listings
 
-Although HEStimate is in its early stages, the current version includes:
+When you open the app, you can start **browsing available properties** right away. HEStimate offers a powerful search and filter system to help you find suitable accommodation:
 
-- Account creation for Students and Homeowners
-- Listing creation for Homeowners
+- **Search by Location:** Search for properties by city or postal code.  
+- **Filter by Property Type:** Toggle between *“Entire home”*, *“Single room”*, or view *All*.  
+- **Sort Listings:** Sort by *Newest*, *Price (low → high)*, or *Price (high → low)*.  
+- **Filter Amenities:** Refine results by furnished, Wi-Fi, utilities included, or parking.  
+- **Favorites Only:** Show only the listings you’ve favorited.  
+- **Price Range:** Use a slider to set your monthly rent budget.  
 
-### 📱 Cross-Platform Support
-
-- Android  
-- iOS  
-- Web  
-- Windows, macOS, and Linux desktop  
-
-### ☁️ Firebase Integration Ready
-
-- A `firebase.json` file is included for future integration.
-- Intended support for services like Authentication, Firestore, or Analytics.
-
-### ⚙️ Environment Configuration
-
-- `.env.example` is included.
-- To use:
-  1. Copy it to `.env`.
-  2. Add API keys, environment variables, or feature flags.
-- This allows safe handling of secrets and switching between dev/prod modes.
+Listings are displayed in a scrollable grid with photos, price, and quick info.
 
 ---
 
-## 3. Navigation
+## Viewing Property Details and Favorites
 
-The current app provides a simple navigation flow:
+On a property’s detail page, you’ll find:
 
-- **Home Screen**
-  - Displays the counter.
-  - Provides the “+” button to increment.
-- **Additional Pages**
-  - To be added in future development as features expand.
-
----
-
-## 4. Settings & Customization
-
-### Environment Variables
-
-- Developers can manage app configuration via the `.env` file.
-- Examples include:
-  - API base URLs
-  - Firebase keys
-  - Feature toggles
-
-### Themes & UI
-
-- Flutter makes it easy to customize:
-  - Primary colors
-  - Typography
-  - Dark/light modes
+- **Photo Gallery** with a carousel of images.  
+- **Title and Location** with address info.  
+- **Price and Details** like size, rooms, and amenities.  
+- **Distance to Campus** showing how close it is to the nearest school.  
+- **Nearby Amenities** such as public transport stops.  
+- **Ratings** from previous students.  
+- **Favorite Button** to save the listing for later.  
 
 ---
 
-## 5. Troubleshooting
+## Creating an Account and Profile
 
-### Common Issues & Fixes
-
-#### 🚫 App Won’t Start
-
-- Ensure you have the latest Flutter SDK installed.
-- Check that a device or emulator is connected.
-- Run:
-
-  ```bash
-  flutter doctor
-  ```
-
-  and fix any issues reported.
-
-#### 📦 Missing Dependencies
-
-- Run:
-
-  ```bash
-  flutter pub get
-  ```
-
-#### ⚡ Build Errors
-
-- **iOS**: Make sure Xcode is installed and configured.
-- **Android**: Ensure Android SDK is installed in Android Studio.
-- **Web/Desktop**: Verify Flutter supports your platform with:
-
-  ```bash
-  flutter devices
-  ```
-
-#### 🔑 Firebase Errors
-
-- Ensure `firebase.json` is configured with valid Firebase project details.
-- Confirm that the necessary Firebase packages are added to `pubspec.yaml`.
+- **Sign Up:** Register with your name, email, password, and role (student or homeowner).  
+- **Student Info:** Students may enter their school for campus distance calculations.  
+- **Login & Face ID:** Use email/password or set up optional Face ID for quick login.  
+- **Profile Page:** View your info, manage Face ID, toggle dark mode, or log out.  
 
 ---
 
-## 6. Roadmap
+## Listing Your Property (For Homeowners)
 
-Planned future features include:
+Owners can create a new listing by providing:  
 
-- Integration with Firebase Authentication and Firestore.
-- A results dashboard with charts and statistics.
-- Support for saving and exporting data (CSV, JSON).
-- Improved navigation with multiple screens.
-- Dark mode and advanced theming.
+- **Address & Location** (with autocomplete).  
+- **Property Basics** (size, rooms, type).  
+- **Amenities** (furnished, Wi-Fi, utilities, parking).  
+- **Availability Dates** with start and optional end date.  
+- **Photos** uploaded from camera or gallery.  
+- **Pricing** with a smart “Estimate” button to suggest a fair rent.  
+- **Save Listing** to publish for students to browse.  
 
 ---
 
-## 7. Feedback & Support
+## Managing Listings and Requests (For Homeowners)
 
-- Report bugs or request new features via the [GitHub Issues page](https://github.com/MadeInShineA/HEStimate/issues).
-- For general Flutter help, see the [Flutter documentation](https://docs.flutter.dev/).
-- Contributions are welcome — feel free to fork the repo and open a pull request!
+In the **Manage** section, owners see three tabs:  
+
+1. **Requests:** Pending booking requests with student details and Approve/Reject buttons.  
+2. **Students:** Current or upcoming tenants with contact options (email, phone, SMS).  
+3. **Reviews:** Past stays awaiting reviews, where owners can rate students.  
+
+---
+
+## Booking a Property (For Students)
+
+Students can:  
+
+- **Pick Dates** using a calendar bounded by availability.  
+- **Write a Message** to the owner.  
+- **Provide Contact Info** (phone/email).  
+- **Send Request** which goes to the owner for approval.  
+- **Confirmation:** Request status updates to approved or rejected.  
+
+---
+
+## Tracking and Managing Your Bookings (For Students)
+
+- **Pending Requests:** Track all booking requests and statuses.  
+- **Current Stays:** See details and owner contact info.  
+- **Past Stays:** Leave reviews for properties you stayed in.  
+
+---
+
+## Communication and Messaging
+
+- **Initial Message** is sent with the booking request.  
+- **Owner Response** comes as approve/reject.  
+- **Direct Contact** (email/phone) after approval.  
+- **No In-App Chat** but contact info is shared for follow-up.  
+
+---
+
+## Ratings and Reviews
+
+- **Property Reviews:** Students rate properties after stays.  
+- **Host Reviews:** Owners rate students after stays.  
+- **Visible to Both:** Students see property reviews; owners see student reviews.  
+
+---
+
+## Additional Features
+
+- **Profile Settings:** Manage account, logout, Face ID.  
+- **About Page:** App info and support.  
+- **Dark Mode:** Toggle theme for comfort.  
+- **Favorites List:** Quick access to saved properties.  
+
+---
+
+HEStimate aims to streamline finding and offering student housing. Whether you’re a student looking for your next home or a homeowner renting out a spare room, the app provides everything you need in a simple and trusted environment.
