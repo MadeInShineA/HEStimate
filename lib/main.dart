@@ -15,6 +15,7 @@ import 'ui/profile.dart';
 import 'ui/about_page.dart';
 import 'ui/faceIdLogin.dart';
 import 'ui/faceIdSetup.dart';
+import 'ui/admin_page.dart'; // Import the AdminPage
 import 'ui/forgot_password.dart'; // Add this import
 import 'ui/menu.dart'; // HomeMenuPage lives here
 import 'package:flutter_dotenv/flutter_dotenv.dart';
@@ -125,6 +126,7 @@ class _MyAppState extends State<MyApp> {
         '/listings': (context) => const ListingsSection(),
         '/newListing': (context) => const NewListingPage(),
         '/about': (context) => const AboutPage(),
+        '/admin': (context) => AdminPage(),
       },
       debugShowCheckedModeBanner: false,
     );

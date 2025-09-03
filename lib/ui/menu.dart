@@ -11,6 +11,7 @@ import 'about_page.dart';
 import 'home.dart'; // DashboardPage lives here
 import 'owner_management.dart';
 import 'student_management.dart';
+import 'admin_page.dart';
 import 'tutorial_page.dart';
 
 /// Pages add this mixin to provide menu metadata while staying Stateless/Stateful.
@@ -105,7 +106,6 @@ class _MoonMenuShellState extends State<MoonMenuShell> {
     final width = MediaQuery.sizeOf(context).width;
     final isDesktop = width >= widget.desktopBreakpoint;
 
-    // Get Moon tokens via ThemeExtension (fallback to light tokens)
     final moon = Theme.of(context).extension<MoonTheme>();
     final tokens = moon?.tokens ?? MoonTokens.light;
 
@@ -213,25 +213,26 @@ class HomeMenuPage extends StatefulWidget {
 class _HomeMenuPageState extends State<HomeMenuPage> {
   bool _isHomeowner = false;
   bool _isStudent = false;
+  bool _isAdmin = false;
 
   @override
   void initState() {
     super.initState();
-    _checkHomeownerStatus();
+    _checkUserStatus();
   }
 
-  Future<void> _checkHomeownerStatus() async {
+  Future<void> _checkUserStatus() async {
     final user = FirebaseAuth.instance.currentUser;
     if (user != null) {
-      final doc = await FirebaseFirestore.instance
-          .collection('users')
-          .doc(user.uid)
-          .get();
+      final doc =
+          await FirebaseFirestore.instance.collection('users').doc(user.uid).get();
       if (doc.exists) {
         final data = doc.data();
+        final role = (data?['role'] ?? '').toString();
         setState(() {
-          _isHomeowner = data?['role'] == "homeowner";
-          _isStudent = data?['role'] == "student";
+          _isHomeowner = role == 'homeowner';
+          _isStudent = role == 'student';
+          _isAdmin = role == 'admin';
         });
       }
     }
@@ -242,10 +243,10 @@ class _HomeMenuPageState extends State<HomeMenuPage> {
     // If an int is passed as route arguments, use it as the initial tab index.
     final maybeIndex = ModalRoute.of(context)?.settings.arguments as int?;
 
-    // Build pages list based on homeowner/student status
-    final pages = <Widget>[
-      const DashboardPage(),         // 0
-      const ListingsSection(),       // 1
+    // Build pages list based on user status
+    final List<Widget> pages = [
+      const DashboardPage(),            // index ?
+      const ListingsSection(),          // index ?
       if (_isHomeowner) ...[
         const MyListingsSection(),
         const NewListingSection(),
@@ -256,6 +257,9 @@ class _HomeMenuPageState extends State<HomeMenuPage> {
       ],
       const ProfileSection(),
       const AboutSection(),
+      if (_isAdmin) ...[
+        const AdminSection(),           // Admin visible dans le Drawer; pas forcément en bottom nav
+      ],
     ];
 
     // Helper to find page indices by type safely.
@@ -269,23 +273,34 @@ class _HomeMenuPageState extends State<HomeMenuPage> {
     final manageStudentIdx = idxOf<StudentManagementSection>();
     final profileIdx = idxOf<ProfileSection>();
     final aboutIdx = idxOf<AboutSection>();
+    final adminIdx = idxOf<AdminSection>();
 
-    // Mobile bottom nav (no invalid -1 indices)
-    final bottomNavIndices = _isHomeowner
-        ? [
-            dashboardIdx,
-            propertiesIdx,
-            if (myPropsIdx != -1) myPropsIdx,
-            if (newIdx != -1) newIdx,
-            if (manageOwnerIdx != -1) manageOwnerIdx,
-            profileIdx,
-          ].where((i) => i != -1).toList()
-        : [
-            dashboardIdx,
-            propertiesIdx,
-            profileIdx,
-            aboutIdx,
-          ].where((i) => i != -1).toList();
+    // Mobile bottom nav: compose dynamically and filter -1.
+    List<int> bottomNavIndices;
+
+    if (_isHomeowner) {
+      // Dashboard, Properties, My Properties, New Listing, Profile
+      bottomNavIndices = [
+        dashboardIdx,
+        propertiesIdx,
+        myPropsIdx,
+        newIdx,
+        profileIdx,
+      ].where((i) => i != -1).toList();
+    } else {
+      // Default (student/regular). Admin stays in the drawer only.
+      bottomNavIndices = [
+        dashboardIdx,
+        propertiesIdx,
+        profileIdx,
+        aboutIdx,
+      ].where((i) => i != -1).toList();
+    }
+
+    // Safety: if empty, at least show dashboard.
+    if (bottomNavIndices.isEmpty && dashboardIdx != -1) {
+      bottomNavIndices = [dashboardIdx];
+    }
 
     return MoonMenuShell(
       title: 'HEStimate',
@@ -373,6 +388,23 @@ class StudentManagementSection extends StatelessWidget with MenuPageMeta {
   IconData? get menuSelectedIcon => Icons.manage_accounts;
   @override
   Widget build(BuildContext context) => const StudentManagementPage();
+}
+
+// Admin section wrapper (appears in Drawer; optional in list)
+class AdminSection extends StatelessWidget with MenuPageMeta {
+  const AdminSection({super.key});
+
+  @override
+  String get menuLabel => 'Administration';
+
+  @override
+  IconData get menuIcon => Icons.admin_panel_settings_outlined;
+
+  @override
+  IconData? get menuSelectedIcon => Icons.admin_panel_settings;
+
+  @override
+  Widget build(BuildContext context) => AdminPage();
 }
 
 class AboutSection extends StatelessWidget with MenuPageMeta {
