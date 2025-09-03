@@ -1,10 +1,9 @@
-// tutorial_page.dart
 import 'package:flutter/material.dart';
 import 'package:moon_design/moon_design.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 
-import 'page.dart'; // same wrapper you use on ProfilePage
+import 'page.dart'; 
 
 class TutorialPage extends StatefulWidget {
   const TutorialPage({super.key});
@@ -16,6 +15,7 @@ class TutorialPage extends StatefulWidget {
 class _TutorialPageState extends State<TutorialPage> {
   bool _loading = true;
   bool _isHomeowner = false;
+  bool _isStudent = false;
 
   @override
   void initState() {
@@ -33,9 +33,11 @@ class _TutorialPageState extends State<TutorialPage> {
             .get();
         final role = (snap.data()?['role'] ?? '').toString();
         _isHomeowner = role == 'homeowner';
+        _isStudent = role == 'student';
       }
     } catch (_) {
       _isHomeowner = false;
+      _isStudent = false;
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -89,7 +91,8 @@ class _TutorialPageState extends State<TutorialPage> {
                         description:
                             'Photos, address and quick chips (price, m², rooms, floor, proximity).',
                         child: _tutorialImage(
-                            'assets/tutorial/listing_header.png'),
+                          'assets/tutorial/listing_header.png',
+                        ),
                       ),
                       _card(
                         context,
@@ -97,7 +100,8 @@ class _TutorialPageState extends State<TutorialPage> {
                         description:
                             'Tap “Estimate price”. We compare the predicted and actual price.',
                         child: _tutorialImage(
-                            'assets/tutorial/price_estimation_result.png'),
+                          'assets/tutorial/price_estimation_result.png',
+                        ),
                       ),
                       _card(
                         context,
@@ -105,24 +109,23 @@ class _TutorialPageState extends State<TutorialPage> {
                         description:
                             'Upcoming routes for the next 2 hours. Swipe to browse.',
                         child: _tutorialImage(
-                            'assets/tutorial/transit_to_hes.png'),
+                          'assets/tutorial/transit_to_hes.png',
+                        ),
                       ),
                       _card(
                         context,
                         title: 'Nearby bars',
                         description:
                             'Best-rated bars around the listing. Tap to expand or open Maps.',
-                        child:
-                            _tutorialImage('assets/tutorial/nearby_bars.png'),
+                        child: _tutorialImage('assets/tutorial/nearby_bars.png'),
                       ),
-
                       _card(
                         context,
                         title: 'Property reviews',
                         description:
                             'See the average rating, tags, and all reviews for a listing.',
-                        child: _tutorialImage(
-                            'assets/tutorial/listing_reviews.png'),
+                        child:
+                            _tutorialImage('assets/tutorial/listing_reviews.png'),
                       ),
                       _card(
                         context,
@@ -130,51 +133,60 @@ class _TutorialPageState extends State<TutorialPage> {
                         description:
                             'Calendar shows available days and existing bookings with a legend.',
                         child: _tutorialImage(
-                            'assets/tutorial/availability_calendar.png'),
+                          'assets/tutorial/availability_calendar.png',
+                        ),
                       ),
-                      _card(
-                        context,
-                        title: 'Request a booking',
-                        description:
-                            'Pick your dates, write a short intro message, optionally add a phone.',
-                        child:
-                            _tutorialImage('assets/tutorial/booking_panel.png'),
-                      ),
+
+                      // ----- STUDENT ONLY: Request a booking -----
+                      if (_isStudent)
+                        _card(
+                          context,
+                          title: 'Request a booking',
+                          description:
+                              'Pick your dates, write a short intro message, optionally add a phone.',
+                          child: _tutorialImage(
+                            'assets/tutorial/booking_panel.png',
+                          ),
+                        ),
                     ],
                   ),
 
-
-                  const SizedBox(height: 24),
-                  _sectionTitle(context, 'Manage your bookings'),
-
-                  finalWrap(
-                    children: [
-                      _card(
-                        context,
-                        title: 'Current',
-                        description:
-                            'Upcoming or ongoing stays are grouped here with clear dates.',
-                        child: _tutorialImage(
-                            'assets/tutorial/bookings_current.png'),
-                      ),
-                      _card(
-                        context,
-                        title: 'Pending',
-                        description:
-                            'Requests you sent but aren’t approved yet. You can cancel them here.',
-                        child: _tutorialImage(
-                            'assets/tutorial/bookings_pending.png'),
-                      ),
-                      _card(
-                        context,
-                        title: 'Rate',
-                        description:
-                            'Finished stays appear here; add your rating once the booking is completed.',
-                        child:
-                            _tutorialImage('assets/tutorial/bookings_rate.png'),
-                      ),
-                    ],
-                  ),
+                  // ----- STUDENT ONLY: Manage your bookings -----
+                  if (_isStudent) ...[
+                    const SizedBox(height: 24),
+                    _sectionTitle(context, 'Manage your bookings'),
+                    finalWrap(
+                      children: [
+                        _card(
+                          context,
+                          title: 'Current',
+                          description:
+                              'Upcoming or ongoing stays are grouped here with clear dates.',
+                          child: _tutorialImage(
+                            'assets/tutorial/bookings_current.png',
+                          ),
+                        ),
+                        _card(
+                          context,
+                          title: 'Pending',
+                          description:
+                              'Requests you sent but aren’t approved yet. You can cancel them here.',
+                          child: _tutorialImage(
+                            'assets/tutorial/bookings_pending.png',
+                          ),
+                        ),
+                        _card(
+                          context,
+                          title: 'Rate',
+                          description:
+                              'Finished stays appear here; add your rating once the booking is completed.',
+                          child: _tutorialImage(
+                            'assets/tutorial/bookings_rate.png',
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
 
                   const SizedBox(height: 24),
                   _sectionTitle(context, 'Profile & Face ID'),
@@ -220,7 +232,8 @@ class _TutorialPageState extends State<TutorialPage> {
                       description:
                           'All your listings with the same filters and favorite toggles.',
                       child: _tutorialImage(
-                          'assets/tutorial/owner_my_properties.png'),
+                        'assets/tutorial/owner_my_properties.png',
+                      ),
                     ),
 
                     const SizedBox(height: 16),
@@ -243,7 +256,8 @@ class _TutorialPageState extends State<TutorialPage> {
                           description:
                               'Address, city, postal code (NPA), surface, rooms, floor and type.',
                           child: _tutorialImage(
-                              'assets/tutorial/new_listing_basics.png'),
+                            'assets/tutorial/new_listing_basics.png',
+                          ),
                         ),
                         _card(
                           context,
@@ -251,7 +265,8 @@ class _TutorialPageState extends State<TutorialPage> {
                           description:
                               'Furnished, Wi-Fi included, Charges included and Car park.',
                           child: _tutorialImage(
-                              'assets/tutorial/new_listing_amenities.png'),
+                            'assets/tutorial/new_listing_amenities.png',
+                          ),
                         ),
                         _card(
                           context,
@@ -259,7 +274,8 @@ class _TutorialPageState extends State<TutorialPage> {
                           description:
                               'Choose a start date and an optional end date or enable “No end”.',
                           child: _tutorialImage(
-                              'assets/tutorial/new_listing_availability.png'),
+                            'assets/tutorial/new_listing_availability.png',
+                          ),
                         ),
                         _card(
                           context,
@@ -267,7 +283,8 @@ class _TutorialPageState extends State<TutorialPage> {
                           description:
                               'We compute public transport distance and HES proximity.',
                           child: _tutorialImage(
-                              'assets/tutorial/new_listing_distances.png'),
+                            'assets/tutorial/new_listing_distances.png',
+                          ),
                         ),
                         _card(
                           context,
@@ -275,7 +292,8 @@ class _TutorialPageState extends State<TutorialPage> {
                           description:
                               'Pick multiple images to showcase your place; they appear in the gallery.',
                           child: _tutorialImage(
-                              'assets/tutorial/new_listing_photos.png'),
+                            'assets/tutorial/new_listing_photos.png',
+                          ),
                         ),
                         _card(
                           context,
@@ -283,7 +301,8 @@ class _TutorialPageState extends State<TutorialPage> {
                           description:
                               'Set your price and optionally run the estimator to compare.',
                           child: _tutorialImage(
-                              'assets/tutorial/new_listing_pricing.png'),
+                            'assets/tutorial/new_listing_pricing.png',
+                          ),
                         ),
                       ],
                     ),
@@ -299,23 +318,26 @@ class _TutorialPageState extends State<TutorialPage> {
                           description:
                               'Approve or reject booking requests with one tap.',
                           child: _tutorialImage(
-                              'assets/tutorial/owner_requests.png'),
+                            'assets/tutorial/owner_requests.png',
+                          ),
                         ),
                         _card(
                           context,
                           title: 'Reviews',
                           description:
                               'See ratings left by students for completed stays.',
-                          child:
-                              _tutorialImage('assets/tutorial/owner_reviews.png'),
+                          child: _tutorialImage(
+                            'assets/tutorial/owner_reviews.png',
+                          ),
                         ),
                         _card(
                           context,
                           title: 'Students',
                           description:
                               'Overview of upcoming guests per property.',
-                          child:
-                              _tutorialImage('assets/tutorial/owner_students.png'),
+                          child: _tutorialImage(
+                            'assets/tutorial/owner_students.png',
+                          ),
                         ),
                       ],
                     ),
