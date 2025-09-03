@@ -6,6 +6,15 @@
 
 ---
 
+## Creating an Account and Profile
+
+- **Sign Up:** Register with your name, email, password, and role (student or homeowner).  
+- **Student Info:** Students may enter their school for campus distance calculations.  
+- **Login & Face ID:** Use email/password or set up optional Face ID for quick login.  
+- **Profile Page:** View your info, manage Face ID, toggle dark mode, or log out.  
+
+---
+
 ## Browsing and Searching Listings
 
 When you open the app, you can start **browsing available properties** right away. HEStimate offers a powerful search and filter system to help you find suitable accommodation:
@@ -32,15 +41,6 @@ On a property’s detail page, you’ll find:
 - **Distance to Campus** showing how close it is to the nearest school.  
 - **Ratings** from previous students.  
 - **Favorite Button** to save the listing for later.  
-
----
-
-## Creating an Account and Profile
-
-- **Sign Up:** Register with your name, email, password, and role (student or homeowner).  
-- **Student Info:** Students may enter their school for campus distance calculations.  
-- **Login & Face ID:** Use email/password or set up optional Face ID for quick login.  
-- **Profile Page:** View your info, manage Face ID, toggle dark mode, or log out.  
 
 ---
 
