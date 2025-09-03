@@ -802,12 +802,25 @@ class _ViewListingPageState extends State<ViewListingPage> {
 
         for (final r in jd['routes']) {
           final leg = (r['legs'] as List).first;
-          final route = _TransitRoute.fromGoogle(leg, r);
+          final route = _TransitRoute.fromGoogle(leg, r, anchor: dt);
           if (route == null) continue;
           if (route.departureTime.isAfter(horizon)) continue;
 
+          // Build a more specific, stable signature for the route:
+          final transitSig = route.steps
+              .where((s) => s.type == _StepType.transit)
+              .map(
+                (s) =>
+                    '${s.transitLine ?? ''}|${s.transitHeadsign ?? ''}|${s.departureStop ?? ''}|${s.arrivalStop ?? ''}',
+              )
+              .join('>');
+
+          // NOTE: includes both departure and arrival times → same route at a different time shows up.
           final key =
-              '${route.departureTime.millisecondsSinceEpoch}-${route.summary}';
+              '${route.departureTime.millisecondsSinceEpoch}-'
+              '${route.arrivalTime.millisecondsSinceEpoch}-'
+              '${route.summary}-$transitSig';
+
           if (!results.any((x) => x._dedupeKey == key)) {
             results.add(route.._dedupeKey = key);
           }
@@ -2865,18 +2878,21 @@ class _TransitRoute {
     required this.steps,
   });
 
-  static _TransitRoute? fromGoogle(Map leg, Map route) {
+  static _TransitRoute? fromGoogle(Map leg, Map route, {DateTime? anchor}) {
     try {
-      final dep = _parseGoogleTime(leg['departure_time']);
-      final arr = _parseGoogleTime(leg['arrival_time']);
       final durText = (leg['duration']?['text'] ?? '').toString();
+      final durSec = (leg['duration']?['value'] as num?)?.toInt(); // seconds
       final summary = (route['summary'] ?? '').toString();
 
       final rawSteps = (leg['steps'] as List?) ?? const [];
       final steps = <_TransitStep>[];
 
+      DateTime? firstTransitDep;
+      DateTime? lastTransitArr;
+
       for (final s in rawSteps) {
         final travelMode = (s['travel_mode'] ?? '').toString();
+
         if (travelMode == 'WALKING') {
           steps.add(
             _TransitStep.walk(
@@ -2901,6 +2917,9 @@ class _TransitRoute {
           final arrTime = _parseGoogleTime(td['arrival_time']);
           final platform = (td['departure_platform'] ?? '').toString();
 
+          firstTransitDep ??= depTime;
+          if (arrTime != null) lastTransitArr = arrTime;
+
           steps.add(
             _TransitStep.transit(
               transitLine: lineName.isEmpty ? null : lineName,
@@ -2918,9 +2937,31 @@ class _TransitRoute {
         }
       }
 
+      // Prefer leg-level times
+      DateTime? legDep = _parseGoogleTime(leg['departure_time']);
+      DateTime? legArr = _parseGoogleTime(leg['arrival_time']);
+
+      // Fallback to transit-step times if available
+      legDep ??= firstTransitDep;
+      legArr ??= lastTransitArr;
+
+      // If still missing (e.g., walking-only route), use anchor + duration
+      if (legDep == null && anchor != null) {
+        legDep = anchor;
+        if (durSec != null) legArr ??= anchor.add(Duration(seconds: durSec));
+      }
+      if (legArr == null && legDep != null && durSec != null) {
+        legArr = legDep.add(Duration(seconds: durSec));
+      }
+
+      // If we still couldn't establish times, give up on this route
+      if (legDep == null || legArr == null) {
+        return null;
+      }
+
       return _TransitRoute(
-        departureTime: dep ?? DateTime.now(),
-        arrivalTime: arr ?? DateTime.now(),
+        departureTime: legDep,
+        arrivalTime: legArr,
         totalText: durText,
         summary: summary,
         steps: steps,
