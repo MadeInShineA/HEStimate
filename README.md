@@ -15,10 +15,10 @@ It combines a **Flutter app** (frontend) and a **FastAPI service** (backend) to 
 
 ## 📖 Guides
 
-- [📘 User Guide](HEStimate_User_Guide.md)  
+- [📘 User Guide](user_guide.md)  
   Step‑by‑step help for **students** and **property owners** using the app. Covers browsing, booking, creating listings, enabling Face ID, and more.
 
-- [🛠️ Developer Guide](HEStimate_Full_Stack_Developer_Guide.md)  
+- [🛠️ Developer Guide](technical_guide.md)  
   A deep‑dive for **contributors and maintainers**. Explains the architecture, frontend (`lib/ui`) and backend (`hestimate-api`), data flow, setup instructions, API reference, and extension tips.
 
 ---
