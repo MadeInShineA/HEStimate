@@ -67,6 +67,12 @@ class _EditListingPageState extends State<EditListingPage> {
   DateTime? _availEnd;
   bool _noEndDate = false;
 
+  // ⬇️ NEW: Keep initial values to allow keeping original past start date
+  DateTime? _initialAvailStart;
+  DateTime? _initialAvailEnd;
+  bool _isSameDay(DateTime a, DateTime b) =>
+      a.year == b.year && a.month == b.month && a.day == b.day;
+
   // Images
   final ImagePicker _picker = ImagePicker();
   final List<File> _newImages = [];
@@ -152,6 +158,9 @@ class _EditListingPageState extends State<EditListingPage> {
   double _roundToNearest005(double v) => (v * 20).round() / 20.0;
   bool _isOn005Step(double v) => ((v * 20).roundToDouble() == v * 20);
 
+  // ---------- date helpers ----------
+  DateTime _dateOnly(DateTime d) => DateTime(d.year, d.month, d.day);
+
   // ─────────────────────────────────────────────────────────────────────────────
   // Load existing listing
   // ─────────────────────────────────────────────────────────────────────────────
@@ -195,6 +204,10 @@ class _EditListingPageState extends State<EditListingPage> {
       _availStart = tsStart?.toDate();
       _availEnd = tsEnd?.toDate();
       _noEndDate = tsEnd == null;
+
+      // ⬇️ NEW: snapshot des valeurs initiales
+      _initialAvailStart = _availStart;
+      _initialAvailEnd = _availEnd;
 
       // Geo + auto computed
       _geoLat = (m['latitude'] as num?)?.toDouble();
@@ -682,10 +695,16 @@ out body;
   }
 
   Future<void> _pickStartDate() async {
+    // ⬇️ NEW: allow showing the calendar from the original past date (if any), else from today
+    final minStart = (_initialAvailStart != null &&
+            _initialAvailStart!.isBefore(_todayDateOnly))
+        ? _initialAvailStart!
+        : _todayDateOnly;
+
     final picked = await showDatePicker(
       context: context,
       initialDate: _availStart ?? _todayDateOnly,
-      firstDate: _todayDateOnly,
+      firstDate: minStart,
       lastDate: DateTime(_todayDateOnly.year + 5),
     );
     if (picked != null) {
@@ -873,6 +892,58 @@ out body;
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
+  // NEW: Validate availability against approved bookings for this listing
+  // ─────────────────────────────────────────────────────────────────────────────
+  Future<String?> _validateAgainstApprovedBookings({
+    required DateTime availStart,
+    required DateTime? availEnd,
+    required bool noEndDate,
+  }) async {
+    try {
+      final qs = await FirebaseFirestore.instance
+          .collection('booking_requests')
+          .where('listingId', isEqualTo: widget.listingId)
+          .where('status', isEqualTo: 'approved')
+          .get();
+
+      if (qs.docs.isEmpty) return null;
+
+      final aStart = _dateOnly(availStart);
+      final aEnd = (noEndDate || availEnd == null) ? null : _dateOnly(availEnd);
+
+      for (final doc in qs.docs) {
+        final m = doc.data();
+
+        final tsStart = m['startDate'] as Timestamp?;
+        final tsEnd = m['endDate'] as Timestamp?;
+        if (tsStart == null || tsEnd == null) continue;
+
+        final bStart = _dateOnly(tsStart.toDate());
+        final bEnd = _dateOnly(tsEnd.toDate());
+
+        // Rule: availability must fully cover each approved booking window
+        final cutsLeft = aStart.isAfter(bStart); // availability starts after booking start
+        final cutsRight = (aEnd != null) && aEnd.isBefore(bEnd); // availability ends before booking end
+
+        if (cutsLeft || cutsRight) {
+          final student = (m['studentName'] ?? '').toString();
+          final sLabel = student.isNotEmpty ? ' ($student)' : '';
+          final bStartStr =
+              '${bStart.year}-${bStart.month.toString().padLeft(2, '0')}-${bStart.day.toString().padLeft(2, '0')}';
+          final bEndStr =
+              '${bEnd.year}-${bEnd.month.toString().padLeft(2, '0')}-${bEnd.day.toString().padLeft(2, '0')}';
+          return 'Availability conflicts with an approved booking$sLabel '
+                 'from $bStartStr to $bEndStr.';
+        }
+      }
+      return null;
+    } catch (e) {
+      // Be conservative if Firestore fails: block save with a clear message.
+      return 'Could not verify approved bookings: $e';
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
   // Save flow
   // ─────────────────────────────────────────────────────────────────────────────
   Future<void> _save() async {
@@ -883,9 +954,14 @@ out body;
       setState(() => _error = 'Please select an availability start date.');
       return;
     }
+    // ⬇️ NEW: allow past start date only if it matches the original start date
     if (_availStart!.isBefore(_todayDateOnly)) {
-      setState(() => _error = 'Start date cannot be before today.');
-      return;
+      final allowedPast = _initialAvailStart != null &&
+          _isSameDay(_availStart!, _initialAvailStart!);
+      if (!allowedPast) {
+        setState(() => _error = 'Start date cannot be before today.');
+        return;
+      }
     }
     if (!_noEndDate && _availEnd != null && _availEnd!.isBefore(_availStart!)) {
       setState(() => _error = 'End date cannot be before start date.');
@@ -898,6 +974,20 @@ out body;
     });
 
     try {
+      // NEW: Check conflicts with approved bookings BEFORE any updates
+      final conflictMsg = await _validateAgainstApprovedBookings(
+        availStart: _availStart!,
+        availEnd: _availEnd,
+        noEndDate: _noEndDate,
+      );
+      if (conflictMsg != null) {
+        setState(() {
+          _saving = false;
+          _error = conflictMsg;
+        });
+        return;
+      }
+
       final user = FirebaseAuth.instance.currentUser;
       if (user == null) {
         throw Exception('User not authenticated');
@@ -1393,7 +1483,7 @@ out body;
                                               textAlign: TextAlign.center,
                                             ),
                                           ),
-                                            SizedBox(
+                                          SizedBox(
                                             width: fieldWidth,
                                             child: _moonInput(
                                               controller: _floorCtrl,
@@ -1622,7 +1712,10 @@ out body;
                                       ),
                                       const SizedBox(height: 8),
                                       Text(
-                                        'Start date cannot be before today. End date is optional.',
+                                        // ⬇️ NEW hint clarified
+                                        'Availability must not exclude any approved booking period. '
+                                        'Start date cannot be before today (except when keeping the original start date). '
+                                        'End date is optional.',
                                         textAlign: TextAlign.center,
                                         style: TextStyle(
                                           color: cs.onSurface.withOpacity(.65),
