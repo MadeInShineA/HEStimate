@@ -34,7 +34,7 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 2, vsync: this); // Reduced from 3 to 2
+    _tabController = TabController(length: 3, vsync: this); // Changé à 3 onglets
     _checkAdminRole();
   }
 
@@ -312,6 +312,7 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
           controller: _tabController,
           tabs: const [
             Tab(icon: Icon(Icons.dashboard_outlined), text: 'Dashboard'),
+            Tab(icon: Icon(Icons.people_outlined), text: 'Users'),
             Tab(icon: Icon(Icons.analytics_outlined), text: 'Analytics'),
           ],
         ),
@@ -322,6 +323,7 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
           controller: _tabController,
           children: [
             _buildDashboardTab(isDark),
+            _buildUsersTab(isDark),
             _buildAnalyticsTab(isDark),
           ],
         ),
@@ -536,10 +538,37 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
                       ],
                     ),
                   ),
-                  
-                  const SizedBox(height: 16),
-                  
-                  // Users management section
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildUsersTab(bool isDark) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final isWide = constraints.maxWidth >= 900;
+        const contentMax = 1000.0;
+
+        final horizontalPad = math.max(
+          16.0,
+          (constraints.maxWidth - contentMax) / 2 + 16.0,
+        );
+
+        return SingleChildScrollView(
+          padding: EdgeInsets.symmetric(
+            horizontal: isWide ? horizontalPad : 16.0,
+            vertical: 16.0,
+          ),
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: contentMax),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
                   _MoonCard(
                     isDark: isDark,
                     child: Column(
@@ -547,118 +576,188 @@ class _AdminPageState extends State<AdminPage> with SingleTickerProviderStateMix
                       children: [
                         Row(
                           children: [
-                            const Icon(Icons.people_outline, size: 20),
+                            const Icon(Icons.people_outlined, size: 24),
                             const SizedBox(width: 8),
                             Text(
-                              'Recent Users',
+                              'User Management',
                               style: TextStyle(
-                                fontSize: 18,
+                                fontSize: 24,
                                 fontWeight: FontWeight.w800,
                                 color: Theme.of(context).colorScheme.onSurface,
                               ),
                             ),
                           ],
                         ),
-                        const SizedBox(height: 16),
-                        StreamBuilder<QuerySnapshot>(
-                          stream: _firestore
-                              .collection('users')
-                              .orderBy('createdAt', descending: true)
-                              .limit(5)
-                              .snapshots(),
-                          builder: (context, snapshot) {
-                            if (!snapshot.hasData) {
-                              return const Center(child: CircularProgressIndicator());
-                            }
+                        const SizedBox(height: 8),
+                        Text(
+                          'Manage all platform users and their roles',
+                          style: TextStyle(
+                            color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  
+                  // Users list
+                  _MoonCard(
+                    isDark: isDark,
+                    child: StreamBuilder<QuerySnapshot>(
+                      stream: _firestore
+                          .collection('users')
+                          .orderBy('createdAt', descending: true)
+                          .snapshots(),
+                      builder: (context, snapshot) {
+                        if (snapshot.connectionState == ConnectionState.waiting) {
+                          return const Center(child: CircularProgressIndicator());
+                        }
 
-                            return Column(
-                              children: snapshot.data!.docs.map((user) {
-                                Map<String, dynamic> userData = user.data() as Map<String, dynamic>;
-                                String userId = user.id;
-                                bool isCurrentAdmin = userId == _auth.currentUser?.uid;
+                        if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+                          return const Center(
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(Icons.people_outline, size: 64, color: Colors.grey),
+                                SizedBox(height: 16),
+                                Text(
+                                  'No users found',
+                                  style: TextStyle(fontSize: 18, color: Colors.grey),
+                                ),
+                              ],
+                            ),
+                          );
+                        }
 
-                                return Container(
-                                  margin: const EdgeInsets.only(bottom: 8),
-                                  padding: const EdgeInsets.all(12),
-                                  decoration: BoxDecoration(
-                                    color: Theme.of(context).colorScheme.surface.withOpacity(0.5),
-                                    borderRadius: BorderRadius.circular(8),
-                                    border: Border.all(
-                                      color: Theme.of(context).colorScheme.outline.withOpacity(0.2),
-                                    ),
+                        return Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'All Users (${snapshot.data!.docs.length})',
+                              style: TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.w800,
+                                color: Theme.of(context).colorScheme.onSurface,
+                              ),
+                            ),
+                            const SizedBox(height: 16),
+                            ...snapshot.data!.docs.map((user) {
+                              Map<String, dynamic> userData = user.data() as Map<String, dynamic>;
+                              String userId = user.id;
+                              bool isCurrentAdmin = userId == _auth.currentUser?.uid;
+
+                              return Container(
+                                margin: const EdgeInsets.only(bottom: 12),
+                                padding: const EdgeInsets.all(16),
+                                decoration: BoxDecoration(
+                                  color: Theme.of(context).colorScheme.surface.withOpacity(0.5),
+                                  borderRadius: BorderRadius.circular(12),
+                                  border: Border.all(
+                                    color: Theme.of(context).colorScheme.outline.withOpacity(0.2),
                                   ),
-                                  child: Row(
-                                    children: [
-                                      Container(
-                                        width: 40,
-                                        height: 40,
-                                        decoration: BoxDecoration(
-                                          color: _getRoleColor(userData['role']).withOpacity(0.15),
-                                          borderRadius: BorderRadius.circular(20),
-                                        ),
-                                        child: Icon(
-                                          _getRoleIcon(userData['role']),
-                                          color: _getRoleColor(userData['role']),
-                                          size: 20,
-                                        ),
+                                ),
+                                child: Row(
+                                  children: [
+                                    Container(
+                                      width: 50,
+                                      height: 50,
+                                      decoration: BoxDecoration(
+                                        color: _getRoleColor(userData['role']).withOpacity(0.15),
+                                        borderRadius: BorderRadius.circular(25),
                                       ),
-                                      const SizedBox(width: 12),
-                                      Expanded(
-                                        child: Column(
-                                          crossAxisAlignment: CrossAxisAlignment.start,
-                                          children: [
-                                            Row(
-                                              children: [
-                                                Text(
-                                                  userData['name'] ?? 'No name',
-                                                  style: const TextStyle(
+                                      child: Icon(
+                                        _getRoleIcon(userData['role']),
+                                        color: _getRoleColor(userData['role']),
+                                        size: 24,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 16),
+                                    Expanded(
+                                      child: Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          Row(
+                                            children: [
+                                              Text(
+                                                userData['name'] ?? 'No name',
+                                                style: const TextStyle(
+                                                  fontWeight: FontWeight.w700,
+                                                  fontSize: 16,
+                                                ),
+                                              ),
+                                              if (isCurrentAdmin) ...[
+                                                const SizedBox(width: 8),
+                                                Container(
+                                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                                  decoration: BoxDecoration(
+                                                    color: Colors.blue.withOpacity(0.15),
+                                                    borderRadius: BorderRadius.circular(6),
+                                                  ),
+                                                  child: const Text(
+                                                    'You',
+                                                    style: TextStyle(
+                                                      fontSize: 10,
+                                                      fontWeight: FontWeight.w700,
+                                                      color: Colors.blue,
+                                                    ),
+                                                  ),
+                                                ),
+                                              ],
+                                            ],
+                                          ),
+                                          const SizedBox(height: 4),
+                                          Text(
+                                            userData['email'] ?? 'No email',
+                                            style: TextStyle(
+                                              fontSize: 14,
+                                              color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
+                                            ),
+                                          ),
+                                          const SizedBox(height: 4),
+                                          Row(
+                                            children: [
+                                              Container(
+                                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                                decoration: BoxDecoration(
+                                                  color: _getRoleColor(userData['role']).withOpacity(0.15),
+                                                  borderRadius: BorderRadius.circular(12),
+                                                ),
+                                                child: Text(
+                                                  _getRoleName(userData['role']),
+                                                  style: TextStyle(
+                                                    fontSize: 12,
+                                                    color: _getRoleColor(userData['role']),
                                                     fontWeight: FontWeight.w600,
                                                   ),
                                                 ),
-                                                if (isCurrentAdmin) ...[
-                                                  const SizedBox(width: 8),
-                                                  Container(
-                                                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
-                                                    decoration: BoxDecoration(
-                                                      color: Colors.blue.withOpacity(0.15),
-                                                      borderRadius: BorderRadius.circular(4),
-                                                    ),
-                                                    child: const Text(
-                                                      'You',
-                                                      style: TextStyle(
-                                                        fontSize: 9,
-                                                        fontWeight: FontWeight.w700,
-                                                        color: Colors.blue,
-                                                      ),
-                                                    ),
-                                                  ),
-                                                ],
-                                              ],
-                                            ),
-                                            Text(
-                                              _getRoleName(userData['role']),
-                                              style: TextStyle(
-                                                fontSize: 12,
-                                                color: _getRoleColor(userData['role']),
-                                                fontWeight: FontWeight.w500,
                                               ),
-                                            ),
-                                          ],
-                                        ),
+                                              const SizedBox(width: 8),
+                                              Text(
+                                                'Created: ${_formatDate(userData['createdAt'])}',
+                                                style: TextStyle(
+                                                  fontSize: 12,
+                                                  color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5),
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ],
                                       ),
-                                      if (!isCurrentAdmin)
-                                        IconButton(
-                                          onPressed: () => _showDeleteDialog(userId, userData['name']),
-                                          icon: const Icon(Icons.delete_outline, color: Colors.red, size: 18),
-                                        ),
+                                    ),
+                                    if (!isCurrentAdmin) ...[
+                                      IconButton(
+                                        onPressed: () => _showDeleteDialog(userId, userData['name']),
+                                        icon: const Icon(Icons.delete_outline, color: Colors.red),
+                                        tooltip: 'Delete user',
+                                      ),
                                     ],
-                                  ),
-                                );
-                              }).toList(),
-                            );
-                          },
-                        ),
-                      ],
+                                  ],
+                                ),
+                              );
+                            }).toList(),
+                          ],
+                        );
+                      },
                     ),
                   ),
                 ],
