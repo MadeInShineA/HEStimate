@@ -636,7 +636,7 @@ class _AdminPageState extends State<AdminPage>
                       onChanged: (v) => setState(() => _userQuery = v.trim()),
                       decoration: InputDecoration(
                         prefixIcon: const Icon(Icons.search),
-                        hintText: 'Search by username…',
+                        hintText: 'Search by username',
                         isDense: true,
                         border: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(12),
@@ -903,13 +903,17 @@ class _AdminPageState extends State<AdminPage>
   }
 
   Widget _buildAnalyticsTab(bool isDark) {
+    // Calcul des intervalles pour les deux graphiques
     double maxYListings = _dailyListingsData.isEmpty
-        ? 1
+        ? 10
         : _dailyListingsData.map((spot) => spot.y).reduce(math.max);
-    double intervalListings = (maxYListings / 5).ceilToDouble().clamp(
-      1,
-      double.infinity,
-    );
+    double maxYBookings = _dailyBookingsData.isEmpty
+        ? 10  
+        : _dailyBookingsData.map((spot) => spot.y).reduce(math.max);
+
+    // Calcul d'intervalles intelligents
+    double intervalListings = _calculateInterval(maxYListings);
+    double intervalBookings = _calculateInterval(maxYBookings);
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -1001,7 +1005,7 @@ class _AdminPageState extends State<AdminPage>
                                     gridData: FlGridData(
                                       show: true,
                                       drawVerticalLine: false,
-                                      horizontalInterval: 1,
+                                      horizontalInterval: intervalListings,
                                       getDrawingHorizontalLine: (value) {
                                         return FlLine(
                                           color: Theme.of(context)
@@ -1015,14 +1019,10 @@ class _AdminPageState extends State<AdminPage>
                                     titlesData: FlTitlesData(
                                       show: true,
                                       rightTitles: AxisTitles(
-                                        sideTitles: SideTitles(
-                                          showTitles: false,
-                                        ),
+                                        sideTitles: SideTitles(showTitles: false),
                                       ),
                                       topTitles: AxisTitles(
-                                        sideTitles: SideTitles(
-                                          showTitles: false,
-                                        ),
+                                        sideTitles: SideTitles(showTitles: false),
                                       ),
                                       bottomTitles: AxisTitles(
                                         sideTitles: SideTitles(
@@ -1073,14 +1073,9 @@ class _AdminPageState extends State<AdminPage>
                                     ),
                                     borderData: FlBorderData(show: false),
                                     minX: 0,
-                                    maxX: (_dailyListingsData.length - 1)
-                                        .toDouble(),
+                                    maxX: (_dailyListingsData.length - 1).toDouble(),
                                     minY: 0,
-                                    maxY:
-                                        _dailyListingsData
-                                            .map((spot) => spot.y)
-                                            .reduce(math.max) +
-                                        1,
+                                    maxY: (maxYListings * 1.1).ceilToDouble(), // Ajout d'une marge
                                     lineBarsData: [
                                       LineChartBarData(
                                         spots: _dailyListingsData,
@@ -1094,15 +1089,14 @@ class _AdminPageState extends State<AdminPage>
                                         isStrokeCapRound: true,
                                         dotData: FlDotData(
                                           show: true,
-                                          getDotPainter:
-                                              (spot, percent, barData, index) {
-                                                return FlDotCirclePainter(
-                                                  radius: 4,
-                                                  color: Colors.green,
-                                                  strokeWidth: 2,
-                                                  strokeColor: Colors.white,
-                                                );
-                                              },
+                                          getDotPainter: (spot, percent, barData, index) {
+                                            return FlDotCirclePainter(
+                                              radius: 4,
+                                              color: Colors.green,
+                                              strokeWidth: 2,
+                                              strokeColor: Colors.white,
+                                            );
+                                          },
                                         ),
                                         belowBarData: BarAreaData(
                                           show: true,
@@ -1162,7 +1156,7 @@ class _AdminPageState extends State<AdminPage>
                                     gridData: FlGridData(
                                       show: true,
                                       drawVerticalLine: false,
-                                      horizontalInterval: 1,
+                                      horizontalInterval: intervalBookings,
                                       getDrawingHorizontalLine: (value) {
                                         return FlLine(
                                           color: Theme.of(context)
@@ -1176,14 +1170,10 @@ class _AdminPageState extends State<AdminPage>
                                     titlesData: FlTitlesData(
                                       show: true,
                                       rightTitles: AxisTitles(
-                                        sideTitles: SideTitles(
-                                          showTitles: false,
-                                        ),
+                                        sideTitles: SideTitles(showTitles: false),
                                       ),
                                       topTitles: AxisTitles(
-                                        sideTitles: SideTitles(
-                                          showTitles: false,
-                                        ),
+                                        sideTitles: SideTitles(showTitles: false),
                                       ),
                                       bottomTitles: AxisTitles(
                                         sideTitles: SideTitles(
@@ -1215,7 +1205,7 @@ class _AdminPageState extends State<AdminPage>
                                       leftTitles: AxisTitles(
                                         sideTitles: SideTitles(
                                           showTitles: true,
-                                          interval: intervalListings,
+                                          interval: intervalBookings,
                                           getTitlesWidget: (value, meta) {
                                             return Text(
                                               value.toInt().toString(),
@@ -1234,14 +1224,9 @@ class _AdminPageState extends State<AdminPage>
                                     ),
                                     borderData: FlBorderData(show: false),
                                     minX: 0,
-                                    maxX: (_dailyBookingsData.length - 1)
-                                        .toDouble(),
+                                    maxX: (_dailyBookingsData.length - 1).toDouble(),
                                     minY: 0,
-                                    maxY:
-                                        _dailyBookingsData
-                                            .map((spot) => spot.y)
-                                            .reduce(math.max) +
-                                        1,
+                                    maxY: (maxYBookings * 1.1).ceilToDouble(), // Ajout d'une marge
                                     lineBarsData: [
                                       LineChartBarData(
                                         spots: _dailyBookingsData,
@@ -1255,15 +1240,14 @@ class _AdminPageState extends State<AdminPage>
                                         isStrokeCapRound: true,
                                         dotData: FlDotData(
                                           show: true,
-                                          getDotPainter:
-                                              (spot, percent, barData, index) {
-                                                return FlDotCirclePainter(
-                                                  radius: 4,
-                                                  color: Colors.orange,
-                                                  strokeWidth: 2,
-                                                  strokeColor: Colors.white,
-                                                );
-                                              },
+                                          getDotPainter: (spot, percent, barData, index) {
+                                            return FlDotCirclePainter(
+                                              radius: 4,
+                                              color: Colors.orange,
+                                              strokeWidth: 2,
+                                              strokeColor: Colors.white,
+                                            );
+                                          },
                                         ),
                                         belowBarData: BarAreaData(
                                           show: true,
@@ -1291,6 +1275,17 @@ class _AdminPageState extends State<AdminPage>
         );
       },
     );
+  }
+
+  // Ajoutez cette méthode helper à votre classe _AdminPageState :
+  double _calculateInterval(double maxValue) {
+    if (maxValue <= 5) return 1;
+    if (maxValue <= 10) return 2;
+    if (maxValue <= 20) return 5;
+    if (maxValue <= 50) return 10;
+    if (maxValue <= 100) return 20;
+    if (maxValue <= 200) return 50;
+    return (maxValue / 5).ceilToDouble();
   }
 
   Widget _buildDashboardCard(
