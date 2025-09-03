@@ -124,12 +124,6 @@ class _TutorialPageState extends State<TutorialPage> {
                         child: _tutorialImage(
                             'assets/tutorial/listing_reviews.png'),
                       ),
-                    ],
-                  ),
-
-                  const SizedBox(height: 16),
-                  finalWrap(
-                    children: [
                       _card(
                         context,
                         title: 'Availability',
@@ -148,6 +142,7 @@ class _TutorialPageState extends State<TutorialPage> {
                       ),
                     ],
                   ),
+
 
                   const SizedBox(height: 24),
                   _sectionTitle(context, 'Manage your bookings'),
