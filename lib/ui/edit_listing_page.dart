@@ -67,7 +67,7 @@ class _EditListingPageState extends State<EditListingPage> {
   DateTime? _availEnd;
   bool _noEndDate = false;
 
-  // ⬇️ NEW: Keep initial values to allow keeping original past start date
+  // ⬇️ Keep initial values to allow keeping original past start date
   DateTime? _initialAvailStart;
   DateTime? _initialAvailEnd;
   bool _isSameDay(DateTime a, DateTime b) =>
@@ -205,7 +205,7 @@ class _EditListingPageState extends State<EditListingPage> {
       _availEnd = tsEnd?.toDate();
       _noEndDate = tsEnd == null;
 
-      // ⬇️ NEW: snapshot des valeurs initiales
+      // snapshot initial values
       _initialAvailStart = _availStart;
       _initialAvailEnd = _availEnd;
 
@@ -394,28 +394,28 @@ class _EditListingPageState extends State<EditListingPage> {
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // Image pick
+  // Image pick (APPEND + DEDUPE)
   // ─────────────────────────────────────────────────────────────────────────────
   Future<void> _pickImages() async {
     final picked = await _picker.pickMultiImage(imageQuality: 85);
     if (picked.isNotEmpty) {
       setState(() {
-        // De-dupe by path so reselecting the same file doesn’t duplicate it
-        final existing = _newImages.map((f) => f.path).toSet();
+        // de-dupe against already selected files by path
+        final existingPaths = _newImages.map((f) => f.path).toSet();
         for (final x in picked) {
-          if (!existing.contains(x.path)) {
-            _newImages.add(File(x.path)); // append instead of replace
+          if (!existingPaths.contains(x.path)) {
+            _newImages.add(File(x.path)); // append instead of replacing
           }
         }
 
-        // (Optional) enforce a max count, e.g. 20 images in total including existing
+        // (Optional) enforce a max total count including existing photos
         const maxPhotos = 20;
-        final allowed = maxPhotos - _existingPhotos.length;
-        if (_newImages.length > allowed) {
-          _newImages.removeRange(allowed, _newImages.length);
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(const SnackBar(content: Text('Photo limit reached.')));
+        final allowedForNew = maxPhotos - _existingPhotos.length;
+        if (_newImages.length > allowedForNew) {
+          _newImages.removeRange(allowedForNew, _newImages.length);
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Photo limit reached.')),
+          );
         }
       });
     }
@@ -722,9 +722,8 @@ out body;
   }
 
   Future<void> _pickStartDate() async {
-    // ⬇️ NEW: allow showing the calendar from the original past date (if any), else from today
-    final minStart =
-        (_initialAvailStart != null &&
+    // allow showing the calendar from the original past date (if any), else from today
+    final minStart = (_initialAvailStart != null &&
             _initialAvailStart!.isBefore(_todayDateOnly))
         ? _initialAvailStart!
         : _todayDateOnly;
@@ -926,7 +925,7 @@ out body;
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // NEW: Validate availability against approved bookings for this listing
+  // Validate availability against approved bookings for this listing
   // ─────────────────────────────────────────────────────────────────────────────
   Future<String?> _validateAgainstApprovedBookings({
     required DateTime availStart,
@@ -992,7 +991,7 @@ out body;
       setState(() => _error = 'Please select an availability start date.');
       return;
     }
-    // ⬇️ NEW: allow past start date only if it matches the original start date
+    // allow past start date only if it matches the original start date
     if (_availStart!.isBefore(_todayDateOnly)) {
       final allowedPast =
           _initialAvailStart != null &&
@@ -1013,7 +1012,7 @@ out body;
     });
 
     try {
-      // NEW: Check conflicts with approved bookings BEFORE any updates
+      // Check conflicts with approved bookings BEFORE any updates
       final conflictMsg = await _validateAgainstApprovedBookings(
         availStart: _availStart!,
         availEnd: _availEnd,
@@ -1172,11 +1171,26 @@ out body;
         finalPhotos.addAll(urls);
       }
 
+      // Ensure only HTTPS URLs are saved (defensive check)
+      assert(
+        finalPhotos.every((u) => u.startsWith('http')),
+        'All photo URLs must be HTTPS download URLs.',
+      );
+
       // Persist final photos array
       await FirebaseFirestore.instance
           .collection('listings')
           .doc(widget.listingId)
           .update({'photos': finalPhotos});
+
+      // Keep local UI state consistent post-save
+      if (mounted) {
+        setState(() {
+          _existingPhotos = finalPhotos;
+          _newImages.clear();
+          _photosToRemove.clear();
+        });
+      }
 
       if (mounted) {
         ScaffoldMessenger.of(
@@ -1824,7 +1838,6 @@ out body;
                                       ),
                                       const SizedBox(height: 8),
                                       Text(
-                                        // ⬇️ NEW hint clarified
                                         'Availability must not exclude any approved booking period. '
                                         'Start date cannot be before today (except when keeping the original start date). '
                                         'End date is optional.',
