@@ -4,6 +4,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:moon_design/moon_design.dart';
 import 'package:fl_chart/fl_chart.dart';
+import 'package:cloud_functions/cloud_functions.dart';
+import 'package:firebase_core/firebase_core.dart';
 
 class AdminPage extends StatefulWidget {
   @override
@@ -193,7 +195,11 @@ class _AdminPageState extends State<AdminPage>
   }
 
   Future<void> _loadUsersData() async {
-    QuerySnapshot usersSnapshot = await _firestore.collection('users').get();
+    // Utiliser la même requête que dans l'onglet Users
+    QuerySnapshot usersSnapshot = await _firestore
+        .collection('users')
+        .orderBy('createdAt', descending: true)
+        .get();
 
     Map<String, int> roleCount = {'student': 0, 'homeowner': 0, 'admin': 0};
 
@@ -1410,8 +1416,31 @@ class _AdminPageState extends State<AdminPage>
       builder: (BuildContext context) {
         return AlertDialog(
           title: const Text('Delete User'),
-          content: Text(
-            'Are you sure you want to delete the user "${userName ?? 'Unknown'}"? This action cannot be undone.',
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Are you sure you want to permanently delete "${userName ?? 'Unknown'}"?',
+              ),
+              const SizedBox(height: 12),
+              const Text(
+                'This will delete:',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+              const Text('• Firebase authentication account'),
+              const Text('• User profile and data'),
+              const Text('• All associated bookings'),
+              const Text('• All user\'s property listings'),
+              const SizedBox(height: 12),
+              const Text(
+                'This action cannot be undone.',
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  color: Colors.red,
+                ),
+              ),
+            ],
           ),
           actions: <Widget>[
             TextButton(
@@ -1421,7 +1450,10 @@ class _AdminPageState extends State<AdminPage>
               },
             ),
             TextButton(
-              child: const Text('Delete', style: TextStyle(color: Colors.red)),
+              child: const Text(
+                'Delete Permanently',
+                style: TextStyle(color: Colors.red),
+              ),
               onPressed: () async {
                 Navigator.of(context).pop();
                 await _deleteUser(userId);
@@ -1434,7 +1466,7 @@ class _AdminPageState extends State<AdminPage>
   }
 
   Future<void> _deleteUser(String userId) async {
-    // Prevent deleting current admin
+    // Empêcher la suppression de son propre compte
     if (userId == _auth.currentUser?.uid) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -1445,40 +1477,121 @@ class _AdminPageState extends State<AdminPage>
       return;
     }
 
-    try {
-      // Delete user document from Firestore
-      await _firestore.collection('users').doc(userId).delete();
-
-      // Also delete any related booking requests
-      QuerySnapshot bookings = await _firestore
-          .collection('booking_requests')
-          .where('studentId', isEqualTo: userId)
-          .get();
-
-      for (var booking in bookings.docs) {
-        await booking.reference.delete();
-      }
-
-      // Show success message
+    final currentUser = FirebaseAuth.instance.currentUser;
+    if (currentUser == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('User deleted successfully'),
-          backgroundColor: Colors.green,
-        ),
-      );
-
-      // Refresh dashboard data
-      await _loadDashboardData();
-    } catch (e) {
-      print('Error deleting user: $e');
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Error deleting user: $e'),
+          content: Text('You must be logged in to delete users'),
           backgroundColor: Colors.red,
         ),
       );
+      return;
+    }
+
+    final app = Firebase.app();
+    final functions = FirebaseFunctions.instanceFor(app: app, region: 'us-central1');
+
+    bool loadingShown = false;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const Center(child: CircularProgressIndicator()),
+    );
+    loadingShown = true;
+
+    try {
+      final testCallable = functions.httpsCallable('testAuth');
+      await testCallable.call();
+
+      final callable = functions.httpsCallable(
+        'adminDeleteUser',
+        options: HttpsCallableOptions(timeout: Duration(seconds: 30)),
+      );
+      final result = await callable.call({'userId': userId});
+
+      if (loadingShown && mounted && Navigator.of(context).canPop()) {
+        Navigator.of(context).pop();
+        loadingShown = false;
+      }
+
+      final Map<String, dynamic> data = (result.data as Map).cast<String, dynamic>();
+      if (data['success'] == true) {
+        final Map<String, dynamic> deletedItems =
+            (data['deletedItems'] as Map? ?? {}).cast<String, dynamic>();
+
+        final message = 'User successfully deleted!\n'
+            'Auth: ${deletedItems['auth']}\n'
+            'Student bookings: ${deletedItems['studentBookings']}\n'
+            'Owner bookings: ${deletedItems['ownerBookings']}\n'
+            'Listings: ${deletedItems['listings']}';
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(message),
+            backgroundColor: Colors.green,
+            duration: const Duration(seconds: 4),
+          ),
+        );
+
+        await _loadDashboardData();
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Delete failed'),
+            backgroundColor: Colors.red,
+            duration: Duration(seconds: 4),
+          ),
+        );
+      }
+    } on FirebaseFunctionsException catch (e) {
+      if (loadingShown && mounted && Navigator.of(context).canPop()) {
+        Navigator.of(context).pop();
+        loadingShown = false;
+      }
+
+      String errorMessage;
+      switch (e.code) {
+        case 'unauthenticated':
+          errorMessage = 'You must be logged in to delete users';
+          break;
+        case 'permission-denied':
+          errorMessage = 'You don\'t have admin permissions';
+          break;
+        case 'invalid-argument':
+          errorMessage = e.message ?? 'Invalid request';
+          break;
+        default:
+          errorMessage = 'Error: ${e.message ?? 'Unknown error'}';
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(errorMessage),
+          backgroundColor: Colors.red,
+          duration: const Duration(seconds: 4),
+        ),
+      );
+    } catch (e) {
+      if (loadingShown && mounted && Navigator.of(context).canPop()) {
+        Navigator.of(context).pop();
+        loadingShown = false;
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Unexpected error: $e'),
+          backgroundColor: Colors.red,
+          duration: const Duration(seconds: 4),
+        ),
+      );
+    } finally {
+      if (loadingShown && mounted && Navigator.of(context).canPop()) {
+        Navigator.of(context).pop();
+      }
     }
   }
+
 }
 
 // Custom Moon Card Widget
