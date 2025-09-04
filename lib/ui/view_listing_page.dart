@@ -19,6 +19,7 @@ import 'package:shimmer/shimmer.dart';
 import 'package:photo_view/photo_view_gallery.dart';
 import 'package:photo_view/photo_view.dart'; // ⬅️ needed for HeroAttributes & ComputedScale
 // import 'rate_listing_page.dart'; // Add this import for RateListingPage
+import 'package:firebase_storage/firebase_storage.dart' as fstorage;
 
 // Clé Google (Directions + Places)
 final _googleMapsApiKey = dotenv.env['GOOGLE_API_KEY'] ?? '';
@@ -474,6 +475,97 @@ class _ViewListingPageState extends State<ViewListingPage> {
   bool get _useStudentSchoolAsDestination =>
       _isStudent && (_userSchool != null && _userSchool!.trim().isNotEmpty);
 
+  Future<void> _confirmAndDelete() async {
+    if (!_isOwner) return;
+    final cs = Theme.of(context).colorScheme;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Delete listing ?'),
+        content: const Text(
+          'This action is irreversible. The photos, favorites, and reviews associated with this account will be deleted.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(backgroundColor: cs.error),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const Center(child: CircularProgressIndicator()),
+    );
+
+    String? err;
+    try {
+      await _deleteListingAndAssets(widget.listingId);
+    } catch (e) {
+      err = e.toString();
+    } finally {
+      if (mounted) Navigator.of(context).pop(); // close loader
+    }
+
+    if (!mounted) return;
+    if (err != null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error deleting listing: $err')),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Listing deleted.')),
+      );
+      Navigator.of(context).maybePop();
+    }
+  }
+
+  Future<void> _deleteListingAndAssets(String listingId) async {
+    // Supprimer les photos depuis Firebase Storage (si URL compatible)
+    for (final url in _photos) {
+      final u = url.trim();
+      if (u.isEmpty) continue;
+      try {
+        final ref = fstorage.FirebaseStorage.instance.refFromURL(u);
+        await ref.delete();
+      } catch (_) {
+        // ignore: l’URL n’est peut-être pas une URL Storage ou déjà supprimée
+      }
+    }
+
+    // Supprimer les favoris liés
+    final favs = await FirebaseFirestore.instance
+        .collection('favorites')
+        .where('listingId', isEqualTo: listingId)
+        .get();
+    for (final d in favs.docs) {
+      try {
+        await d.reference.delete();
+      } catch (_) {}
+    }
+
+    // Supprimer les avis liés
+    final reviews = await FirebaseFirestore.instance
+        .collection('listing_reviews')
+        .where('listingId', isEqualTo: listingId)
+        .get();
+    for (final d in reviews.docs) {
+      try {
+        await d.reference.delete();
+      } catch (_) {}
+    }
+
+    // Supprimer le document de l’annonce
+    await FirebaseFirestore.instance
+        .collection('listings')
+        .doc(listingId)
+        .delete();
+  }
   Future<void> _loadMyExistingReviewIfAny() async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
@@ -2092,13 +2184,20 @@ class _ViewListingPageState extends State<ViewListingPage> {
           },
         ),
         actions: [
+          if (!_loading && _isOwner)
+            IconButton(
+              tooltip: 'Delete',
+              onPressed: _confirmAndDelete,
+              icon: const Icon(Icons.delete_outline),
+            ),
           // Bouton favori (live)
+
           StreamBuilder<bool>(
             stream: _favStream,
             builder: (context, snap) {
               final isFav = snap.data ?? false;
               return IconButton(
-                tooltip: isFav ? 'Retirer des favoris' : 'Ajouter aux favoris',
+                tooltip: isFav ? 'Remove from favorites' : 'Add to favorites',
                 icon: Icon(isFav ? Icons.favorite : Icons.favorite_border),
                 color: isFav ? Colors.redAccent : null,
                 onPressed: _toggleFavorite,
