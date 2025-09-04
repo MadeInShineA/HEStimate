@@ -1,5 +1,18 @@
 # HEStimate User Guide
 
+# Table of Contents
+1. [Introduction](#introduction)  
+2. [Creating an Account and Profile](#creating-an-account-and-profile)  
+3. [Browsing and Searching Listings](#browsing-and-searching-listings)  
+4. [Viewing Property Details and Favorites](#viewing-property-details-and-favorites)  
+5. [Listing Your Property (For Homeowners)](#listing-your-property-for-homeowners)  
+6. [Managing Listings and Requests (For Homeowners)](#managing-listings-and-requests-for-homeowners)  
+7. [Booking a Property (For Students)](#booking-a-property-for-students)  
+8. [Tracking and Managing Your Bookings (For Students)](#tracking-and-managing-your-bookings-for-students)  
+9. [Communication and Messaging](#communication-and-messaging)  
+10. [Ratings and Reviews](#ratings-and-reviews)  
+11. [Additional Features](#additional-features) 
+
 ## Introduction
 
 **HEStimate** is a student-focused accommodation platform that connects property owners (homeowners) with students seeking housing. It works similarly to Airbnb, allowing users to list properties and book stays. Students can browse available listings, filter properties to find the perfect fit, and send booking requests. Property owners can list their accommodations, manage booking requests from students, and communicate with tenants through the app. The platform is tailored for college/university students – for example, it even computes distances to nearby schools – making it easier to find convenient housing. Both **students** and **homeowners** have dedicated features to meet their needs.
