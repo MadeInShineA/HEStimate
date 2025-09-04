@@ -294,23 +294,25 @@ class _EditListingPageState extends State<EditListingPage> {
           .map((e) {
             final m = e as Map<String, dynamic>;
             final addr = (m['address'] as Map?) ?? const {};
-            final String? road = (addr['road'] ??
-                    addr['pedestrian'] ??
-                    addr['footway'] ??
-                    addr['residential'] ??
-                    addr['path'])
-                ?.toString();
+            final String? road =
+                (addr['road'] ??
+                        addr['pedestrian'] ??
+                        addr['footway'] ??
+                        addr['residential'] ??
+                        addr['path'])
+                    ?.toString();
             final String? houseNumber = addr['house_number']?.toString();
             return _AddressSuggestion(
               displayName: (m['display_name'] ?? '').toString(),
               lat: double.tryParse(m['lat']?.toString() ?? ''),
               lon: double.tryParse(m['lon']?.toString() ?? ''),
-              city: (addr['city'] ??
-                      addr['town'] ??
-                      addr['village'] ??
-                      addr['municipality'] ??
-                      '')
-                  .toString(),
+              city:
+                  (addr['city'] ??
+                          addr['town'] ??
+                          addr['village'] ??
+                          addr['municipality'] ??
+                          '')
+                      .toString(),
               postcode: (addr['postcode'] ?? '').toString(),
               road: road,
               houseNumber: houseNumber,
@@ -398,9 +400,23 @@ class _EditListingPageState extends State<EditListingPage> {
     final picked = await _picker.pickMultiImage(imageQuality: 85);
     if (picked.isNotEmpty) {
       setState(() {
-        _newImages
-          ..clear()
-          ..addAll(picked.map((x) => File(x.path)));
+        // De-dupe by path so reselecting the same file doesn’t duplicate it
+        final existing = _newImages.map((f) => f.path).toSet();
+        for (final x in picked) {
+          if (!existing.contains(x.path)) {
+            _newImages.add(File(x.path)); // append instead of replace
+          }
+        }
+
+        // (Optional) enforce a max count, e.g. 20 images in total including existing
+        const maxPhotos = 20;
+        final allowed = maxPhotos - _existingPhotos.length;
+        if (_newImages.length > allowed) {
+          _newImages.removeRange(allowed, _newImages.length);
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('Photo limit reached.')));
+        }
       });
     }
   }
@@ -450,7 +466,8 @@ class _EditListingPageState extends State<EditListingPage> {
     const earthRadius = 6371.0; // km
     final dLat = _toRad(lat2 - lat1);
     final dLon = _toRad(lon2 - lon1);
-    final a = math.sin(dLat / 2) * math.sin(dLat / 2) +
+    final a =
+        math.sin(dLat / 2) * math.sin(dLat / 2) +
         math.cos(_toRad(lat1)) *
             math.cos(_toRad(lat2)) *
             math.sin(dLon / 2) *
@@ -470,17 +487,23 @@ class _EditListingPageState extends State<EditListingPage> {
   }) async {
     final mapsKey = dotenv.env['GOOGLE_API_KEY'] ?? '';
     if (mapsKey.isEmpty) {
-      throw Exception('GOOGLE_API_KEY missing. Add it in .env and load dotenv.');
+      throw Exception(
+        'GOOGLE_API_KEY missing. Add it in .env and load dotenv.',
+      );
     }
 
-    final uri = Uri.parse('https://maps.googleapis.com/maps/api/directions/json')
-        .replace(queryParameters: {
-      'origin': '$originLat,$originLng',
-      'destination': '$destLat,$destLng',
-      'mode': mode,
-      'units': 'metric',
-      'key': mapsKey,
-    });
+    final uri =
+        Uri.parse(
+          'https://maps.googleapis.com/maps/api/directions/json',
+        ).replace(
+          queryParameters: {
+            'origin': '$originLat,$originLng',
+            'destination': '$destLat,$destLng',
+            'mode': mode,
+            'units': 'metric',
+            'key': mapsKey,
+          },
+        );
 
     final res = await http.get(uri);
     if (res.statusCode != 200) {
@@ -559,7 +582,8 @@ class _EditListingPageState extends State<EditListingPage> {
   }) async {
     final radii = [500, 1000, 1500, 2500]; // meters
     for (final r in radii) {
-      final query = """
+      final query =
+          """
 [out:json][timeout:15];
 (
   node(around:$r,$lat,$lng)[highway=bus_stop];
@@ -602,12 +626,13 @@ out body;
         if (bestKm == null || d < bestKm) {
           bestKm = d;
           final tags = (m['tags'] as Map?) ?? const {};
-          bestName = (tags['name'] ??
-                  tags['ref'] ??
-                  tags['uic_name'] ??
-                  tags['uic_ref'] ??
-                  'Stop')
-              .toString();
+          bestName =
+              (tags['name'] ??
+                      tags['ref'] ??
+                      tags['uic_name'] ??
+                      tags['uic_ref'] ??
+                      'Stop')
+                  .toString();
         }
       }
       if (bestKm != null) return (km: bestKm, name: bestName);
@@ -639,8 +664,10 @@ out body;
       _geoLng = coords.lng;
 
       // HES via road distance
-      final nearest =
-          await _computeNearestSchoolRoadKm(lat: _geoLat!, lng: _geoLng!);
+      final nearest = await _computeNearestSchoolRoadKm(
+        lat: _geoLat!,
+        lng: _geoLng!,
+      );
       setState(() {
         _proximHesKm = nearest.km;
         _nearestHesId = nearest.id;
@@ -696,7 +723,8 @@ out body;
 
   Future<void> _pickStartDate() async {
     // ⬇️ NEW: allow showing the calendar from the original past date (if any), else from today
-    final minStart = (_initialAvailStart != null &&
+    final minStart =
+        (_initialAvailStart != null &&
             _initialAvailStart!.isBefore(_todayDateOnly))
         ? _initialAvailStart!
         : _todayDateOnly;
@@ -749,8 +777,10 @@ out body;
     if (_proximHesKm == null ||
         _nearestHesId == null ||
         (_nearestHesId?.isEmpty ?? true)) {
-      final nearest =
-          await _computeNearestSchoolRoadKm(lat: _geoLat!, lng: _geoLng!);
+      final nearest = await _computeNearestSchoolRoadKm(
+        lat: _geoLat!,
+        lng: _geoLng!,
+      );
       _proximHesKm = nearest.km;
       _nearestHesId = nearest.id;
       _nearestHesName = nearest.name;
@@ -768,7 +798,8 @@ out body;
       if (raw.isEmpty) throw '$label is required';
       final v = double.tryParse(raw.replaceAll(',', '.'));
       if (v == null) throw '$label must be a number';
-      if (min != null && v < min) throw '$label must be ≥ ${min.toStringAsFixed(0)}';
+      if (min != null && v < min)
+        throw '$label must be ≥ ${min.toStringAsFixed(0)}';
       return v;
     }
 
@@ -796,7 +827,9 @@ out body;
       "longitude": _geoLng!,
       "surface_m2": reqNum('Surface (m²)', _surfaceCtrl.text, min: 1),
       "num_rooms": reqInt('Number of rooms', _roomsCtrl.text, min: 1),
-      "type": _typeOptions[_typeIndex] == 'Single room' ? "room" : "entire_home",
+      "type": _typeOptions[_typeIndex] == 'Single room'
+          ? "room"
+          : "entire_home",
       "is_furnished": _isFurnish,
       "floor": reqInt('Floor', _floorCtrl.text),
       "wifi_incl": _wifiIncl,
@@ -855,8 +888,9 @@ out body;
       final Map<String, dynamic> data =
           jsonDecode(resp.body) as Map<String, dynamic>;
       final raw = data['predicted_price_chf'];
-      final parsed =
-          (raw is num) ? raw.toDouble() : double.tryParse(raw?.toString() ?? '');
+      final parsed = (raw is num)
+          ? raw.toDouble()
+          : double.tryParse(raw?.toString() ?? '');
       if (parsed == null) {
         throw Exception('No valid predicted_price_chf in response.');
       }
@@ -922,8 +956,12 @@ out body;
         final bEnd = _dateOnly(tsEnd.toDate());
 
         // Rule: availability must fully cover each approved booking window
-        final cutsLeft = aStart.isAfter(bStart); // availability starts after booking start
-        final cutsRight = (aEnd != null) && aEnd.isBefore(bEnd); // availability ends before booking end
+        final cutsLeft = aStart.isAfter(
+          bStart,
+        ); // availability starts after booking start
+        final cutsRight =
+            (aEnd != null) &&
+            aEnd.isBefore(bEnd); // availability ends before booking end
 
         if (cutsLeft || cutsRight) {
           final student = (m['studentName'] ?? '').toString();
@@ -933,7 +971,7 @@ out body;
           final bEndStr =
               '${bEnd.year}-${bEnd.month.toString().padLeft(2, '0')}-${bEnd.day.toString().padLeft(2, '0')}';
           return 'Availability conflicts with an approved booking$sLabel '
-                 'from $bStartStr to $bEndStr.';
+              'from $bStartStr to $bEndStr.';
         }
       }
       return null;
@@ -956,7 +994,8 @@ out body;
     }
     // ⬇️ NEW: allow past start date only if it matches the original start date
     if (_availStart!.isBefore(_todayDateOnly)) {
-      final allowedPast = _initialAvailStart != null &&
+      final allowedPast =
+          _initialAvailStart != null &&
           _isSameDay(_availStart!, _initialAvailStart!);
       if (!allowedPast) {
         setState(() => _error = 'Start date cannot be before today.');
@@ -1018,7 +1057,9 @@ out body;
       final currentAddrKey =
           '${_addressCtrl.text.trim()}|${_npaCtrl.text.trim()}|${_cityCtrl.text.trim()}';
       final needGeocode =
-          _geoLat == null || _geoLng == null || currentAddrKey != _initialAddrKey;
+          _geoLat == null ||
+          _geoLng == null ||
+          currentAddrKey != _initialAddrKey;
 
       if (needGeocode) {
         final coords = await _geocodeAddress(
@@ -1074,14 +1115,19 @@ out body;
         'npa': _npaCtrl.text.trim(),
         'latitude': _geoLat,
         'longitude': _geoLng,
-        'surface':
-            _surfaceCtrl.text.trim().isEmpty ? null : parseD(_surfaceCtrl.text),
-        'num_rooms':
-            _roomsCtrl.text.trim().isEmpty ? null : parseI(_roomsCtrl.text),
-        'type': _typeOptions[_typeIndex] == "Entire home" ? "entire_home" : "room",
+        'surface': _surfaceCtrl.text.trim().isEmpty
+            ? null
+            : parseD(_surfaceCtrl.text),
+        'num_rooms': _roomsCtrl.text.trim().isEmpty
+            ? null
+            : parseI(_roomsCtrl.text),
+        'type': _typeOptions[_typeIndex] == "Entire home"
+            ? "entire_home"
+            : "room",
         'is_furnish': _isFurnish,
-        'floor':
-            _floorCtrl.text.trim().isEmpty ? null : parseI(_floorCtrl.text),
+        'floor': _floorCtrl.text.trim().isEmpty
+            ? null
+            : parseI(_floorCtrl.text),
         'wifi_incl': _wifiIncl,
         'charges_incl': _chargesIncl,
         'car_park': _carPark,
@@ -1095,8 +1141,9 @@ out body;
 
         // Availability:
         'availability_start': Timestamp.fromDate(_availStart!),
-        'availability_end':
-            _noEndDate || _availEnd == null ? null : Timestamp.fromDate(_availEnd!),
+        'availability_end': _noEndDate || _availEnd == null
+            ? null
+            : Timestamp.fromDate(_availEnd!),
 
         'updatedAt': Timestamp.now(),
       };
@@ -1249,10 +1296,13 @@ out body;
 
                 final gap = 12.0;
                 final double contentMax = 900;
-                final double gridWidth =
-                    (constraints.maxWidth.clamp(360, contentMax)).toDouble();
-                final double fieldWidth =
-                    isWide ? ((gridWidth - gap) / 2) : gridWidth;
+                final double gridWidth = (constraints.maxWidth.clamp(
+                  360,
+                  contentMax,
+                )).toDouble();
+                final double fieldWidth = isWide
+                    ? ((gridWidth - gap) / 2)
+                    : gridWidth;
 
                 // Image grid sizes
                 final thumbsPerRow = isWide ? 4 : 2;
@@ -1265,8 +1315,9 @@ out body;
                     absorbing: _saving,
                     child: SingleChildScrollView(
                       padding: EdgeInsets.symmetric(
-                        horizontal:
-                            isXL ? (constraints.maxWidth - contentMax) / 2 + 16 : 16,
+                        horizontal: isXL
+                            ? (constraints.maxWidth - contentMax) / 2 + 16
+                            : 16,
                         vertical: 16,
                       ),
                       child: Center(
@@ -1280,7 +1331,8 @@ out body;
                                 _MoonCard(
                                   isDark: isDark,
                                   child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.center,
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.center,
                                     children: [
                                       Row(
                                         mainAxisSize: MainAxisSize.min,
@@ -1329,13 +1381,15 @@ out body;
                                               children: [
                                                 _moonInput(
                                                   controller: _addressCtrl,
-                                                  hint: 'Address (street & number)',
-                                                  keyboardType:
-                                                      TextInputType.streetAddress,
+                                                  hint:
+                                                      'Address (street & number)',
+                                                  keyboardType: TextInputType
+                                                      .streetAddress,
                                                   leading: const Icon(
                                                     Icons.place_outlined,
                                                   ),
-                                                  validator: (v) => (v == null || v.isEmpty)
+                                                  validator: (v) =>
+                                                      (v == null || v.isEmpty)
                                                       ? 'Required'
                                                       : null,
                                                   textAlign: TextAlign.center,
@@ -1343,20 +1397,27 @@ out body;
                                                 ),
                                                 if (_addressFocus.hasFocus ||
                                                     _isLoadingAddr ||
-                                                    _addressSuggestions.isNotEmpty)
+                                                    _addressSuggestions
+                                                        .isNotEmpty)
                                                   const SizedBox(height: 6),
                                                 if (_isLoadingAddr)
                                                   const LinearProgressIndicator(
                                                     minHeight: 2,
                                                   ),
-                                                if (_addressSuggestions.isNotEmpty)
+                                                if (_addressSuggestions
+                                                    .isNotEmpty)
                                                   Container(
                                                     decoration: BoxDecoration(
-                                                      color: Theme.of(context).cardColor,
+                                                      color: Theme.of(
+                                                        context,
+                                                      ).cardColor,
                                                       borderRadius:
-                                                          BorderRadius.circular(12),
+                                                          BorderRadius.circular(
+                                                            12,
+                                                          ),
                                                       border: Border.all(
-                                                        color: cs.primary.withOpacity(.15),
+                                                        color: cs.primary
+                                                            .withOpacity(.15),
                                                       ),
                                                     ),
                                                     child: ListView.separated(
@@ -1364,64 +1425,87 @@ out body;
                                                       physics:
                                                           const NeverScrollableScrollPhysics(),
                                                       itemCount:
-                                                          _addressSuggestions.length,
-                                                      separatorBuilder: (_, __) => Divider(
-                                                        height: 1,
-                                                        color:
-                                                            cs.primary.withOpacity(.08),
-                                                      ),
+                                                          _addressSuggestions
+                                                              .length,
+                                                      separatorBuilder:
+                                                          (_, __) => Divider(
+                                                            height: 1,
+                                                            color: cs.primary
+                                                                .withOpacity(
+                                                                  .08,
+                                                                ),
+                                                          ),
                                                       itemBuilder: (ctx, i) {
                                                         final s =
                                                             _addressSuggestions[i];
 
                                                         // Compose the street we SHOW
                                                         final road =
-                                                            s.road?.trim() ?? '';
+                                                            s.road?.trim() ??
+                                                            '';
                                                         final house =
-                                                            s.houseNumber?.trim() ?? '';
-                                                        final street = [road, house]
-                                                            .where((x) => x.isNotEmpty)
-                                                            .join(' ')
-                                                            .trim();
+                                                            s.houseNumber
+                                                                ?.trim() ??
+                                                            '';
+                                                        final street =
+                                                            [road, house]
+                                                                .where(
+                                                                  (x) => x
+                                                                      .isNotEmpty,
+                                                                )
+                                                                .join(' ')
+                                                                .trim();
 
                                                         // Locality "<postcode> <city>"
-                                                        final locality = [
-                                                          s.postcode.trim(),
-                                                          s.city.trim(),
-                                                        ]
-                                                            .where((x) => x.isNotEmpty)
-                                                            .join(' ')
-                                                            .trim();
+                                                        final locality =
+                                                            [
+                                                                  s.postcode
+                                                                      .trim(),
+                                                                  s.city.trim(),
+                                                                ]
+                                                                .where(
+                                                                  (x) => x
+                                                                      .isNotEmpty,
+                                                                )
+                                                                .join(' ')
+                                                                .trim();
 
                                                         final fullLabel = [
                                                           street.isNotEmpty
                                                               ? street
                                                               : s.displayName
-                                                                  .split(',')
-                                                                  .first
-                                                                  .trim(),
-                                                          if (locality.isNotEmpty)
+                                                                    .split(',')
+                                                                    .first
+                                                                    .trim(),
+                                                          if (locality
+                                                              .isNotEmpty)
                                                             locality,
                                                         ].join(', ');
 
                                                         return ListTile(
                                                           dense: true,
                                                           leading: const Icon(
-                                                              Icons.location_on_outlined),
+                                                            Icons
+                                                                .location_on_outlined,
+                                                          ),
                                                           title: Text(
                                                             fullLabel,
                                                             maxLines: 1,
                                                             overflow:
-                                                                TextOverflow.ellipsis,
+                                                                TextOverflow
+                                                                    .ellipsis,
                                                           ),
                                                           subtitle: Text(
                                                             s.displayName,
                                                             maxLines: 1,
                                                             overflow:
-                                                                TextOverflow.ellipsis,
+                                                                TextOverflow
+                                                                    .ellipsis,
                                                           ),
                                                           onTap: () =>
-                                                              _applySuggestion(s),
+                                                              _applySuggestion(
+                                                                s,
+                                                              ),
                                                         );
                                                       },
                                                     ),
@@ -1438,7 +1522,8 @@ out body;
                                               leading: const Icon(
                                                 Icons.location_city_outlined,
                                               ),
-                                              validator: (v) => (v == null || v.isEmpty)
+                                              validator: (v) =>
+                                                  (v == null || v.isEmpty)
                                                   ? 'Required'
                                                   : null,
                                               textAlign: TextAlign.center,
@@ -1449,11 +1534,14 @@ out body;
                                             child: _moonInput(
                                               controller: _npaCtrl,
                                               hint: 'Postal code (NPA)',
-                                              keyboardType: TextInputType.number,
+                                              keyboardType:
+                                                  TextInputType.number,
                                               leading: const Icon(
-                                                Icons.local_post_office_outlined,
+                                                Icons
+                                                    .local_post_office_outlined,
                                               ),
-                                              validator: (v) => (v == null || v.isEmpty)
+                                              validator: (v) =>
+                                                  (v == null || v.isEmpty)
                                                   ? 'Required'
                                                   : null,
                                               textAlign: TextAlign.center,
@@ -1464,7 +1552,8 @@ out body;
                                             child: _moonInput(
                                               controller: _surfaceCtrl,
                                               hint: 'Surface (m²)',
-                                              keyboardType: TextInputType.number,
+                                              keyboardType:
+                                                  TextInputType.number,
                                               leading: const Icon(
                                                 Icons.square_foot_outlined,
                                               ),
@@ -1476,7 +1565,8 @@ out body;
                                             child: _moonInput(
                                               controller: _roomsCtrl,
                                               hint: 'Number of rooms',
-                                              keyboardType: TextInputType.number,
+                                              keyboardType:
+                                                  TextInputType.number,
                                               leading: const Icon(
                                                 Icons.meeting_room_outlined,
                                               ),
@@ -1488,7 +1578,8 @@ out body;
                                             child: _moonInput(
                                               controller: _floorCtrl,
                                               hint: 'Floor',
-                                              keyboardType: TextInputType.number,
+                                              keyboardType:
+                                                  TextInputType.number,
                                               leading: const Icon(
                                                 Icons.unfold_more_outlined,
                                               ),
@@ -1506,8 +1597,8 @@ out body;
                                                 Text(
                                                   'Type',
                                                   style: TextStyle(
-                                                    color:
-                                                        cs.onSurface.withOpacity(.8),
+                                                    color: cs.onSurface
+                                                        .withOpacity(.8),
                                                     fontWeight: FontWeight.w600,
                                                   ),
                                                 ),
@@ -1520,30 +1611,37 @@ out body;
                                                       return Wrap(
                                                         spacing: 8,
                                                         runSpacing: 8,
-                                                        alignment:
-                                                            WrapAlignment.center,
+                                                        alignment: WrapAlignment
+                                                            .center,
                                                         children: List.generate(
                                                           _typeOptions.length,
                                                           (i) {
                                                             return SizedBox(
-                                                              width: box.maxWidth,
-                                                              child:
-                                                                  MoonSegmentedControl(
+                                                              width:
+                                                                  box.maxWidth,
+                                                              child: MoonSegmentedControl(
                                                                 initialIndex:
-                                                                    _typeIndex == i
-                                                                        ? 0
-                                                                        : -1,
+                                                                    _typeIndex ==
+                                                                        i
+                                                                    ? 0
+                                                                    : -1,
                                                                 segments: [
                                                                   Segment(
                                                                     label: Text(
-                                                                        _typeOptions[i]),
+                                                                      _typeOptions[i],
+                                                                    ),
                                                                   ),
                                                                 ],
-                                                                onSegmentChanged: (_) =>
-                                                                    setState(() =>
-                                                                        _typeIndex =
-                                                                            i),
-                                                                isExpanded: true,
+                                                                onSegmentChanged:
+                                                                    (
+                                                                      _,
+                                                                    ) => setState(
+                                                                      () =>
+                                                                          _typeIndex =
+                                                                              i,
+                                                                    ),
+                                                                isExpanded:
+                                                                    true,
                                                               ),
                                                             );
                                                           },
@@ -1553,12 +1651,17 @@ out body;
                                                     return MoonSegmentedControl(
                                                       initialIndex: _typeIndex,
                                                       segments: _typeOptions
-                                                          .map((t) =>
-                                                              Segment(label: Text(t)))
+                                                          .map(
+                                                            (t) => Segment(
+                                                              label: Text(t),
+                                                            ),
+                                                          )
                                                           .toList(),
                                                       onSegmentChanged: (i) =>
                                                           setState(
-                                                              () => _typeIndex = i),
+                                                            () =>
+                                                                _typeIndex = i,
+                                                          ),
                                                       isExpanded: true,
                                                     );
                                                   },
@@ -1570,7 +1673,9 @@ out body;
                                       ),
 
                                       const SizedBox(height: 16),
-                                      Divider(color: cs.primary.withOpacity(.1)),
+                                      Divider(
+                                        color: cs.primary.withOpacity(.1),
+                                      ),
                                       const SizedBox(height: 8),
 
                                       // --- AMENITIES ---
@@ -1595,8 +1700,9 @@ out body;
                                             child: _AmenitySwitch(
                                               title: 'Have furniture?',
                                               value: _isFurnish,
-                                              onChanged: (v) =>
-                                                  setState(() => _isFurnish = v),
+                                              onChanged: (v) => setState(
+                                                () => _isFurnish = v,
+                                              ),
                                             ),
                                           ),
                                           SizedBox(
@@ -1613,8 +1719,9 @@ out body;
                                             child: _AmenitySwitch(
                                               title: 'Charges included?',
                                               value: _chargesIncl,
-                                              onChanged: (v) =>
-                                                  setState(() => _chargesIncl = v),
+                                              onChanged: (v) => setState(
+                                                () => _chargesIncl = v,
+                                              ),
                                             ),
                                           ),
                                           SizedBox(
@@ -1630,7 +1737,9 @@ out body;
                                       ),
 
                                       const SizedBox(height: 16),
-                                      Divider(color: cs.primary.withOpacity(.1)),
+                                      Divider(
+                                        color: cs.primary.withOpacity(.1),
+                                      ),
                                       const SizedBox(height: 8),
 
                                       // --- AVAILABILITY ---
@@ -1671,8 +1780,9 @@ out body;
                                                 Expanded(
                                                   child: MoonFilledButton(
                                                     isFullWidth: true,
-                                                    onTap:
-                                                        _noEndDate ? null : _pickEndDate,
+                                                    onTap: _noEndDate
+                                                        ? null
+                                                        : _pickEndDate,
                                                     leading: const Icon(
                                                       Icons.event_note_outlined,
                                                     ),
@@ -1698,10 +1808,12 @@ out body;
                                                     const SizedBox(width: 6),
                                                     MoonSwitch(
                                                       value: _noEndDate,
-                                                      onChanged: (v) => setState(() {
-                                                        _noEndDate = v;
-                                                        if (v) _availEnd = null;
-                                                      }),
+                                                      onChanged: (v) =>
+                                                          setState(() {
+                                                            _noEndDate = v;
+                                                            if (v)
+                                                              _availEnd = null;
+                                                          }),
                                                     ),
                                                   ],
                                                 ),
@@ -1724,7 +1836,9 @@ out body;
                                       ),
 
                                       const SizedBox(height: 16),
-                                      Divider(color: cs.primary.withOpacity(.1)),
+                                      Divider(
+                                        color: cs.primary.withOpacity(.1),
+                                      ),
                                       const SizedBox(height: 8),
 
                                       // --- DISTANCES ---
@@ -1761,8 +1875,9 @@ out body;
                                                   : 'Nearest transit: ${_nearestTransitName?.isNotEmpty == true ? _nearestTransitName : 'Stop'} • ${_distTransitKm!.toStringAsFixed(2)} km',
                                               textAlign: TextAlign.center,
                                               style: TextStyle(
-                                                color:
-                                                    cs.onSurface.withOpacity(.85),
+                                                color: cs.onSurface.withOpacity(
+                                                  .85,
+                                                ),
                                                 fontWeight: FontWeight.w600,
                                               ),
                                             ),
@@ -1790,13 +1905,15 @@ out body;
                                               _proximHesKm == null
                                                   ? 'HES proximity: —'
                                                   : (_nearestHesName == null ||
-                                                          _nearestHesName!.isEmpty)
-                                                      ? 'HES proximity: ${_proximHesKm!.toStringAsFixed(2)} km'
-                                                      : 'HES proximity: ${_nearestHesName!} • ${_proximHesKm!.toStringAsFixed(2)} km',
+                                                        _nearestHesName!
+                                                            .isEmpty)
+                                                  ? 'HES proximity: ${_proximHesKm!.toStringAsFixed(2)} km'
+                                                  : 'HES proximity: ${_nearestHesName!} • ${_proximHesKm!.toStringAsFixed(2)} km',
                                               textAlign: TextAlign.center,
                                               style: TextStyle(
-                                                color:
-                                                    cs.onSurface.withOpacity(.85),
+                                                color: cs.onSurface.withOpacity(
+                                                  .85,
+                                                ),
                                                 fontWeight: FontWeight.w600,
                                               ),
                                             ),
@@ -1805,7 +1922,9 @@ out body;
                                       ),
 
                                       const SizedBox(height: 16),
-                                      Divider(color: cs.primary.withOpacity(.1)),
+                                      Divider(
+                                        color: cs.primary.withOpacity(.1),
+                                      ),
                                       const SizedBox(height: 8),
 
                                       // --- PHOTOS (existing + add/remove + new previews) ---
@@ -1825,8 +1944,7 @@ out body;
                                         Text(
                                           'No existing photos',
                                           style: TextStyle(
-                                            color:
-                                                cs.onSurface.withOpacity(.7),
+                                            color: cs.onSurface.withOpacity(.7),
                                           ),
                                         ),
                                       if (_existingPhotos.isNotEmpty)
@@ -1834,8 +1952,8 @@ out body;
                                           spacing: 8,
                                           runSpacing: 8,
                                           children: _existingPhotos.map((url) {
-                                            final selected =
-                                                _photosToRemove.contains(url);
+                                            final selected = _photosToRemove
+                                                .contains(url);
                                             return Stack(
                                               children: [
                                                 Container(
@@ -1843,12 +1961,16 @@ out body;
                                                   height: thumbSize,
                                                   decoration: BoxDecoration(
                                                     borderRadius:
-                                                        BorderRadius.circular(10),
+                                                        BorderRadius.circular(
+                                                          10,
+                                                        ),
                                                     border: Border.all(
                                                       color: selected
                                                           ? Colors.redAccent
                                                           : cs.primary
-                                                              .withOpacity(.15),
+                                                                .withOpacity(
+                                                                  .15,
+                                                                ),
                                                       width: selected ? 2 : 1,
                                                     ),
                                                     image: DecorationImage(
@@ -1867,13 +1989,17 @@ out body;
                                                           _photosToRemove
                                                               .remove(url);
                                                         } else {
-                                                          _photosToRemove.add(url);
+                                                          _photosToRemove.add(
+                                                            url,
+                                                          );
                                                         }
                                                       });
                                                     },
                                                     child: Container(
                                                       padding:
-                                                          const EdgeInsets.all(4),
+                                                          const EdgeInsets.all(
+                                                            4,
+                                                          ),
                                                       decoration: BoxDecoration(
                                                         color: selected
                                                             ? Colors.redAccent
@@ -1920,7 +2046,8 @@ out body;
                                           MoonButton(
                                             onTap: _pickImages,
                                             leading: const Icon(
-                                              Icons.add_photo_alternate_outlined,
+                                              Icons
+                                                  .add_photo_alternate_outlined,
                                             ),
                                             label: const Text('Add images'),
                                           ),
@@ -1928,15 +2055,18 @@ out body;
                                           Text(
                                             '${_existingPhotos.length} existing • ${_newImages.length} new',
                                             style: TextStyle(
-                                              color:
-                                                  cs.onSurface.withOpacity(.7),
+                                              color: cs.onSurface.withOpacity(
+                                                .7,
+                                              ),
                                             ),
                                           ),
                                         ],
                                       ),
 
                                       const SizedBox(height: 16),
-                                      Divider(color: cs.primary.withOpacity(.1)),
+                                      Divider(
+                                        color: cs.primary.withOpacity(.1),
+                                      ),
                                       const SizedBox(height: 8),
 
                                       // --- PRICING (identical to NewListingPage) ---
@@ -1991,22 +2121,26 @@ out body;
                                             ),
                                             const SizedBox(width: 8),
                                             MoonButton(
-                                              onTap:
-                                                  _estimating ? null : _estimatePrice,
+                                              onTap: _estimating
+                                                  ? null
+                                                  : _estimatePrice,
                                               leading: _estimating
                                                   ? const SizedBox(
                                                       width: 18,
                                                       height: 18,
                                                       child:
                                                           CircularProgressIndicator(
-                                                        strokeWidth: 2,
-                                                      ),
+                                                            strokeWidth: 2,
+                                                          ),
                                                     )
                                                   : const Icon(
                                                       Icons.calculate_outlined,
                                                     ),
-                                              label:
-                                                  Text(_estimating ? '...' : 'Estimate'),
+                                              label: Text(
+                                                _estimating
+                                                    ? '...'
+                                                    : 'Estimate',
+                                              ),
                                             ),
                                           ],
                                         ),
@@ -2021,15 +2155,17 @@ out body;
                                             vertical: 10,
                                           ),
                                           decoration: BoxDecoration(
-                                            color: Theme.of(context)
-                                                .cardColor
-                                                .withOpacity(.95),
+                                            color: Theme.of(
+                                              context,
+                                            ).cardColor.withOpacity(.95),
                                             border: Border.all(
-                                              color:
-                                                  cs.primary.withOpacity(.15),
+                                              color: cs.primary.withOpacity(
+                                                .15,
+                                              ),
                                             ),
-                                            borderRadius:
-                                                BorderRadius.circular(12),
+                                            borderRadius: BorderRadius.circular(
+                                              12,
+                                            ),
                                           ),
                                           child: _estimationError != null
                                               ? Text(
@@ -2043,7 +2179,8 @@ out body;
                                               : Row(
                                                   children: [
                                                     const Icon(
-                                                        Icons.trending_up),
+                                                      Icons.trending_up,
+                                                    ),
                                                     const SizedBox(width: 8),
                                                     Expanded(
                                                       child: Text(
@@ -2061,10 +2198,13 @@ out body;
                                                     MoonButton(
                                                       onTap:
                                                           _applyEstimateToPriceField,
-                                                      label:
-                                                          const Text('Apply'),
-                                                      leading: const Icon(Icons
-                                                          .check_circle_outline),
+                                                      label: const Text(
+                                                        'Apply',
+                                                      ),
+                                                      leading: const Icon(
+                                                        Icons
+                                                            .check_circle_outline,
+                                                      ),
                                                     ),
                                                   ],
                                                 ),
@@ -2102,7 +2242,9 @@ out body;
                                       : const Icon(
                                           MoonIcons.arrows_boost_24_regular,
                                         ),
-                                  label: Text(_saving ? 'Saving…' : 'Save changes'),
+                                  label: Text(
+                                    _saving ? 'Saving…' : 'Save changes',
+                                  ),
                                 ),
 
                                 const SizedBox(height: 24),
