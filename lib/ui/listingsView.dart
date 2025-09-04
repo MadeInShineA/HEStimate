@@ -1010,6 +1010,188 @@ class _FilterBar extends StatelessWidget {
   }
 }
 
+class _PhotoCarousel extends StatefulWidget {
+  final List<String> rawPhotos;
+  final Future<String?> Function(String?) resolveImageUrl;
+
+  const _PhotoCarousel({
+    required this.rawPhotos,
+    required this.resolveImageUrl,
+  });
+
+  @override
+  State<_PhotoCarousel> createState() => _PhotoCarouselState();
+}
+
+class _PhotoCarouselState extends State<_PhotoCarousel> {
+  final _controller = PageController();
+  int _index = 0;
+  List<String> _urls = [];
+  bool _loading = true;
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _prepare();
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    _controller.dispose();
+    super.dispose();
+  }
+
+  Future<void> _prepare() async {
+    // Resolve all image URLs (supports http/https,// and gs:// via your resolver)
+    final urls = await Future.wait(
+      widget.rawPhotos.map(widget.resolveImageUrl),
+    );
+    _urls = urls.whereType<String>().toList();
+
+    // If nothing resolved, keep empty → placeholder will show
+    setState(() => _loading = false);
+
+    // Autoplay only if we have 2+ images
+    if (_urls.length >= 2) {
+      _timer = Timer.periodic(const Duration(seconds: 4), (_) {
+        if (!mounted) return;
+        final next = (_index + 1) % _urls.length;
+        _controller.animateToPage(
+          next,
+          duration: const Duration(milliseconds: 400),
+          curve: Curves.easeInOut,
+        );
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+
+    if (_loading) {
+      return Container(
+        color: cs.primary.withOpacity(.08),
+        child: const Center(child: CircularProgressIndicator(strokeWidth: 2)),
+      );
+    }
+
+    if (_urls.isEmpty) {
+      return Container(
+        color: cs.primary.withOpacity(.08),
+        child: Center(
+          child: Icon(
+            Icons.image_outlined,
+            size: 40,
+            color: cs.primary.withOpacity(.6),
+          ),
+        ),
+      );
+    }
+
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        PageView.builder(
+          controller: _controller,
+          itemCount: _urls.length,
+          onPageChanged: (i) => setState(() => _index = i),
+          itemBuilder: (_, i) {
+            final url = _urls[i];
+            return Image.network(
+              url,
+              fit: BoxFit.cover,
+              width: double.infinity,
+              height: double.infinity,
+              errorBuilder: (_, __, ___) => Container(
+                color: cs.primary.withOpacity(.08),
+                child: Center(
+                  child: Icon(
+                    Icons.broken_image_outlined,
+                    size: 40,
+                    color: cs.primary.withOpacity(.6),
+                  ),
+                ),
+              ),
+            );
+          },
+        ),
+
+        // Dots indicator
+        if (_urls.length > 1)
+          Positioned(
+            bottom: 8,
+            left: 0,
+            right: 0,
+            child: Center(
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.35),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: List.generate(_urls.length, (i) {
+                    final active = i == _index;
+                    return AnimatedContainer(
+                      duration: const Duration(milliseconds: 200),
+                      margin: const EdgeInsets.symmetric(horizontal: 3),
+                      width: active ? 10 : 7,
+                      height: active ? 10 : 7,
+                      decoration: BoxDecoration(
+                        color: active ? Colors.white : Colors.white70,
+                        shape: BoxShape.circle,
+                      ),
+                    );
+                  }),
+                ),
+              ),
+            ),
+          ),
+
+        // (Optional) left/right tap areas for quick nav
+        if (_urls.length > 1) ...[
+          Positioned.fill(
+            child: Row(
+              children: [
+                Expanded(
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: () {
+                      final prev = (_index - 1 + _urls.length) % _urls.length;
+                      _controller.animateToPage(
+                        prev,
+                        duration: const Duration(milliseconds: 300),
+                        curve: Curves.easeInOut,
+                      );
+                    },
+                  ),
+                ),
+                Expanded(
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: () {
+                      final next = (_index + 1) % _urls.length;
+                      _controller.animateToPage(
+                        next,
+                        duration: const Duration(milliseconds: 300),
+                        curve: Curves.easeInOut,
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+}
+
 class _BoolChip extends StatelessWidget {
   final String label;
   final bool value;
@@ -1270,73 +1452,10 @@ class _ListingCard extends StatelessWidget {
             // --- Image ---------------------------------------------------
             Expanded(
               flex: 6,
-              child: Stack(
-                fit: StackFit.expand,
-                children: [
-                  FutureBuilder<String?>(
-                    future: _resolveImageUrl(imageUrl),
-                    builder: (context, snap) {
-                      final url = snap.data;
-                      if (snap.connectionState == ConnectionState.waiting) {
-                        return Container(
-                          color: cs.primary.withOpacity(.08),
-                          child: const Center(
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          ),
-                        );
-                      }
-                      if (url == null) {
-                        return Container(
-                          color: cs.primary.withOpacity(.08),
-                          child: Center(
-                            child: Icon(
-                              Icons.image_outlined,
-                              size: 40,
-                              color: cs.primary.withOpacity(.6),
-                            ),
-                          ),
-                        );
-                      }
-                      return Image.network(
-                        url,
-                        fit: BoxFit.cover,
-                        width: double.infinity,
-                        height: double.infinity,
-                        errorBuilder: (_, __, ___) => Container(
-                          color: cs.primary.withOpacity(.08),
-                          child: Center(
-                            child: Icon(
-                              Icons.broken_image_outlined,
-                              size: 40,
-                              color: cs.primary.withOpacity(.6),
-                            ),
-                          ),
-                        ),
-                      );
-                    },
-                  ),
-                  Positioned(
-                    top: 8,
-                    right: 8,
-                    child: ClipOval(
-                      child: Material(
-                        color: Colors.black.withOpacity(0.35),
-                        child: IconButton(
-                          splashRadius: 24,
-                          iconSize: 22,
-                          icon: Icon(
-                            isFavorite ? Icons.favorite : Icons.favorite_border,
-                          ),
-                          color: isFavorite ? Colors.redAccent : Colors.white,
-                          tooltip: isFavorite
-                              ? 'Retirer des favoris'
-                              : 'Ajouter aux favoris',
-                          onPressed: onToggleFavorite,
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
+              child: _PhotoCarousel(
+                rawPhotos:
+                    photos, // list<String> (may be http/https,//, or gs://)
+                resolveImageUrl: _resolveImageUrl, // reuse your resolver
               ),
             ),
 
