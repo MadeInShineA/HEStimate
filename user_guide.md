@@ -62,7 +62,7 @@ Owners can create a new listing by providing:
 - **Pricing** with a smart “Estimate” button to suggest a fair rent.  
 - **Save Listing** to publish for students to browse.  
 
-<img src="assets/guides/my_properties.png" alt="my properties" width="800"/>
+<img src="assets/guides/creation.png" alt="creation" width="800"/>
 
 ---
 
