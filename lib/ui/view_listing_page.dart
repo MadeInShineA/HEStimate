@@ -18,7 +18,6 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:shimmer/shimmer.dart';
 import 'package:photo_view/photo_view_gallery.dart';
 import 'package:photo_view/photo_view.dart'; // ⬅️ needed for HeroAttributes & ComputedScale
-
 // import 'rate_listing_page.dart'; // Add this import for RateListingPage
 
 // Clé Google (Directions + Places)
@@ -294,29 +293,66 @@ class _FullscreenGalleryState extends State<_FullscreenGallery> {
 
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
     return Scaffold(
       backgroundColor: Colors.black,
-      appBar: AppBar(
-        backgroundColor: Colors.black.withOpacity(.6),
-        title: Text('${_current + 1}/${widget.imageUrls.length}'),
-      ),
-      body: PhotoViewGallery.builder(
-        pageController: PageController(initialPage: widget.initialIndex),
-        itemCount: widget.imageUrls.length,
-        builder: (_, i) {
-          final url = widget.imageUrls[i];
-          return PhotoViewGalleryPageOptions(
-            heroAttributes: PhotoViewHeroAttributes(tag: 'photo_$url'),
-            imageProvider: CachedNetworkImageProvider(url),
-            minScale: PhotoViewComputedScale.contained,
-            maxScale: PhotoViewComputedScale.covered * 3.0,
-          );
-        },
-        onPageChanged: (i) => setState(() => _current = i),
-        loadingBuilder: (_, __) =>
-            const Center(child: CircularProgressIndicator(strokeWidth: 2)),
-        backgroundDecoration: const BoxDecoration(color: Colors.black),
+      body: Stack(
+        children: [
+          PhotoViewGallery.builder(
+            pageController: PageController(initialPage: widget.initialIndex),
+            itemCount: widget.imageUrls.length,
+            builder: (_, i) {
+              final url = widget.imageUrls[i];
+              return PhotoViewGalleryPageOptions(
+                heroAttributes: PhotoViewHeroAttributes(tag: 'photo_$url'),
+                imageProvider: CachedNetworkImageProvider(url),
+                minScale: PhotoViewComputedScale.contained,
+                maxScale: PhotoViewComputedScale.covered * 3.0,
+              );
+            },
+            onPageChanged: (i) => setState(() => _current = i),
+            backgroundDecoration: const BoxDecoration(color: Colors.black),
+          ),
+
+          // ⬇️ Close button overlay
+          SafeArea(
+            child: Align(
+              alignment: Alignment.topRight,
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: IconButton(
+                  icon: const Icon(Icons.close),
+                  iconSize: 26,
+                  color: Colors.white,
+                  tooltip: 'Close',
+                  onPressed: () => Navigator.of(context).pop(),
+                  style: ButtonStyle(
+                    backgroundColor: WidgetStateProperty.all(Colors.black54),
+                    shape: WidgetStateProperty.all(
+                      const CircleBorder(),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+
+          // (optional) small counter at top-left
+          SafeArea(
+            child: Align(
+              alignment: Alignment.topLeft,
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Text(
+                  '${_current + 1}/${widget.imageUrls.length}',
+                  style: const TextStyle(
+                    color: Colors.white70,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

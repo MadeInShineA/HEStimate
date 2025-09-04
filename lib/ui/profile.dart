@@ -950,3 +950,4 @@ class _FaceIdConfigPageState extends State<FaceIdConfigPage> {
       ),
     );
   }
+}
