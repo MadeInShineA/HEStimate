@@ -1,177 +1,139 @@
-# HEStimate Technical Guide
+# HEStimate — Technical Guide
 
-## 1. Project Overview
+## 1. Overview
 
-**HEStimate** is a Flutter application scaffold.  
-It is designed to be **cross-platform** (mobile, web, and desktop) and is structured with best practices in mind for future extension, including Firebase integration and environment-based configuration.
+HEStimate is a **student-housing marketplace** that connects students with property owners.  
+It consists of a **Flutter frontend**, a **FastAPI backend**, and **Firebase services** for authentication, storage, and database.  
 
-This document provides guidance for developers to set up, build, test, and extend the project.
-
----
-
-## 2. Repository Structure
-
-```
-/android       → Native Android integration
-/linux         → Linux desktop support
-/macos         → macOS desktop support
-/web           → Web support
-/windows       → Windows desktop support
-/lib           → Main Flutter application code
- └─ main.dart  → Application entry point
-
-.env.example   → Example environment variables
-firebase.json  → Firebase configuration placeholder
-analysis_options.yaml → Static analysis and linting rules
-pubspec.yaml   → Project dependencies and assets
-```
+The app enables:  
+- 🔑 **Authentication** — Email/Password & optional Face ID  
+- 🏠 **Listings** — Create, browse, filter, and manage accommodations  
+- 💰 **Price Estimation** — AI-powered rent prediction  
+- 📍 **Convenience Info** — Campus & transport distances  
+- ⭐ **Reviews** — Feedback between students and owners  
 
 ---
 
-## 3. Development Environment Setup
+## 2. Architecture
 
-### Prerequisites
+### 2.1 System Architecture
 
-- [Flutter SDK](https://docs.flutter.dev/get-started/install) (stable channel recommended)
-- Dart SDK (bundled with Flutter)
-- Git
-- IDE: **VS Code**, **Android Studio**, or **IntelliJ IDEA**
+![System UML](assets/guides/uml.png)
 
-Optional:
-
-- **Xcode** (for iOS builds, macOS only)
-- **Android Studio SDK** (for Android builds)
-- **Chrome** or another browser (for web builds)
-
-### Initial Setup
-
-```bash
-git clone https://github.com/MadeInShineA/HEStimate.git
-cd HEStimate
-flutter pub get
-flutter run
-```
-
-### Environment Variables
-
-- Copy `.env.example` → `.env`
-- Add required variables (API keys, environment modes, etc.)
+**Components**
+- **Frontend (Flutter)**: Handles UI & user interactions  
+- **API (FastAPI)**: Provides face recognition & price prediction services  
+- **Firebase Authentication**: Manages accounts  
+- **Firestore**: Stores users, listings, favorites, reviews, and booking requests  
+- **Firebase Functions**: Background logic (e.g. user deletion)  
+- **Firebase Storage**: Stores images  
 
 ---
 
-## 4. Development Workflow
+## 3. Database Schema
 
-### Hot Reload & Hot Restart
+### 3.1 Firestore UML Diagram
 
-Flutter supports **hot reload** for rapid development:
+![Database UML](assets/guides/database_uml.png)
 
-- Press `r` in the terminal while the app is running to hot reload.
-- Press `R` for a full hot restart.
-
-### Static Analysis
-
-Run linter checks:
-
-```bash
-flutter analyze
-```
-
-### Testing
-
-Run unit and widget tests:
-
-```bash
-flutter test
-```
-
-Add new tests in the `/test` directory to ensure code quality.
+**Collections**
+- **users**: Stores user accounts, roles, and Face ID settings  
+- **listings**: Property details (address, price, amenities, distances, images)  
+- **booking_requests**: Links students → listings with start/end dates and status  
+- **favorites**: Student favorites for quick access  
+- **reviews**: Reviews from owners about students  
+- **listing_reviews**: Reviews from students about listings  
+- **schools**: Static data for school locations (used for distance calculations)  
 
 ---
 
-## 5. Building & Deployment
+## 4. Data Flow
 
-### Android
+### 4.1 User Authentication
+1. User signs up / logs in with Firebase Auth  
+2. Firestore stores user profile (`users/{uid}`)  
+3. If Face ID enabled:  
+   - Setup → API `/verify` → store local image → set `faceIdEnabled=true`  
+   - Login → API `/verify` + `/compare` → if success → access granted  
 
-```bash
-flutter build apk --release
-```
+### 4.2 Creating a Listing
+1. Owner fills listing form  
+2. Address resolved via **Nominatim**  
+3. Distances fetched (Google Directions, Overpass API)  
+4. Photos uploaded to **Firebase Storage**  
+5. Listing saved in **Firestore** (`listings/{id}`)  
+6. API `/observations` called to improve ML model  
 
-Generated builds will be located in the `/build` directory.
-
----
-
-## 6. Firebase Integration
-
-A `firebase.json` file is present for future Firebase integration.  
-To set up:
-
-1. Create a Firebase project in the Firebase Console.
-2. Add Android, iOS, and/or Web apps to the project.
-3. Download the appropriate configuration files:
-   - `google-services.json` (Android)
-   - `GoogleService-Info.plist` (iOS)
-   - Firebase SDK snippets (Web)
-4. Update `firebase.json` accordingly.
-5. Add Firebase dependencies in `pubspec.yaml` (e.g., `firebase_core`, `cloud_firestore`).
+### 4.3 Price Estimation
+1. User requests estimate  
+2. App sends POST → API `/estimate-price`  
+3. ML model returns `predicted_price_chf`  
+4. Value displayed in form → user can apply or override  
 
 ---
 
-## 7. Continuous Integration (CI/CD)
+## 5. Sequence Diagram — Face ID Login
 
-A sample GitHub Actions workflow for Flutter can be added:
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant F as Flutter App
+    participant A as API (FastAPI)
+    participant D as DeepFace
 
-```yaml
-name: Flutter CI
-
-on: [push, pull_request]
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      - uses: subosito/flutter-action@v2
-        with:
-          flutter-version: 'stable'
-      - run: flutter pub get
-      - run: flutter analyze
-      - run: flutter test
+    U->>F: Launch app (Face ID enabled)
+    F->>U: Prompt for selfie
+    U->>F: Capture selfie
+    F->>A: POST /verify
+    A->>D: Validate face
+    D-->>A: Face valid
+    A-->>F: success:true
+    F->>A: POST /compare (stored vs new)
+    A->>D: Compare embeddings
+    D-->>A: Match = true
+    A-->>F: success:true
+    F-->>U: Access granted
 ```
 
-This ensures every commit and PR is tested automatically.
+---
+
+## 6. Technologies & Dependencies
+
+### 6.1 Frontend (Flutter)
+- **Flutter SDK** 3.x (Dart >=3.9)  
+- **Firebase**: `firebase_core`, `firebase_auth`, `cloud_firestore`, `firebase_storage`, `cloud_functions`  
+- **UI**: `moon_design`, `moon_icons`, `cupertino_icons`, `intl`  
+- **Media**: `image_picker`, `photo_view`, `cached_network_image`, `shimmer`  
+- **Utils**: `path_provider`, `flutter_dotenv`, `url_launcher`, `phone_numbers_parser`, `fl_chart`  
+
+### 6.2 Backend (FastAPI)
+- **FastAPI** (Python 3.11)  
+- **Uvicorn** (ASGI server)  
+- **DeepFace** (face recognition)  
+- **scikit-learn** (ML models)  
+- **joblib** (model persistence)  
+- **pandas, numpy** (data processing)  
 
 ---
 
-## 8. Extending the Application
-
-### Adding New Screens
-
-- Create a new Dart file in `/lib/ui` (e.g., `home.dart`, `dashboard.dart`).
-- Use `Navigator.push()` or named routes for navigation.
-
-### Services
-
-- Networking (e.g., `http`, `dio`)
-- Firebase services (Auth, Firestore, etc.)
+## 7. Versions
+- **Flutter**: 3.x  
+- **Dart**: >=3.9.0  
+- **Python**: 3.11  
+- **Firebase SDKs**: latest stable versions  
 
 ---
 
-## 10. Roadmap for Developers
-
-Planned enhancements include:
-
-- Full Firebase integration (Auth, Firestore, Analytics).
-- A results dashboard with charts and statistics.
-- Multi-environment builds using `.env`.
-- Theming and dark mode support.
-- Packaging for production release on Play Store
+## 8. Security Considerations
+- Firestore rules enforce user/owner access separation  
+- Images validated & stored in Firebase Storage  
+- API `/observations` protected via API key (to be replaced with Firebase JWT in production)  
+- Sensitive keys stored in `.env` (never hardcoded)  
 
 ---
 
-## 11. Support & Contribution
-
-- Issues and feature requests: [GitHub Issues](https://github.com/MadeInShineA/HEStimate/issues)
-- Contributions welcome: Fork the repo, create a branch, and open a pull request.
-- Follow commit best practices (conventional commits recommended).
+## 9. Conclusion
+HEStimate separates **real-time data (Firebase)** from **AI services (FastAPI)** for scalability and clarity.  
+The modular architecture enables easy extension with new features such as messaging or advanced booking management.  
 
 ---
