@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:moon_design/moon_design.dart';
 import 'package:path_provider/path_provider.dart';
 import 'faceIdLogin.dart';
@@ -56,6 +57,23 @@ class _LoginPageState extends State<LoginPage> {
     }
   }
 
+  Future<bool> _checkUserExistsInFirestore(String email) async {
+    try {
+      final querySnapshot = await FirebaseFirestore.instance
+          .collection('users')
+          .where('email', isEqualTo: email.trim())
+          .limit(1)
+          .get();
+      
+      return querySnapshot.docs.isNotEmpty;
+    } catch (e) {
+      debugPrint('Error checking user in Firestore: $e');
+      // En cas d'erreur, on peut soit retourner false, soit laisser passer
+      // Ici je choisis de laisser passer pour éviter de bloquer un utilisateur légitime
+      return true;
+    }
+  }
+
   Future<void> _login() async {
     final form = _formKey.currentState;
     if (form == null) return;
@@ -63,10 +81,22 @@ class _LoginPageState extends State<LoginPage> {
 
     setState(() => _isLoading = true);
     try {
+      final email = _emailCtrl.text.trim();
+      
+      // Vérifier d'abord si l'utilisateur existe dans Firestore
+      final userExistsInFirestore = await _checkUserExistsInFirestore(email);
+      
+      if (!userExistsInFirestore) {
+        _showError('No account found for this email address. Please register first.');
+        return;
+      }
+
+      // Si l'utilisateur existe dans Firestore, procéder à l'authentification Firebase
       await FirebaseAuth.instance.signInWithEmailAndPassword(
-        email: _emailCtrl.text.trim(),
+        email: email,
         password: _passwordCtrl.text,
       );
+      
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Logged in!')));
       Navigator.of(context).pushReplacementNamed('/home');
@@ -76,11 +106,14 @@ class _LoginPageState extends State<LoginPage> {
         'user-not-found' => 'No user found for that email.',
         'wrong-password' => 'Incorrect password.',
         'user-disabled' => 'This account has been disabled.',
+        'too-many-requests' => 'Too many failed attempts. Please try again later.',
+        'network-request-failed' => 'Network error. Please check your connection.',
         _ => 'Login failed: ${e.code}',
       };
       _showError(msg);
-    } catch (_) {
-      _showError('Something went wrong.');
+    } catch (e) {
+      debugPrint('Login error: $e');
+      _showError('Something went wrong. Please try again.');
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
@@ -179,7 +212,6 @@ class _LoginPageState extends State<LoginPage> {
                         if (v.isEmpty) return 'Password is required';
                         return null;
                       },
-
                     ),
                     const SizedBox(height: 12),
                     SizedBox(
@@ -220,7 +252,6 @@ class _LoginPageState extends State<LoginPage> {
                         ),
                       ),
                     ),
-
                     if (_faceImage != null) ...[
                       const SizedBox(height: 12),
                       MoonFilledButton(

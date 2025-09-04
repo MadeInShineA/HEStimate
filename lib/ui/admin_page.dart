@@ -192,8 +192,13 @@ class _AdminPageState extends State<AdminPage>
     });
   }
 
+  
   Future<void> _loadUsersData() async {
-    QuerySnapshot usersSnapshot = await _firestore.collection('users').get();
+    // Utiliser la même requête que dans l'onglet Users
+    QuerySnapshot usersSnapshot = await _firestore
+        .collection('users')
+        .orderBy('createdAt', descending: true)
+        .get();
 
     Map<String, int> roleCount = {'student': 0, 'homeowner': 0, 'admin': 0};
 
