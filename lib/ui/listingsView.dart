@@ -1013,10 +1013,12 @@ class _FilterBar extends StatelessWidget {
 class _PhotoCarousel extends StatefulWidget {
   final List<String> rawPhotos;
   final Future<String?> Function(String?) resolveImageUrl;
+  final VoidCallback? onOpen; // << nouveau
 
   const _PhotoCarousel({
     required this.rawPhotos,
     required this.resolveImageUrl,
+    this.onOpen,
   });
 
   @override
@@ -1044,16 +1046,10 @@ class _PhotoCarouselState extends State<_PhotoCarousel> {
   }
 
   Future<void> _prepare() async {
-    // Resolve all image URLs (supports http/https,// and gs:// via your resolver)
-    final urls = await Future.wait(
-      widget.rawPhotos.map(widget.resolveImageUrl),
-    );
+    final urls = await Future.wait(widget.rawPhotos.map(widget.resolveImageUrl));
     _urls = urls.whereType<String>().toList();
-
-    // If nothing resolved, keep empty → placeholder will show
     setState(() => _loading = false);
 
-    // Autoplay only if we have 2+ images
     if (_urls.length >= 2) {
       _timer = Timer.periodic(const Duration(seconds: 4), (_) {
         if (!mounted) return;
@@ -1066,7 +1062,7 @@ class _PhotoCarouselState extends State<_PhotoCarousel> {
       });
     }
   }
-
+  @override
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
@@ -1079,13 +1075,16 @@ class _PhotoCarouselState extends State<_PhotoCarousel> {
     }
 
     if (_urls.isEmpty) {
-      return Container(
-        color: cs.primary.withOpacity(.08),
-        child: Center(
-          child: Icon(
-            Icons.image_outlined,
-            size: 40,
-            color: cs.primary.withOpacity(.6),
+      return InkWell(
+        onTap: widget.onOpen,
+        child: Container(
+          color: cs.primary.withOpacity(.08),
+          child: Center(
+            child: Icon(
+              Icons.image_outlined,
+              size: 40,
+              color: cs.primary.withOpacity(.6),
+            ),
           ),
         ),
       );
@@ -1119,7 +1118,7 @@ class _PhotoCarouselState extends State<_PhotoCarousel> {
           },
         ),
 
-        // Dots indicator
+        // Dots
         if (_urls.length > 1)
           Positioned(
             bottom: 8,
@@ -1152,8 +1151,8 @@ class _PhotoCarouselState extends State<_PhotoCarousel> {
             ),
           ),
 
-        // (Optional) left/right tap areas for quick nav
-        if (_urls.length > 1) ...[
+        // Zones de tap : gauche (prev), centre (ouvrir), droite (next)
+        if (_urls.length > 1)
           Positioned.fill(
             child: Row(
               children: [
@@ -1173,6 +1172,12 @@ class _PhotoCarouselState extends State<_PhotoCarousel> {
                 Expanded(
                   child: GestureDetector(
                     behavior: HitTestBehavior.opaque,
+                    onTap: widget.onOpen,
+                  ),
+                ),
+                Expanded(
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
                     onTap: () {
                       final next = (_index + 1) % _urls.length;
                       _controller.animateToPage(
@@ -1185,8 +1190,14 @@ class _PhotoCarouselState extends State<_PhotoCarousel> {
                 ),
               ],
             ),
+          )
+        else
+          Positioned.fill(
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: widget.onOpen,
+            ),
           ),
-        ],
       ],
     );
   }
