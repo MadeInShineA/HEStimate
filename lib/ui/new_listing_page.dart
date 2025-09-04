@@ -1,4 +1,3 @@
-// lib/ui/new_listing_page.dart
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -26,7 +25,6 @@ class _NewListingPageState extends State<NewListingPage> {
   final _formKey = GlobalKey<FormState>();
   final _repo = ListingRepository();
 
-  // Controllers (user inputs)
   final _addressCtrl = TextEditingController();
   final _cityCtrl = TextEditingController();
   final _npaCtrl = TextEditingController();
@@ -34,46 +32,37 @@ class _NewListingPageState extends State<NewListingPage> {
   final _surfaceCtrl = TextEditingController();
   final _roomsCtrl = TextEditingController();
   final _floorCtrl = TextEditingController();
-  final _distTransportCtrl =
-      TextEditingController(); // kept for compatibility (no longer used in UI)
+  final _distTransportCtrl = TextEditingController();
 
-  // Focus
   final FocusNode _addressFocus = FocusNode();
   final FocusNode _priceFocus = FocusNode();
 
-  // Address suggestions
   Timer? _addrDebounce;
   List<_AddressSuggestion> _addressSuggestions = [];
   bool _isLoadingAddr = false;
   bool _suspendAddrSearch = false;
 
-  // Type: Entire home / Single room  -> segmented control
   final _typeOptions = const ['Entire home', 'Single room'];
   int _typeIndex = 1;
 
-  // Amenities
   bool _isFurnish = false;
   bool _wifiIncl = false;
   bool _chargesIncl = false;
   bool _carPark = false;
 
-  // Availability
   DateTime? _availStart;
   DateTime? _availEnd;
   bool _noEndDate = false;
 
-  // Images
   final ImagePicker _picker = ImagePicker();
   final List<File> _images = [];
 
-  // Derived / auto-computed state
   double? _geoLat;
   double? _geoLng;
-  double? _proximHesKm; // auto
-  String? _nearestHesId; // auto (doc id)
-  String? _nearestHesName; // auto (name)
+  double? _proximHesKm;
+  String? _nearestHesId;
+  String? _nearestHesName;
 
-  // Transit auto-compute
   bool _isComputingTransit = false;
   double? _distTransitKm;
   String? _nearestTransitName;
@@ -81,7 +70,6 @@ class _NewListingPageState extends State<NewListingPage> {
   bool _saving = false;
   String? _error;
 
-  // ===== HEStimate API integration =====
   static const _apiBase = 'https://hestimate-api-production.up.railway.app';
   static const _estimatePath = '/estimate-price';
   static const _observationPath = '/observations';
@@ -90,7 +78,6 @@ class _NewListingPageState extends State<NewListingPage> {
   double? _estimatedPrice;
   String? _estimationError;
 
-  // HES distance recompute debounce/status
   Timer? _hesDebounce;
   bool _isComputingHes = false;
 
@@ -100,8 +87,6 @@ class _NewListingPageState extends State<NewListingPage> {
     _addressCtrl.addListener(_onAddressChanged);
     _cityCtrl.addListener(_onAddressPiecesChanged);
     _npaCtrl.addListener(_onAddressPiecesChanged);
-
-    // Round price to nearest 0.05 on blur
     _priceFocus.addListener(() {
       if (!_priceFocus.hasFocus) {
         final raw = _priceCtrl.text.replaceAll(',', '.').trim();
@@ -109,7 +94,7 @@ class _NewListingPageState extends State<NewListingPage> {
         if (v != null && v > 0) {
           final rounded = _roundToNearest005(v);
           _priceCtrl.text = rounded.toStringAsFixed(2);
-          setState(() {}); // refresh UI/validators
+          setState(() {});
         }
       }
     });
@@ -119,13 +104,10 @@ class _NewListingPageState extends State<NewListingPage> {
   void dispose() {
     _hesDebounce?.cancel();
     _addrDebounce?.cancel();
-
     _addressCtrl.removeListener(_onAddressChanged);
     _addressCtrl.dispose();
-
     _cityCtrl.removeListener(_onAddressPiecesChanged);
     _npaCtrl.removeListener(_onAddressPiecesChanged);
-
     _cityCtrl.dispose();
     _npaCtrl.dispose();
     _priceCtrl.dispose();
@@ -133,19 +115,16 @@ class _NewListingPageState extends State<NewListingPage> {
     _roomsCtrl.dispose();
     _floorCtrl.dispose();
     _distTransportCtrl.dispose();
-
     _addressFocus.dispose();
     _priceFocus.dispose();
     super.dispose();
   }
 
-  // ---------- rounding helpers (nearest 0.05) ----------
   double _roundToNearest005(double v) => (v * 20).round() / 20.0;
   bool _isOn005Step(double v) => ((v * 20).roundToDouble() == v * 20);
 
-  // Address suggestions (Nominatim) with debounce
   void _onAddressChanged() {
-    if(_suspendAddrSearch) return;
+    if (_suspendAddrSearch) return;
     _addrDebounce?.cancel();
     _addrDebounce = Timer(const Duration(milliseconds: 350), () async {
       final q = _addressCtrl.text.trim();
@@ -176,7 +155,6 @@ class _NewListingPageState extends State<NewListingPage> {
       _isComputingTransit = true;
     });
     try {
-      // Always refresh coords from current address fields
       final coords = await _geocodeAddress(
         address: address,
         city: city,
@@ -188,15 +166,14 @@ class _NewListingPageState extends State<NewListingPage> {
       final nearest = await _computeNearestSchoolRoadKm(
         lat: _geoLat!,
         lng: _geoLng!,
-        mode: 'driving', // change if you prefer walking/bicycling/transit
+        mode: 'driving',
       );
       setState(() {
-        _proximHesKm = nearest.km; // <-- road distance (km)
+        _proximHesKm = nearest.km;
         _nearestHesId = nearest.id;
         _nearestHesName = nearest.name;
       });
 
-      // compute nearest public transport stop
       try {
         final t = await _computeNearestTransitStop(
           lat: _geoLat!,
@@ -234,8 +211,7 @@ class _NewListingPageState extends State<NewListingPage> {
     try {
       setState(() => _isLoadingAddr = true);
 
-      final url =
-          'https://nominatim.openstreetmap.org/search'
+      final url = 'https://nominatim.openstreetmap.org/search'
           '?format=json'
           '&addressdetails=1'
           '&countrycodes=ch'
@@ -258,15 +234,12 @@ class _NewListingPageState extends State<NewListingPage> {
           .map((e) {
             final m = e as Map<String, dynamic>;
             final addr = (m['address'] as Map?) ?? const {};
-
-            // Prefer structured street fields
             final String? road = (addr['road'] ??
                     addr['pedestrian'] ??
                     addr['footway'] ??
                     addr['residential'] ??
                     addr['path'])
                 ?.toString();
-
             final String? houseNumber = addr['house_number']?.toString();
 
             return _AddressSuggestion(
@@ -308,9 +281,7 @@ class _NewListingPageState extends State<NewListingPage> {
     return cur?.toString();
   }
 
-
   Future<void> _applySuggestion(_AddressSuggestion s) async {
-    // Build the street line from structured fields if possible
     String streetLine = '';
     final road = (s.road ?? '').trim();
     final house = (s.houseNumber ?? '').trim();
@@ -320,7 +291,6 @@ class _NewListingPageState extends State<NewListingPage> {
     } else if (road.isNotEmpty) {
       streetLine = road;
     } else {
-      // fallback to displayName parsing
       final parts = s.displayName.split(',').map((e) => e.trim()).toList();
       if (parts.length >= 2 && RegExp(r'^\d+[A-Za-z]?$').hasMatch(parts.first)) {
         streetLine = '${parts[1]} ${parts.first}';
@@ -329,18 +299,15 @@ class _NewListingPageState extends State<NewListingPage> {
       }
     }
 
-    // Suspend listener to avoid re-triggering suggestions
     _suspendAddrSearch = true;
-    _addrDebounce?.cancel(); // cancel any queued fetch
+    _addrDebounce?.cancel();
 
-    // --- Fill all form fields explicitly ---
     _addressCtrl.text = streetLine;
     _cityCtrl.text = s.city;
     _npaCtrl.text = s.postcode;
     _geoLat = s.lat!;
     _geoLng = s.lon!;
 
-    // Clear suggestion list immediately
     if (mounted) {
       setState(() {
         _addressSuggestions = [];
@@ -348,30 +315,28 @@ class _NewListingPageState extends State<NewListingPage> {
       });
     }
 
-    // Hide keyboard to prevent focus-triggered searches
     _addressFocus.unfocus();
 
-    // Wait a tick before resuming listener
     await Future<void>.delayed(const Duration(milliseconds: 80));
     _suspendAddrSearch = false;
 
-    // Trigger recompute of distances once everything is stable
     _recomputeHesDistanceIfPossible();
   }
 
-  // Image pick
   Future<void> _pickImages() async {
     final picked = await _picker.pickMultiImage(imageQuality: 85);
-    if (picked.isNotEmpty) {
-      setState(() {
-        _images
-          ..clear()
-          ..addAll(picked.map((x) => File(x.path)));
-      });
-    }
+    if (picked.isEmpty) return;
+
+    setState(() {
+      final existing = _images.map((f) => f.path).toSet();
+      for (final x in picked) {
+        if (!existing.contains(x.path)) {
+          _images.add(File(x.path));
+        }
+      }
+    });
   }
 
-  // Geocoding (OpenStreetMap Nominatim)
   Future<({double lat, double lng})> _geocodeAddress({
     required String address,
     required String city,
@@ -407,10 +372,8 @@ class _NewListingPageState extends State<NewListingPage> {
     return (lat: lat, lng: lng);
   }
 
-  // ---- Distance helpers ----
-
   double _haversineKm(double lat1, double lon1, double lat2, double lon2) {
-    const earthRadius = 6371.0; // km
+    const earthRadius = 6371.0;
     final dLat = _toRad(lat2 - lat1);
     final dLon = _toRad(lon2 - lon1);
     final a = math.sin(dLat / 2) * math.sin(dLat / 2) +
@@ -463,8 +426,6 @@ class _NewListingPageState extends State<NewListingPage> {
     return distMeters;
   }
 
-  /// Find nearest school by straight-line (fast), then compute **road** distance via Google Directions.
-  /// Returns (km, id, name).
   Future<({double km, String id, String name})> _computeNearestSchoolRoadKm({
     required double lat,
     required double lng,
@@ -514,12 +475,11 @@ class _NewListingPageState extends State<NewListingPage> {
 
   double _toRad(double degrees) => degrees * math.pi / 180.0;
 
-  // Nearest public transport stop using Overpass API
   Future<({double km, String name})> _computeNearestTransitStop({
     required double lat,
     required double lng,
   }) async {
-    final radii = [500, 1000, 1500, 2500]; // meters
+    final radii = [500, 1000, 1500, 2500];
     for (final r in radii) {
       final query = """
 [out:json][timeout:15];
@@ -577,7 +537,6 @@ out body;
     throw Exception('No public transport stops found within 2.5 km.');
   }
 
-  // Availability pickers
   DateTime get _todayDateOnly {
     final now = DateTime.now();
     return DateTime(now.year, now.month, now.day);
@@ -621,7 +580,6 @@ out body;
     }
   }
 
-  // ===== Helpers for API integration =====
   Future<void> _ensureGeoAndNearestSchool() async {
     if (_geoLat == null || _geoLng == null) {
       final coords = await _geocodeAddress(
@@ -640,13 +598,12 @@ out body;
         lng: _geoLng!,
         mode: 'driving',
       );
-      _proximHesKm = nearest.km; // <-- road distance (km)
+      _proximHesKm = nearest.km;
       _nearestHesId = nearest.id;
       _nearestHesName = nearest.name;
     }
   }
 
-  // EXACT payload required by /estimate-price (all required)
   Map<String, dynamic> _buildExactEstimatePayload() {
     double reqNum(String label, String s, {double? min}) {
       final raw = s.trim();
@@ -683,14 +640,14 @@ out body;
       "num_rooms": reqInt('Number of rooms', _roomsCtrl.text, min: 1),
       "type": _typeOptions[_typeIndex] == 'Single room' ? "room" : "entire_home",
       "is_furnished": _isFurnish,
-      "floor": reqInt('Floor', _floorCtrl.text), // negative allowed if needed
+      "floor": reqInt('Floor', _floorCtrl.text),
       "wifi_incl": _wifiIncl,
       "charges_incl": _chargesIncl,
       "car_park": _carPark,
-      "dist_public_transport_km": _distTransitKm!, // computed only
+      "dist_public_transport_km": _distTransitKm!,
       "proxim_hesso_km": _proximHesKm!,
     };
-    }
+  }
 
   String? _validateForEstimate() {
     if (_addressCtrl.text.trim().isEmpty) return 'Address is required.';
@@ -699,12 +656,10 @@ out body;
     if (_surfaceCtrl.text.trim().isEmpty) return 'Surface (m²) is required.';
     if (_roomsCtrl.text.trim().isEmpty) return 'Number of rooms is required.';
     if (_floorCtrl.text.trim().isEmpty) return 'Floor is required.';
-    // No distance field validation anymore (computed automatically)
     return null;
   }
 
   Future<void> _ensureTransitIfMissing() async {
-    // compute geo + HES first (also ensures coords)
     await _ensureGeoAndNearestSchool();
     if (_distTransitKm == null && _geoLat != null && _geoLng != null) {
       final t = await _computeNearestTransitStop(lat: _geoLat!, lng: _geoLng!);
@@ -753,7 +708,6 @@ out body;
       final Map<String, dynamic> data =
           jsonDecode(resp.body) as Map<String, dynamic>;
 
-      // API returns { predicted_price_chf: number (or string) }
       final raw = data['predicted_price_chf'];
       final parsed = (raw is num)
           ? raw.toDouble()
@@ -762,7 +716,6 @@ out body;
         throw Exception('No valid predicted_price_chf in response.');
       }
 
-      // Round prediction to nearest 0.05
       final rounded = _roundToNearest005(parsed);
 
       if (rounded.isNaN || rounded.isInfinite || rounded < 0) {
@@ -791,10 +744,9 @@ out body;
   void _applyEstimateToPriceField() {
     if (_estimatedPrice == null) return;
     _priceCtrl.text = _estimatedPrice!.toStringAsFixed(2);
-    setState(() {}); // refresh UI/validators
+    setState(() {});
   }
 
-  // POST observation automatically after listing creation (lat, lng, price).
   Future<void> _postObservationOnCreate({
     required String listingId,
     required double price,
@@ -844,18 +796,9 @@ out body;
     }
   }
 
-  // Save flow:
-  // 1) Validate availability
-  // 2) Geocode address -> lat/lng (unless already from suggestion)
-  // 3) Compute nearest school (Google Directions road distance)
-  // 4) Ensure transit distance
-  // 5) Save listing (with availability_start & availability_end)
-  // 6) Upload images
-  // 7) Post observation automatically (lat, lng, price)
   Future<void> _save() async {
     if (!_formKey.currentState!.validate()) return;
 
-    // Validate availability rules
     if (_availStart == null) {
       setState(() => _error = 'Please select an availability start date.');
       return;
@@ -880,7 +823,6 @@ out body;
         throw Exception('User not authenticated');
       }
 
-      // 1) Geocode (only if not provided by a suggestion)
       if (_geoLat == null || _geoLng == null) {
         final coords = await _geocodeAddress(
           address: _addressCtrl.text.trim(),
@@ -891,7 +833,6 @@ out body;
         _geoLng = coords.lng;
       }
 
-      // 2) Nearest school by air, then road distance (id + km + name)
       final nearest = await _computeNearestSchoolRoadKm(
         lat: _geoLat!,
         lng: _geoLng!,
@@ -901,7 +842,6 @@ out body;
       _nearestHesId = nearest.id;
       _nearestHesName = nearest.name;
 
-      // 3) Ensure transit distance computed
       if (_distTransitKm == null) {
         final t = await _computeNearestTransitStop(
           lat: _geoLat!,
@@ -911,25 +851,21 @@ out body;
         _nearestTransitName = t.name;
       }
 
-      // Parsers
       double parseD(String s) => double.parse(s.replaceAll(',', '.'));
       int parseI(String s) => int.parse(s);
 
-      // Enforce required fields
       if (_surfaceCtrl.text.trim().isEmpty ||
           _roomsCtrl.text.trim().isEmpty ||
           _floorCtrl.text.trim().isEmpty) {
         throw Exception('Surface, number of rooms, and floor are required.');
       }
 
-      // Transit distance must now be available
       if (_distTransitKm == null || _distTransitKm! < 0) {
         throw Exception(
           'Distance to public transport is required and must be ≥ 0.',
         );
       }
 
-      // Price must be > 0 and on 0.05 step
       final price = parseD(_priceCtrl.text);
       if (price <= 0) {
         throw Exception('Price must be > 0.');
@@ -938,7 +874,6 @@ out body;
         throw Exception('Price must be multiple of 0.05.');
       }
 
-      // 4) Build Firestore data
       final data = <String, dynamic>{
         'ownerUid': user.uid,
         'price': price,
@@ -955,26 +890,20 @@ out body;
         'wifi_incl': _wifiIncl,
         'charges_incl': _chargesIncl,
         'car_park': _carPark,
-        'dist_public_transport_km': _distTransitKm, // computed only
-        // Auto-computed and stored:
+        'dist_public_transport_km': _distTransitKm,
         'proxim_hesso_km': _proximHesKm,
         'nearest_hesso_id': _nearestHesId,
         'nearest_hesso_name': _nearestHesName,
-
-        // Availability:
         'availability_start': Timestamp.fromDate(_availStart!),
         'availability_end': _noEndDate || _availEnd == null
             ? null
             : Timestamp.fromDate(_availEnd!),
-
         'photos': <String>[],
         'createdAt': Timestamp.now(),
       };
 
-      // 5) Create listing
       final listingId = await _repo.createListing(data);
 
-      // 6) Upload images (optional)
       if (_images.isNotEmpty) {
         final urls = await _repo.uploadListingImages(
           ownerUid: user.uid,
@@ -987,7 +916,6 @@ out body;
             .update({'photos': urls});
       }
 
-      // 7) Send observation automatically (lat, lng, price)
       await _postObservationOnCreate(listingId: listingId, price: price);
 
       if (mounted) {
@@ -1010,7 +938,6 @@ out body;
     }
   }
 
-  // MOON input helper
   Widget _moonInput({
     required TextEditingController controller,
     required String hint,
@@ -1036,7 +963,6 @@ out body;
     );
   }
 
-  // Small helper: image thumb with remove action
   Widget _imageThumb(File f, ColorScheme cs) {
     return Stack(
       children: [
@@ -1115,7 +1041,6 @@ out body;
               (constraints.maxWidth.clamp(360, contentMax)).toDouble();
           final double fieldWidth = isWide ? ((gridWidth - gap) / 2) : gridWidth;
 
-          // Image grid sizes
           final thumbsPerRow = isWide ? 4 : 2;
           final thumbSize = (gridWidth - (thumbsPerRow - 1) * 8) / thumbsPerRow;
 
@@ -1137,7 +1062,6 @@ out body;
                       key: _formKey,
                       child: Column(
                         children: [
-                          // SINGLE unified card (Basics + Amenities + Availability + Distances + Photos + Pricing)
                           _MoonCard(
                             isDark: isDark,
                             child: Column(
@@ -1162,10 +1086,7 @@ out body;
                                     ),
                                   ],
                                 ),
-
                                 const SizedBox(height: 12),
-
-                                // --- BASICS ---
                                 Align(
                                   alignment: Alignment.centerLeft,
                                   child: Text(
@@ -1177,13 +1098,11 @@ out body;
                                   ),
                                 ),
                                 const SizedBox(height: 8),
-
                                 Wrap(
                                   alignment: WrapAlignment.center,
                                   spacing: gap,
                                   runSpacing: gap,
                                   children: [
-                                    // Address + suggestions
                                     SizedBox(
                                       width: fieldWidth,
                                       child: Column(
@@ -1232,20 +1151,13 @@ out body;
                                                 ),
                                                 itemBuilder: (ctx, i) {
                                                   final s = _addressSuggestions[i];
-
-                                                  // Compose the street part we will SHOW in the suggestion
                                                   final road = s.road?.trim() ?? '';
                                                   final house = s.houseNumber?.trim() ?? '';
                                                   final street = [road, house].where((x) => x.isNotEmpty).join(' ').trim();
-
-                                                  // Compose locality: "<postcode> <city>"
                                                   final locality = [
                                                     s.postcode.trim(),
                                                     s.city.trim(),
                                                   ].where((x) => x.isNotEmpty).join(' ').trim();
-
-                                                  // Final full line for the suggestion UI:
-                                                  // Prefer our structured "street, locality", otherwise fall back to display_name.
                                                   final fullLabel = [
                                                     street.isNotEmpty ? street : s.displayName.split(',').first.trim(),
                                                     if (locality.isNotEmpty) locality,
@@ -1259,7 +1171,6 @@ out body;
                                                       maxLines: 1,
                                                       overflow: TextOverflow.ellipsis,
                                                     ),
-                                                    // Optional: show original display_name as context (one line)
                                                     subtitle: Text(
                                                       s.displayName,
                                                       maxLines: 1,
@@ -1353,13 +1264,11 @@ out body;
                                           if (v == null || v.isEmpty) return 'Required';
                                           final n = int.tryParse(v);
                                           if (n == null) return 'Invalid integer';
-                                          return null; // allow negative floors if needed
+                                          return null;
                                         },
                                         textAlign: TextAlign.center,
                                       ),
                                     ),
-
-                                    // Type
                                     SizedBox(
                                       width: gridWidth,
                                       child: Column(
@@ -1419,12 +1328,9 @@ out body;
                                     ),
                                   ],
                                 ),
-
                                 const SizedBox(height: 16),
                                 Divider(color: cs.primary.withOpacity(.1)),
                                 const SizedBox(height: 8),
-
-                                // --- AMENITIES ---
                                 Align(
                                   alignment: Alignment.centerLeft,
                                   child: Text(
@@ -1475,12 +1381,9 @@ out body;
                                     ),
                                   ],
                                 ),
-
                                 const SizedBox(height: 16),
                                 Divider(color: cs.primary.withOpacity(.1)),
                                 const SizedBox(height: 8),
-
-                                // --- AVAILABILITY ---
                                 Align(
                                   alignment: Alignment.centerLeft,
                                   child: Text(
@@ -1563,12 +1466,9 @@ out body;
                                     fontSize: 12,
                                   ),
                                 ),
-
                                 const SizedBox(height: 16),
                                 Divider(color: cs.primary.withOpacity(.1)),
                                 const SizedBox(height: 8),
-
-                                // --- DISTANCES (two separate lines, no input field) ---
                                 Align(
                                   alignment: Alignment.centerLeft,
                                   child: Text(
@@ -1580,7 +1480,6 @@ out body;
                                   ),
                                 ),
                                 const SizedBox(height: 8),
-                                // Line 1: Nearest transit
                                 Row(
                                   mainAxisAlignment: MainAxisAlignment.center,
                                   children: [
@@ -1608,7 +1507,6 @@ out body;
                                   ],
                                 ),
                                 const SizedBox(height: 6),
-                                // Line 2: HES proximity
                                 Row(
                                   mainAxisAlignment: MainAxisAlignment.center,
                                   children: [
@@ -1637,12 +1535,9 @@ out body;
                                     ),
                                   ],
                                 ),
-
                                 const SizedBox(height: 16),
                                 Divider(color: cs.primary.withOpacity(.1)),
                                 const SizedBox(height: 8),
-
-                                // --- PHOTOS (picker + thumbnails) ---
                                 Align(
                                   alignment: Alignment.centerLeft,
                                   child: Text(
@@ -1690,12 +1585,9 @@ out body;
                                       );
                                     },
                                   ),
-
                                 const SizedBox(height: 16),
                                 Divider(color: cs.primary.withOpacity(.1)),
                                 const SizedBox(height: 8),
-
-                                // --- PRICING & ESTIMATION ---
                                 Align(
                                   alignment: Alignment.centerLeft,
                                   child: Text(
@@ -1707,8 +1599,6 @@ out body;
                                   ),
                                 ),
                                 const SizedBox(height: 8),
-
-                                // Price field same width as others
                                 SizedBox(
                                   width: fieldWidth,
                                   child: Row(
@@ -1805,9 +1695,7 @@ out body;
                               ],
                             ),
                           ),
-
                           const SizedBox(height: 16),
-
                           if (_error != null)
                             Text(
                               _error!,
@@ -1817,9 +1705,7 @@ out body;
                                 fontWeight: FontWeight.w700,
                               ),
                             ),
-
                           const SizedBox(height: 4),
-
                           MoonFilledButton(
                             isFullWidth: true,
                             onTap: _saving ? null : _save,
@@ -1832,7 +1718,6 @@ out body;
                                 : const Icon(MoonIcons.arrows_boost_24_regular),
                             label: Text(_saving ? 'Saving…' : 'Save listing'),
                           ),
-
                           const SizedBox(height: 24),
                         ],
                       ),
@@ -1848,7 +1733,6 @@ out body;
   }
 }
 
-// Card container
 class _MoonCard extends StatelessWidget {
   final Widget child;
   final bool isDark;
@@ -1917,7 +1801,6 @@ class _AddressSuggestion {
   final String postcode;
   final String? road;
   final String? houseNumber;
-
 
   const _AddressSuggestion({
     required this.displayName,
