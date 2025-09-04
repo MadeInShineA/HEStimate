@@ -21,6 +21,10 @@ class _RegisterPageState extends State<RegisterPage> {
   bool _isLoading = false;
   bool _obscurePw = true;
 
+  // NEW: loading + error for schools
+  bool _isLoadingSchools = false;
+  String? _schoolsError;
+
   String? _selectedSchool;
   List<String> _schools = [];
 
@@ -33,14 +37,39 @@ class _RegisterPageState extends State<RegisterPage> {
   }
 
   Future<void> _fetchSchools() async {
+    setState(() {
+      _isLoadingSchools = true;
+      _schoolsError = null;
+    });
     try {
       final snapshot =
           await FirebaseFirestore.instance.collection('schools').get();
+
+      final names = snapshot.docs
+          .map((doc) => (doc.data()['name'] as String?)?.trim())
+          .whereType<String>()
+          .where((s) => s.isNotEmpty)
+          .toList()
+        ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+
       setState(() {
-        _schools = snapshot.docs.map((doc) => doc['name'] as String).toList();
+        _schools = names;
+        // Ensure current value is present in items, otherwise clear it
+        if (_selectedSchool != null && !_schools.contains(_selectedSchool)) {
+          _selectedSchool = null;
+        }
       });
     } catch (e) {
       debugPrint("Error fetching schools: $e");
+      setState(() {
+        _schoolsError = 'Could not load schools. Please try again.';
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoadingSchools = false;
+        });
+      }
     }
   }
 
@@ -58,6 +87,12 @@ class _RegisterPageState extends State<RegisterPage> {
     if (form == null) return;
     if (!form.validate()) return;
 
+    // Prevent proceeding if student has not selected a school
+    if (_role == 'student' && (_selectedSchool == null || _selectedSchool!.isEmpty)) {
+      _showError('Please select your school.');
+      return;
+    }
+
     setState(() => _isLoading = true);
     try {
       final userCred =
@@ -73,7 +108,7 @@ class _RegisterPageState extends State<RegisterPage> {
           'email': _emailCtrl.text.trim(),
           'role': _role,
           'school': _role == "student" ? _selectedSchool : null,
-          'faceIdEnabled': false, // Par défaut désactivé
+          'faceIdEnabled': false, // default disabled
           'createdAt': FieldValue.serverTimestamp(),
         });
       }
@@ -147,7 +182,8 @@ class _RegisterPageState extends State<RegisterPage> {
           selectedSegmentColor: primary,
           selectedTextColor: Colors.white,
           segmentBorderRadius: BorderRadius.circular(12),
-          segmentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          segmentPadding:
+              const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         ),
       ),
       Segment(
@@ -156,7 +192,8 @@ class _RegisterPageState extends State<RegisterPage> {
           selectedSegmentColor: primary,
           selectedTextColor: Colors.white,
           segmentBorderRadius: BorderRadius.circular(12),
-          segmentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          segmentPadding:
+              const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         ),
       ),
     ];
@@ -214,7 +251,9 @@ class _RegisterPageState extends State<RegisterPage> {
                           final v = value?.trim() ?? '';
                           if (v.isEmpty) return 'Email is required';
                           final emailRx = RegExp(r'^[^@]+@[^@]+\.[^@]+$');
-                          if (!emailRx.hasMatch(v)) return 'Enter a valid email';
+                          if (!emailRx.hasMatch(v)) {
+                            return 'Enter a valid email';
+                          }
                           return null;
                         },
                       ),
@@ -230,7 +269,9 @@ class _RegisterPageState extends State<RegisterPage> {
                           onPressed: () =>
                               setState(() => _obscurePw = !_obscurePw),
                           icon: Icon(
-                            _obscurePw ? Icons.visibility : Icons.visibility_off,
+                            _obscurePw
+                                ? Icons.visibility
+                                : Icons.visibility_off,
                           ),
                         ),
                         controller: _passwordCtrl,
@@ -262,6 +303,7 @@ class _RegisterPageState extends State<RegisterPage> {
                       ),
                       const SizedBox(height: 16),
 
+                      // Role selector
                       SizedBox(
                         width: double.infinity,
                         height: 48,
@@ -285,38 +327,93 @@ class _RegisterPageState extends State<RegisterPage> {
                       ),
                       const SizedBox(height: 16),
 
-                      // Select school if Student
+                      // Student -> school selection with proper states
                       AnimatedSwitcher(
                         duration: const Duration(milliseconds: 200),
-                        child: _role == "student"
-                            ? DropdownButtonFormField<String>(
-                                key: const ValueKey("dropdown"),
-                                value: _selectedSchool,
-                                items: _schools
-                                    .map(
-                                      (s) => DropdownMenuItem(
-                                        value: s,
-                                        child: Text(s),
-                                      ),
-                                    )
-                                    .toList(),
-                                onChanged: (val) => setState(() {
-                                  _selectedSchool = val;
-                                }),
-                                decoration: const InputDecoration(
-                                  border: OutlineInputBorder(),
-                                  labelText: "Select your school",
-                                ),
-                                validator: (val) {
-                                  if (_role == "student" && (val == null || val.isEmpty)) {
-                                    return "School is required";
-                                  }
-                                  return null;
-                                },
-                              )
-                            : const SizedBox(
+                        child: _role != "student"
+                            ? const SizedBox(
                                 key: ValueKey("empty"),
                                 height: 60,
+                              )
+                            : Column(
+                                key: const ValueKey("student"),
+                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                children: [
+                                  if (_isLoadingSchools) ...[
+                                    const Center(
+                                      child: Padding(
+                                        padding:
+                                            EdgeInsets.symmetric(vertical: 12),
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                        ),
+                                      ),
+                                    ),
+                                  ] else if (_schoolsError != null) ...[
+                                    MoonErrorMessage(
+                                      errorText: _schoolsError!,
+                                    ),
+                                    const SizedBox(height: 8),
+                                    Align(
+                                      alignment: Alignment.centerLeft,
+                                      child: MoonTextButton(
+                                        onTap: _fetchSchools,
+                                        label: const Text('Retry'),
+                                      ),
+                                    ),
+                                  ] else if (_schools.isEmpty) ...[
+                                    const Text(
+                                      'No schools available yet. Please contact support or try again later.',
+                                      textAlign: TextAlign.left,
+                                    ),
+                                    const SizedBox(height: 8),
+                                    Align(
+                                      alignment: Alignment.centerLeft,
+                                      child: MoonTextButton(
+                                        onTap: _fetchSchools,
+                                        label: const Text('Refresh list'),
+                                      ),
+                                    ),
+                                  ] else ...[
+                                    DropdownButtonFormField<String>(
+                                      key: const ValueKey("dropdown"),
+                                      value: _selectedSchool,
+                                      isExpanded: true, // better on tablets
+                                      menuMaxHeight: 320,
+                                      hint: const Text('Select your school'),
+                                      items: _schools
+                                          .map(
+                                            (s) => DropdownMenuItem(
+                                              value: s,
+                                              child: Text(
+                                                s,
+                                                overflow: TextOverflow.ellipsis,
+                                              ),
+                                            ),
+                                          )
+                                          .toList(),
+                                      onChanged: (_isLoadingSchools ||
+                                              _schools.isEmpty)
+                                          ? null
+                                          : (val) => setState(() {
+                                                _selectedSchool = val;
+                                              }),
+                                      decoration: const InputDecoration(
+                                        border: OutlineInputBorder(),
+                                        labelText: "School",
+                                      ),
+                                      validator: (val) {
+                                        if (_role == "student" &&
+                                            (_schoolsError == null) &&
+                                            _schools.isNotEmpty &&
+                                            (val == null || val.isEmpty)) {
+                                          return "School is required";
+                                        }
+                                        return null;
+                                      },
+                                    ),
+                                  ],
+                                ],
                               ),
                       ),
                       const SizedBox(height: 20),

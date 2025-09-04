@@ -485,24 +485,39 @@ class _ProfilePageState extends State<ProfilePage> {
 
   Widget _buildUserInfo() {
     return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+      crossAxisAlignment: CrossAxisAlignment.center, // Centrer horizontalement
       children: [
-        Text('Full Name: ${_userData?['name'] ?? ''}',
-            style: Theme.of(context).textTheme.titleMedium),
+        Text(
+          'Full Name: ${_userData?['name'] ?? ''}',
+          style: Theme.of(context).textTheme.titleMedium,
+          textAlign: TextAlign.center, // Optionnel
+        ),
         const SizedBox(height: 8),
-        Text('Email: ${_user?.email ?? ''}',
-            style: Theme.of(context).textTheme.titleMedium),
+        Text(
+          'Email: ${_user?.email ?? ''}',
+          style: Theme.of(context).textTheme.titleMedium,
+          textAlign: TextAlign.center,
+        ),
         const SizedBox(height: 8),
-        Text('Role: ${_userData?['role'] ?? 'homeowner'}',
-            style: Theme.of(context).textTheme.titleMedium),
+        Text(
+          'Role: ${_userData?['role'] ?? 'homeowner'}',
+          style: Theme.of(context).textTheme.titleMedium,
+          textAlign: TextAlign.center,
+        ),
         if (_userData?['role'] == 'student') ...[
           const SizedBox(height: 8),
-          Text('School: ${_userData?['school'] ?? ''}',
-              style: Theme.of(context).textTheme.titleMedium),
+          Text(
+            'School: ${_userData?['school'] ?? ''}',
+            style: Theme.of(context).textTheme.titleMedium,
+            textAlign: TextAlign.center,
+          ),
         ],
         const SizedBox(height: 8),
-        Text('Face ID: ${_userData?['faceIdEnabled'] == true ? 'Enabled' : 'Disabled'}',
-            style: Theme.of(context).textTheme.titleMedium),
+        Text(
+          'Face ID: ${_userData?['faceIdEnabled'] == true ? 'Enabled' : 'Disabled'}',
+          style: Theme.of(context).textTheme.titleMedium,
+          textAlign: TextAlign.center,
+        ),
       ],
     );
   }

@@ -14,12 +14,350 @@ import 'rate_listing_page.dart';
 
 import 'rate_listing_page.dart';
 import 'edit_listing_page.dart';
+import 'package:cached_network_image/cached_network_image.dart';
+import 'package:shimmer/shimmer.dart';
+import 'package:photo_view/photo_view_gallery.dart';
+import 'package:photo_view/photo_view.dart'; // ⬅️ needed for HeroAttributes & ComputedScale
 // import 'rate_listing_page.dart'; // Add this import for RateListingPage
+import 'package:firebase_storage/firebase_storage.dart' as fstorage;
 
 // Clé Google (Directions + Places)
 final _googleMapsApiKey = dotenv.env['GOOGLE_API_KEY'] ?? '';
 
 const _hesCollection = 'schools';
+
+class ListingPhotoCarousel extends StatefulWidget {
+  final List<String> imageUrls;
+  final double aspectRatio;
+  final BorderRadius? borderRadius;
+
+  const ListingPhotoCarousel({
+    super.key,
+    required this.imageUrls,
+    this.aspectRatio = 16 / 9,
+    this.borderRadius,
+  });
+
+  @override
+  State<ListingPhotoCarousel> createState() => _ListingPhotoCarouselState();
+}
+
+class _ListingPhotoCarouselState extends State<ListingPhotoCarousel> {
+  final _ctrl = PageController(viewportFraction: .92);
+  int _index = 0;
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final radius = widget.borderRadius ?? BorderRadius.circular(16);
+
+    if (widget.imageUrls.isEmpty) {
+      return _EmptyImage(radius: radius);
+    }
+
+    return Column(
+      children: [
+        AspectRatio(
+          aspectRatio: widget.aspectRatio,
+          child: PageView.builder(
+            controller: _ctrl,
+            itemCount: widget.imageUrls.length,
+            onPageChanged: (i) => setState(() => _index = i),
+            physics: const BouncingScrollPhysics(),
+            itemBuilder: (_, i) {
+              final url = widget.imageUrls[i];
+              return AnimatedPadding(
+                duration: const Duration(milliseconds: 180),
+                padding: EdgeInsets.symmetric(horizontal: i == _index ? 4 : 10),
+                child: _ImageCard(
+                  url: url,
+                  radius: radius,
+                  onTap: () => _openGallery(context, startIndex: i),
+                ),
+              );
+            },
+          ),
+        ),
+        const SizedBox(height: 8),
+        _Dots(count: widget.imageUrls.length, index: _index, color: cs.primary),
+        const SizedBox(height: 4),
+        if (widget.imageUrls.length > 1)
+          Text(
+            '${_index + 1}/${widget.imageUrls.length}',
+            style: TextStyle(
+              color: Theme.of(context).colorScheme.onSurface.withOpacity(.6),
+              fontSize: 12,
+            ),
+          ),
+      ],
+    );
+  }
+
+  void _openGallery(BuildContext context, {required int startIndex}) {
+    Navigator.of(context).push(
+      PageRouteBuilder(
+        opaque: true,
+        pageBuilder: (_, __, ___) => _FullscreenGallery(
+          imageUrls: widget.imageUrls,
+          initialIndex: startIndex,
+        ),
+        transitionDuration: const Duration(milliseconds: 220),
+        reverseTransitionDuration: const Duration(milliseconds: 180),
+      ),
+    );
+  }
+}
+
+class _ImageCard extends StatelessWidget {
+  final String url;
+  final BorderRadius radius;
+  final VoidCallback onTap;
+  final double aspectRatio;
+
+  const _ImageCard({
+    required this.url,
+    required this.radius,
+    required this.onTap,
+    this.aspectRatio = 16 / 9,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    // Target a stable bucket width to maximize CDN/device cache reuse.
+    final deviceW = MediaQuery.of(context).size.width;
+    final dpr = MediaQuery.of(context).devicePixelRatio;
+    final renderW = (deviceW * 0.92 * dpr).clamp(360.0, 1280.0).round();
+
+    return GestureDetector(
+      onTap: onTap,
+      child: Hero(
+        tag: 'photo_$url',
+        child: ClipRRect(
+          borderRadius: radius,
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              // Use Image.network directly — fastest path in Flutter.
+              // cacheWidth helps the engine decode to the right size.
+              Image.network(
+                sizedUrlBucketed(url, renderW), // see helper below
+                fit: BoxFit.cover,
+                cacheWidth: renderW, // key for perf
+                gaplessPlayback: true, // avoid flicker when rebuilding
+                filterQuality: FilterQuality.low, // cheaper scaling
+                // no fadeIn, no shimmer
+                loadingBuilder: (ctx, child, prog) {
+                  if (prog == null) return child;
+                  return Container(color: Theme.of(ctx).cardColor); // static
+                },
+                errorBuilder: (_, __, ___) =>
+                    const ColoredBox(color: Color(0x11000000)),
+              ),
+              // keep ultra-light scrim (cheap)
+              Positioned.fill(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.bottomCenter,
+                      end: Alignment.topCenter,
+                      colors: [Colors.black12, Colors.transparent],
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// Use width BUCKETS so the same URLs are reused & cached.
+String sizedUrlBucketed(String url, int renderW) {
+  // Choose from buckets; tune as needed.
+  const buckets = [480, 720, 1080, 1440];
+  int w = buckets.first;
+  for (final b in buckets) {
+    if (renderW <= b) {
+      w = b;
+      break;
+    }
+    w = b;
+  }
+  // If your URLs don’t support params, just return url.
+  if (!url.contains('http')) return url;
+  return url.contains('?') ? '$url&w=$w' : '$url?w=$w';
+}
+
+class _Dots extends StatelessWidget {
+  final int count;
+  final int index;
+  final Color color;
+
+  const _Dots({required this.count, required this.index, required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return Wrap(
+      spacing: 6,
+      children: List.generate(count, (i) {
+        final active = i == index;
+        return AnimatedContainer(
+          duration: const Duration(milliseconds: 180),
+          width: active ? 18 : 8,
+          height: 8,
+          decoration: BoxDecoration(
+            color: active ? color.withOpacity(.9) : color.withOpacity(.25),
+            borderRadius: BorderRadius.circular(999),
+          ),
+        );
+      }),
+    );
+  }
+}
+
+class _ShimmerPlaceholder extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return Shimmer.fromColors(
+      baseColor: Theme.of(context).colorScheme.surfaceVariant.withOpacity(.4),
+      highlightColor: Colors.white.withOpacity(.35),
+      child: Container(color: Theme.of(context).cardColor),
+    );
+  }
+}
+
+class _ErrorImage extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Container(
+      color: cs.surfaceVariant.withOpacity(.4),
+      child: Center(
+        child: Icon(Icons.broken_image_outlined, color: cs.onSurface),
+      ),
+    );
+  }
+}
+
+class _EmptyImage extends StatelessWidget {
+  final BorderRadius radius;
+  const _EmptyImage({required this.radius});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Container(
+      decoration: BoxDecoration(
+        borderRadius: radius,
+        color: cs.surfaceVariant.withOpacity(.35),
+        border: Border.all(color: cs.primary.withOpacity(.12)),
+      ),
+      child: Center(
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.image_outlined, size: 18),
+            const SizedBox(width: 8),
+            Text(
+              'No photos yet',
+              style: TextStyle(color: cs.onSurface.withOpacity(.8)),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _FullscreenGallery extends StatefulWidget {
+  final List<String> imageUrls;
+  final int initialIndex;
+  const _FullscreenGallery({
+    required this.imageUrls,
+    required this.initialIndex,
+  });
+
+  @override
+  State<_FullscreenGallery> createState() => _FullscreenGalleryState();
+}
+
+class _FullscreenGalleryState extends State<_FullscreenGallery> {
+  late int _current = widget.initialIndex;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: Stack(
+        children: [
+          PhotoViewGallery.builder(
+            pageController: PageController(initialPage: widget.initialIndex),
+            itemCount: widget.imageUrls.length,
+            builder: (_, i) {
+              final url = widget.imageUrls[i];
+              return PhotoViewGalleryPageOptions(
+                heroAttributes: PhotoViewHeroAttributes(tag: 'photo_$url'),
+                imageProvider: CachedNetworkImageProvider(url),
+                minScale: PhotoViewComputedScale.contained,
+                maxScale: PhotoViewComputedScale.covered * 3.0,
+              );
+            },
+            onPageChanged: (i) => setState(() => _current = i),
+            backgroundDecoration: const BoxDecoration(color: Colors.black),
+          ),
+
+          // ⬇️ Close button overlay
+          SafeArea(
+            child: Align(
+              alignment: Alignment.topRight,
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: IconButton(
+                  icon: const Icon(Icons.close),
+                  iconSize: 26,
+                  color: Colors.white,
+                  tooltip: 'Close',
+                  onPressed: () => Navigator.of(context).pop(),
+                  style: ButtonStyle(
+                    backgroundColor: WidgetStateProperty.all(Colors.black54),
+                    shape: WidgetStateProperty.all(
+                      const CircleBorder(),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+
+          // (optional) small counter at top-left
+          SafeArea(
+            child: Align(
+              alignment: Alignment.topLeft,
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Text(
+                  '${_current + 1}/${widget.imageUrls.length}',
+                  style: const TextStyle(
+                    color: Colors.white70,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
 
 class ViewListingPage extends StatefulWidget {
   final String listingId;
@@ -137,6 +475,97 @@ class _ViewListingPageState extends State<ViewListingPage> {
   bool get _useStudentSchoolAsDestination =>
       _isStudent && (_userSchool != null && _userSchool!.trim().isNotEmpty);
 
+  Future<void> _confirmAndDelete() async {
+    if (!_isOwner) return;
+    final cs = Theme.of(context).colorScheme;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Delete listing ?'),
+        content: const Text(
+          'This action is irreversible. The photos, favorites, and reviews associated with this account will be deleted.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(backgroundColor: cs.error),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const Center(child: CircularProgressIndicator()),
+    );
+
+    String? err;
+    try {
+      await _deleteListingAndAssets(widget.listingId);
+    } catch (e) {
+      err = e.toString();
+    } finally {
+      if (mounted) Navigator.of(context).pop(); // close loader
+    }
+
+    if (!mounted) return;
+    if (err != null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error deleting listing: $err')),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Listing deleted.')),
+      );
+      Navigator.of(context).maybePop();
+    }
+  }
+
+  Future<void> _deleteListingAndAssets(String listingId) async {
+    // Supprimer les photos depuis Firebase Storage (si URL compatible)
+    for (final url in _photos) {
+      final u = url.trim();
+      if (u.isEmpty) continue;
+      try {
+        final ref = fstorage.FirebaseStorage.instance.refFromURL(u);
+        await ref.delete();
+      } catch (_) {
+        // ignore: l’URL n’est peut-être pas une URL Storage ou déjà supprimée
+      }
+    }
+
+    // Supprimer les favoris liés
+    final favs = await FirebaseFirestore.instance
+        .collection('favorites')
+        .where('listingId', isEqualTo: listingId)
+        .get();
+    for (final d in favs.docs) {
+      try {
+        await d.reference.delete();
+      } catch (_) {}
+    }
+
+    // Supprimer les avis liés
+    final reviews = await FirebaseFirestore.instance
+        .collection('listing_reviews')
+        .where('listingId', isEqualTo: listingId)
+        .get();
+    for (final d in reviews.docs) {
+      try {
+        await d.reference.delete();
+      } catch (_) {}
+    }
+
+    // Supprimer le document de l’annonce
+    await FirebaseFirestore.instance
+        .collection('listings')
+        .doc(listingId)
+        .delete();
+  }
   Future<void> _loadMyExistingReviewIfAny() async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
@@ -1091,76 +1520,92 @@ class _ViewListingPageState extends State<ViewListingPage> {
     );
   }
 
-Widget _buildHomeownerRatingSection(BuildContext context) {
-  return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-    stream: FirebaseFirestore.instance
-        .collection('listings')
-        .where('ownerUid', isEqualTo: _ownerUid)
-        .snapshots(),
-    builder: (context, listingsSnapshot) {
-      if (!listingsSnapshot.hasData) {
-        return const SizedBox.shrink();
-      }
+  Widget _buildHomeownerRatingSection(BuildContext context) {
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: FirebaseFirestore.instance
+          .collection('listings')
+          .where('ownerUid', isEqualTo: _ownerUid)
+          .snapshots(),
+      builder: (context, listingsSnapshot) {
+        if (!listingsSnapshot.hasData) {
+          return const SizedBox.shrink();
+        }
 
-      final ownerListingIds = listingsSnapshot.data!.docs
-          .map((doc) => doc.id)
-          .toList();
+        final ownerListingIds = listingsSnapshot.data!.docs
+            .map((doc) => doc.id)
+            .toList();
 
-      if (ownerListingIds.isEmpty) {
-        return const SizedBox.shrink();
-      }
+        if (ownerListingIds.isEmpty) {
+          return const SizedBox.shrink();
+        }
 
-      // Handle Firestore's 30-item limit for 'whereIn' queries
-      return FutureBuilder<Map<String, dynamic>>(
-        future: _getOwnerRatings(ownerListingIds),
-        builder: (context, ratingsSnapshot) {
-          if (!ratingsSnapshot.hasData) {
-            return _buildHomeownerRatingCard(context, 0, 0, ownerListingIds.length, isLoading: true);
-          }
+        // Handle Firestore's 30-item limit for 'whereIn' queries
+        return FutureBuilder<Map<String, dynamic>>(
+          future: _getOwnerRatings(ownerListingIds),
+          builder: (context, ratingsSnapshot) {
+            if (!ratingsSnapshot.hasData) {
+              return _buildHomeownerRatingCard(
+                context,
+                0,
+                0,
+                ownerListingIds.length,
+                isLoading: true,
+              );
+            }
 
-          final data = ratingsSnapshot.data!;
-          final overallAvg = data['average'] as double;
-          final totalReviews = data['count'] as int;
+            final data = ratingsSnapshot.data!;
+            final overallAvg = data['average'] as double;
+            final totalReviews = data['count'] as int;
 
-          return _buildHomeownerRatingCard(context, overallAvg, totalReviews, ownerListingIds.length);
-        },
-      );
-    },
-  );
-}
-
-Future<Map<String, dynamic>> _getOwnerRatings(List<String> ownerListingIds) async {
-  double totalSum = 0;
-  int totalCount = 0;
-
-  // Split listing IDs into chunks of 30 to handle Firestore's limit
-  for (int i = 0; i < ownerListingIds.length; i += 30) {
-    final chunk = ownerListingIds.sublist(
-      i, 
-      math.min(i + 30, ownerListingIds.length)
+            return _buildHomeownerRatingCard(
+              context,
+              overallAvg,
+              totalReviews,
+              ownerListingIds.length,
+            );
+          },
+        );
+      },
     );
-
-    final querySnapshot = await FirebaseFirestore.instance
-        .collection('listing_reviews')
-        .where('listingId', whereIn: chunk)
-        .get();
-
-    for (final doc in querySnapshot.docs) {
-      final rating = (doc.data()['rating'] as num?)?.toDouble() ?? 0.0;
-      totalSum += rating;
-      totalCount++;
-    }
   }
 
-  final average = totalCount > 0 ? totalSum / totalCount : 0.0;
+  Future<Map<String, dynamic>> _getOwnerRatings(
+    List<String> ownerListingIds,
+  ) async {
+    double totalSum = 0;
+    int totalCount = 0;
 
-  return {
-    'average': average,
-    'count': totalCount,
-  };
-}
+    // Split listing IDs into chunks of 30 to handle Firestore's limit
+    for (int i = 0; i < ownerListingIds.length; i += 30) {
+      final chunk = ownerListingIds.sublist(
+        i,
+        math.min(i + 30, ownerListingIds.length),
+      );
 
-  Widget _buildHomeownerRatingCard(BuildContext context, double overallAvg, int totalReviews, int totalListings, {bool isLoading = false}) {
+      final querySnapshot = await FirebaseFirestore.instance
+          .collection('listing_reviews')
+          .where('listingId', whereIn: chunk)
+          .get();
+
+      for (final doc in querySnapshot.docs) {
+        final rating = (doc.data()['rating'] as num?)?.toDouble() ?? 0.0;
+        totalSum += rating;
+        totalCount++;
+      }
+    }
+
+    final average = totalCount > 0 ? totalSum / totalCount : 0.0;
+
+    return {'average': average, 'count': totalCount};
+  }
+
+  Widget _buildHomeownerRatingCard(
+    BuildContext context,
+    double overallAvg,
+    int totalReviews,
+    int totalListings, {
+    bool isLoading = false,
+  }) {
     final cs = Theme.of(context).colorScheme;
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
@@ -1263,11 +1708,7 @@ Future<Map<String, dynamic>> _getOwnerRatings(List<String> ownerListingIds) asyn
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Icon(
-                    Icons.star_rounded,
-                    color: cs.primary,
-                    size: 24,
-                  ),
+                  Icon(Icons.star_rounded, color: cs.primary, size: 24),
                   const SizedBox(width: 12),
                   Expanded(
                     child: Column(
@@ -1294,8 +1735,12 @@ Future<Map<String, dynamic>> _getOwnerRatings(List<String> ownerListingIds) asyn
                             ...List.generate(5, (i) {
                               final idx = i + 1;
                               final filled = idx <= overallAvg.round();
-                              final icon = filled ? Icons.star_rounded : Icons.star_border_rounded;
-                              final color = filled ? cs.primary : cs.onSurface.withOpacity(.35);
+                              final icon = filled
+                                  ? Icons.star_rounded
+                                  : Icons.star_border_rounded;
+                              final color = filled
+                                  ? cs.primary
+                                  : cs.onSurface.withOpacity(.35);
                               return Icon(icon, size: 20, color: color);
                             }),
                           ],
@@ -1322,7 +1767,9 @@ Future<Map<String, dynamic>> _getOwnerRatings(List<String> ownerListingIds) asyn
   Widget _buildRatingsPreview(BuildContext context) {
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
       stream: FirebaseFirestore.instance
-          .collection('listing_reviews') // Changez 'ratings' en 'listing_reviews'
+          .collection(
+            'listing_reviews',
+          ) // Changez 'ratings' en 'listing_reviews'
           .where('listingId', isEqualTo: widget.listingId)
           .snapshots(),
       builder: (context, snap) {
@@ -1334,7 +1781,10 @@ Future<Map<String, dynamic>> _getOwnerRatings(List<String> ownerListingIds) asyn
           if (count > 0) {
             final sum = docs.fold<double>(
               0.0,
-              (acc, d) => acc + ((d.data()['rating'] as num?)?.toDouble() ?? 0.0), // Changez 'stars' en 'rating'
+              (acc, d) =>
+                  acc +
+                  ((d.data()['rating'] as num?)?.toDouble() ??
+                      0.0), // Changez 'stars' en 'rating'
             );
             avg = sum / count;
           }
@@ -1343,9 +1793,9 @@ Future<Map<String, dynamic>> _getOwnerRatings(List<String> ownerListingIds) asyn
           onTap: () {
             Navigator.of(context).push(
               MaterialPageRoute(
-                  builder: (_) => RateListingPage(
+                builder: (_) => RateListingPage(
                   listingId: widget.listingId,
-                  allowAdd: false, 
+                  allowAdd: false,
                 ),
               ),
             );
@@ -1741,13 +2191,20 @@ Future<Map<String, dynamic>> _getOwnerRatings(List<String> ownerListingIds) asyn
           },
         ),
         actions: [
+          if (!_loading && _isOwner)
+            IconButton(
+              tooltip: 'Delete',
+              onPressed: _confirmAndDelete,
+              icon: const Icon(Icons.delete_outline),
+            ),
           // Bouton favori (live)
+
           StreamBuilder<bool>(
             stream: _favStream,
             builder: (context, snap) {
               final isFav = snap.data ?? false;
               return IconButton(
-                tooltip: isFav ? 'Retirer des favoris' : 'Ajouter aux favoris',
+                tooltip: isFav ? 'Remove from favorites' : 'Add to favorites',
                 icon: Icon(isFav ? Icons.favorite : Icons.favorite_border),
                 color: isFav ? Colors.redAccent : null,
                 onPressed: _toggleFavorite,
@@ -1807,74 +2264,26 @@ Future<Map<String, dynamic>> _getOwnerRatings(List<String> ownerListingIds) asyn
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.stretch,
                           children: [
-                            // Photos
-                            _MoonCard(
-                              isDark: isDark,
-                              child: _photos.isEmpty
-                                  ? Container(
-                                      height: 180,
-                                      alignment: Alignment.center,
-                                      child: Text(
-                                        'No photos',
-                                        style: TextStyle(
-                                          color: cs.onSurface.withOpacity(.7),
-                                        ),
-                                      ),
-                                    )
-                                  : SizedBox(
-                                      height: 220,
-                                      child: PageView.builder(
-                                        controller: _photoCtrl,
-                                        padEnds: false,
-                                        itemCount: _photos.length,
-                                        itemBuilder: (_, i) {
-                                          return Padding(
-                                            padding: const EdgeInsets.symmetric(
-                                              horizontal: 6,
-                                            ),
-                                            child: ClipRRect(
-                                              borderRadius:
-                                                  BorderRadius.circular(14),
-                                              child: Stack(
-                                                fit: StackFit.expand,
-                                                children: [
-                                                  Image.network(
-                                                    _photos[i],
-                                                    fit: BoxFit.cover,
-                                                  ),
-                                                  Positioned(
-                                                    right: 8,
-                                                    bottom: 8,
-                                                    child: Container(
-                                                      padding:
-                                                          const EdgeInsets.symmetric(
-                                                            horizontal: 8,
-                                                            vertical: 4,
-                                                          ),
-                                                      decoration: BoxDecoration(
-                                                        color: Colors.black54,
-                                                        borderRadius:
-                                                            BorderRadius.circular(
-                                                              12,
-                                                            ),
-                                                      ),
-                                                      child: Text(
-                                                        '${i + 1}/${_photos.length}',
-                                                        style: const TextStyle(
-                                                          color: Colors.white,
-                                                          fontSize: 12,
-                                                        ),
-                                                      ),
-                                                    ),
-                                                  ),
-                                                ],
-                                              ),
-                                            ),
-                                          );
-                                        },
-                                      ),
+                            // Photos (edge-to-edge, before first card)
+                            if (_photos.isNotEmpty) ...[
+                              ListingPhotoCarousel(
+                                imageUrls: _photos,
+                              ), // uses your existing _photos list
+                              const SizedBox(height: 16),
+                            ] else
+                              _MoonCard(
+                                isDark: isDark,
+                                child: Container(
+                                  height: 180,
+                                  alignment: Alignment.center,
+                                  child: Text(
+                                    'No photos',
+                                    style: TextStyle(
+                                      color: cs.onSurface.withOpacity(.7),
                                     ),
-                            ),
+                                  ),
+                                ),
+                              ),
 
                             const SizedBox(height: 16),
 
