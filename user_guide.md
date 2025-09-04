@@ -13,7 +13,7 @@
 - **Login & Face ID:** Use email/password or set up optional Face ID for quick login.  
 - **Profile Page:** View your info, manage Face ID, toggle dark mode, or log out.  
 
-![login](assets/guides/login.png)
+<img src="assets/guides/login.png" alt="login" width="400"/>
 
 ---
 
@@ -30,7 +30,7 @@ When you open the app, you can start **browsing available properties** right awa
 
 Listings are displayed in a scrollable grid with photos, price, and quick info.
 
-![all properties](assets/guides/all_properties.png)
+<img src="assets/guides/all_properties.png" alt="all properties" width="800"/>
 
 ---
 
@@ -46,7 +46,7 @@ On a property’s detail page, you’ll find:
 - **Ratings** from previous students.  
 - **Favorite Button** to save the listing for later.  
 
-![property](assets/guides/property.png)
+<img src="assets/guides/property.png" alt="property" width="800"/>
 
 ---
 
@@ -62,7 +62,7 @@ Owners can create a new listing by providing:
 - **Pricing** with a smart “Estimate” button to suggest a fair rent.  
 - **Save Listing** to publish for students to browse.  
 
-![my properties](assets/guides/my_properties.png)
+<img src="assets/guides/my_properties.png" alt="my properties" width="800"/>
 
 ---
 
@@ -74,7 +74,7 @@ In the **Manage** section, owners see three tabs:
 2. **Students:** Current or upcoming tenants with contact options (email, phone, SMS).  
 3. **Reviews:** Past stays awaiting reviews, where owners can rate students.  
 
-![owner managment](assets/guides/owner_managment.png)
+<img src="assets/guides/owner_managment.png" alt="owner managment" width="800"/>
 
 ---
 
@@ -88,7 +88,7 @@ Students can:
 - **Send Request** which goes to the owner for approval.  
 - **Confirmation:** Request status updates to approved or rejected.  
 
-![booking](assets/guides/booking.png)
+<img src="assets/guides/booking.png" alt="booking" width="800"/>
 
 ---
 
@@ -98,7 +98,7 @@ Students can:
 - **Current Stays:** See details and owner contact info.  
 - **Past Stays:** Leave reviews for properties you stayed in.  
 
-![my_bookings](assets/guides/my_bookings.png)
+<img src="assets/guides/my_bookings.png" alt="my_bookings" width="800"/>
 
 ---
 
@@ -109,7 +109,7 @@ Students can:
 - **Direct Contact** (email/phone) after approval.  
 - **No In-App Chat** but contact info is shared for follow-up.  
 
-![contact](assets/guides/contact.png)
+<img src="assets/guides/contact.png" alt="contact" width="800"/>
 
 ---
 
@@ -119,7 +119,7 @@ Students can:
 - **Host Reviews:** Owners rate students after stays.  
 - **Visible to Both:** Students see property reviews; owners see student reviews.  
 
-![rating](assets/guides/rating.png)
+<img src="assets/guides/rating.png" alt="rating" width="400"/>
 
 ---
 
@@ -130,7 +130,7 @@ Students can:
 - **Dark Mode:** Toggle theme for comfort.  
 - **Favorites List:** Quick access to saved properties.  
 
-![about](assets/guides/about.png)
+<img src="assets/guides/about.png" alt="about" width="400"/>
 
 ---
 

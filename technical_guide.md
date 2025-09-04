@@ -18,7 +18,7 @@ The app enables:
 
 ### 2.1 System Architecture
 
-![System UML](assets/guides/uml.png)
+![System UML](assets/guides/uml.jpg)
 
 **Components**
 - **Frontend (Flutter)**: Handles UI & user interactions  
@@ -34,7 +34,7 @@ The app enables:
 
 ### 3.1 Firestore UML Diagram
 
-![Database UML](assets/guides/database_uml.png)
+<img src="assets/guides/database_uml.png" alt="Database UML]" width="800"/>
 
 **Collections**
 - **users**: Stores user accounts, roles, and Face ID settings  
