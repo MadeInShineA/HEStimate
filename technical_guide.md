@@ -40,7 +40,7 @@ The app enables:
 - **users**: Stores user accounts, roles, and Face ID settings  
 - **listings**: Property details (address, price, amenities, distances, images)  
 - **booking_requests**: Links students → listings with start/end dates and status  
-- **favorites**: Student favorites for quick access  
+- **favorites**: Student and owner favorites for quick access  
 - **reviews**: Reviews from owners about students  
 - **listing_reviews**: Reviews from students about listings  
 - **schools**: Static data for school locations (used for distance calculations)  
@@ -125,7 +125,6 @@ sequenceDiagram
 ---
 
 ## 8. Security Considerations
-- Firestore rules enforce user/owner access separation  
 - Images validated & stored in Firebase Storage  
 - API `/observations` protected via API key (to be replaced with Firebase JWT in production)  
 - Sensitive keys stored in `.env` (never hardcoded)  
@@ -134,6 +133,6 @@ sequenceDiagram
 
 ## 9. Conclusion
 HEStimate separates **real-time data (Firebase)** from **AI services (FastAPI)** for scalability and clarity.  
-The modular architecture enables easy extension with new features such as messaging or advanced booking management.  
+The modular architecture enables easy extension with new features such as advanced booking management.  
 
 ---
