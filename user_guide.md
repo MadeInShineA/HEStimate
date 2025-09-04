@@ -1,5 +1,18 @@
 # HEStimate User Guide
 
+# Table of Contents
+1. [Introduction](#introduction)  
+2. [Creating an Account and Profile](#creating-an-account-and-profile)  
+3. [Browsing and Searching Listings](#browsing-and-searching-listings)  
+4. [Viewing Property Details and Favorites](#viewing-property-details-and-favorites)  
+5. [Listing Your Property (For Homeowners)](#listing-your-property-for-homeowners)  
+6. [Managing Listings and Requests (For Homeowners)](#managing-listings-and-requests-for-homeowners)  
+7. [Booking a Property (For Students)](#booking-a-property-for-students)  
+8. [Tracking and Managing Your Bookings (For Students)](#tracking-and-managing-your-bookings-for-students)  
+9. [Communication and Messaging](#communication-and-messaging)  
+10. [Ratings and Reviews](#ratings-and-reviews)  
+11. [Additional Features](#additional-features) 
+
 ## Introduction
 
 **HEStimate** is a student-focused accommodation platform that connects property owners (homeowners) with students seeking housing. It works similarly to Airbnb, allowing users to list properties and book stays. Students can browse available listings, filter properties to find the perfect fit, and send booking requests. Property owners can list their accommodations, manage booking requests from students, and communicate with tenants through the app. The platform is tailored for college/university students – for example, it even computes distances to nearby schools – making it easier to find convenient housing. Both **students** and **homeowners** have dedicated features to meet their needs.
@@ -12,6 +25,8 @@
 - **Student Info:** Students may enter their school for campus distance calculations.  
 - **Login & Face ID:** Use email/password or set up optional Face ID for quick login.  
 - **Profile Page:** View your info, manage Face ID, toggle dark mode, or log out.  
+
+<img src="assets/guides/login.png" alt="login" width="400"/>
 
 ---
 
@@ -28,6 +43,8 @@ When you open the app, you can start **browsing available properties** right awa
 
 Listings are displayed in a scrollable grid with photos, price, and quick info.
 
+<img src="assets/guides/all_properties.png" alt="all properties" width="800"/>
+
 ---
 
 ## Viewing Property Details and Favorites
@@ -41,6 +58,8 @@ On a property’s detail page, you’ll find:
 - **Distance to Campus** showing how close it is to the nearest school.  
 - **Ratings** from previous students.  
 - **Favorite Button** to save the listing for later.  
+
+<img src="assets/guides/property.png" alt="property" width="800"/>
 
 ---
 
@@ -56,6 +75,8 @@ Owners can create a new listing by providing:
 - **Pricing** with a smart “Estimate” button to suggest a fair rent.  
 - **Save Listing** to publish for students to browse.  
 
+<img src="assets/guides/creation.png" alt="creation" width="800"/>
+
 ---
 
 ## Managing Listings and Requests (For Homeowners)
@@ -65,6 +86,8 @@ In the **Manage** section, owners see three tabs:
 1. **Requests:** Pending booking requests with student details and Approve/Reject buttons.  
 2. **Students:** Current or upcoming tenants with contact options (email, phone, SMS).  
 3. **Reviews:** Past stays awaiting reviews, where owners can rate students.  
+
+<img src="assets/guides/owner_managment.png" alt="owner managment" width="800"/>
 
 ---
 
@@ -78,6 +101,8 @@ Students can:
 - **Send Request** which goes to the owner for approval.  
 - **Confirmation:** Request status updates to approved or rejected.  
 
+<img src="assets/guides/booking.png" alt="booking" width="800"/>
+
 ---
 
 ## Tracking and Managing Your Bookings (For Students)
@@ -85,6 +110,8 @@ Students can:
 - **Pending Requests:** Track all booking requests and statuses.  
 - **Current Stays:** See details and owner contact info.  
 - **Past Stays:** Leave reviews for properties you stayed in.  
+
+<img src="assets/guides/my_bookings.png" alt="my_bookings" width="800"/>
 
 ---
 
@@ -95,6 +122,8 @@ Students can:
 - **Direct Contact** (email/phone) after approval.  
 - **No In-App Chat** but contact info is shared for follow-up.  
 
+<img src="assets/guides/contact.png" alt="contact" width="800"/>
+
 ---
 
 ## Ratings and Reviews
@@ -102,6 +131,8 @@ Students can:
 - **Property Reviews:** Students rate properties after stays.  
 - **Host Reviews:** Owners rate students after stays.  
 - **Visible to Both:** Students see property reviews; owners see student reviews.  
+
+<img src="assets/guides/rating.png" alt="rating" width="400"/>
 
 ---
 
@@ -111,6 +142,8 @@ Students can:
 - **About Page:** App info and support.  
 - **Dark Mode:** Toggle theme for comfort.  
 - **Favorites List:** Quick access to saved properties.  
+
+<img src="assets/guides/about.png" alt="about" width="400"/>
 
 ---
 
